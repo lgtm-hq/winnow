@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "winnow-media"
+version = "0.1.0"
+description = "Winnow your media library — organize photos and videos, detect duplicates, and keep the best copies."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "lgtm-hq", email = "turbocoder13@gmail.com" }]
+keywords = [
+  "media",
+  "photos",
+  "videos",
+  "deduplication",
+  "cli",
+  "python",
+  "image-processing",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: System :: Filesystems",
+]
+dependencies = ["click>=8.1.8", "loguru>=0.7.3", "pydantic>=2.10", "rich>=14.0"]
+
+[project.optional-dependencies]
+dev = [
+  "assertpy>=1.1",
+  "lintro>=0.61",
+  "mypy>=1.14",
+  "pytest>=8.0",
+  "pytest-cov>=6.0",
+  "pyyaml>=6.0",
+]
+face = []
+cv = []
+ai-detect = []
+
+[project.scripts]
+winnow = "winnow.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lgtm-hq/winnow"
+Documentation = "https://lgtm-hq.github.io/winnow/"
+Source = "https://github.com/lgtm-hq/winnow"
+Issues = "https://github.com/lgtm-hq/winnow/issues"
+
+[dependency-groups]
+dev = [
+  "assertpy>=1.1",
+  "lintro>=0.61",
+  "mypy>=1.14",
+  "pytest>=8.0",
+  "pytest-cov>=6.0",
+  "pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["winnow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+source = ["winnow"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = false
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.lintro]
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
