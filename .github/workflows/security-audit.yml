@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: MIT
+---
+name: Security - OSV Audit
+
+'on':
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '30 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  security-audit:
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
+    with:
+      tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+      # yamllint disable-line rule:line-length
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
+      runner-image: ubuntu-24.04
+      upload-comment-artifact: ${{ github.event_name == 'pull_request' }}
+      egress-policy: block
+      egress-preset: quality
+    permissions:
+      # read: checkout lockfiles and manifests for OSV scanning
+      contents: read
+      # read: access package metadata used by the security audit tooling
+      packages: read
+
+  # Org ruleset (checks-winnow): 🔐 Security Audit
+  security-audit-required:
+    name: '🔐 Security Audit'
+    needs: security-audit
+    if: >-
+      always() &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.draft == false
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout lgtm-ci tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: lgtm-hq/lgtm-ci
+          path: .lgtm-ci-tooling
+          ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+          sparse-checkout: |
+            .github/actions/harden-runner
+            .github/actions/resolve-egress-allowlist
+            scripts/ci/
+          sparse-checkout-cone-mode: true
+          persist-credentials: false
+
+      - name: Resolve egress allowlist
+        id: egress
+        uses: ./.lgtm-ci-tooling/.github/actions/resolve-egress-allowlist
+        with:
+          egress-policy: block
+          egress-preset: github-tooling
+
+      - name: Harden runner
+        uses: ./.lgtm-ci-tooling/.github/actions/harden-runner
+        with:
+          egress-policy: block
+          allowed-endpoints: ${{ steps.egress.outputs['allowed-endpoints'] }}
+
+      - name: Assert required check
+        env:
+          UPSTREAM_RESULT: ${{ needs.security-audit.result }}
+          STATUS_OUTPUT: ${{ needs.security-audit.outputs.status }}
+          STATUS_EXPECTED: passed
+        run: bash .lgtm-ci-tooling/scripts/ci/actions/assert-required-check.sh
+
+  publish-security-audit-comment:
+    needs: security-audit
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
+    with:
+      tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+      egress-policy: block
+      egress-preset: github-tooling
+    permissions:
+      # read: checkout repository for comment generation
+      contents: read
+      # write: post OSV audit summary on the PR
+      pull-requests: write
