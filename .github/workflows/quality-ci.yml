@@ -76,3 +76,5 @@ jobs:
     with:
       exit-code: ${{ needs.quality.outputs.exit-code }}
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+      egress-policy: block
+      egress-preset: github-tooling

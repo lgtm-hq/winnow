@@ -23,6 +23,10 @@ jobs:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       egress-policy: block
       egress-preset: scorecard
+      allowed-endpoints-mode: append
+      allowed-endpoints: |
+        api.deps.dev:443
+        release-assets.githubusercontent.com:443
     permissions:
       # read: fetch manifest lockfiles for dependency comparison
       contents: read
