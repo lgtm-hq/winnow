@@ -27,5 +27,9 @@ jobs:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
     permissions:
+      # read: report-release-failure job reads workflow metadata
+      actions: read
       # write: create version tags on the repository
       contents: write
+      # write: report-release-failure opens deduplicated failure issues
+      issues: write
