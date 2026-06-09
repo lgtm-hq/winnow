@@ -21,7 +21,11 @@ jobs:
     with:
       ecosystems: python
       auto-merge: true
-      max-bump: minor
+      # Allow MAJOR bumps so pyproject.toml stays aligned with release-auto-tag
+      # (breaking commits must not be clamped to minor-only).
+      max-bump: major
+      # Patch releases auto-merge; minor/major need explicit review.
+      auto-merge-patch-only: true
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       egress-policy: block
       egress-preset: pypi
