@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for Lintro
+about: Suggest an idea for winnow
 title: '[feature] '
 labels: ['enhancement', 'needs-triage']
 assignees: ''
@@ -56,6 +56,6 @@ What problem does this solve?
 ## Checklist
 
 - [ ] I have searched existing issues to avoid duplicates
-- [ ] This feature would benefit the broader Lintro community
+- [ ] This feature would benefit the broader winnow community
 - [ ] I'm willing to help implement this feature if needed
 - [ ] I understand this may not be implemented immediately

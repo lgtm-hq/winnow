@@ -13,8 +13,3 @@
 
 /.github/workflows/ @lgtm-hq/maintainers
 /.github/actions/ @lgtm-hq/maintainers
-
-# Dependency files excluded from review (Renovate automerge)
-pyproject.toml
-uv.lock
-renovate.json

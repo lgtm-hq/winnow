@@ -1,6 +1,6 @@
 ---
 name: Bug report
-description: Create a report to help us improve Lintro
+description: Create a report to help us improve winnow
 labels: [bug, needs-triage]
 body:
   - type: markdown
@@ -12,7 +12,7 @@ body:
     attributes:
       label: Bug summary
       description: Concise summary of the bug
-      placeholder: Example - Lintro crashes on ruff format
+      placeholder: Example - winnow crashes when scanning large media libraries
     validations:
       required: true
   - type: textarea
@@ -21,7 +21,7 @@ body:
       label: Steps to reproduce
       description: Exact commands and outputs
       placeholder: |
-        1. Run: lintro check --tools ruff
+        1. Run: winnow scan /path/to/media
         2. See error ...
     validations:
       required: true
@@ -42,9 +42,8 @@ body:
     attributes:
       label: Installation method
       options:
-        - PyPI (pip install lintro)
+        - PyPI (pip install winnow-media)
         - Dev install (pip install -e .)
-        - Docker (ghcr.io/lgtm-hq/py-lintro:latest)
         - Other
     validations:
       required: true
@@ -59,26 +58,25 @@ body:
     id: env-python
     attributes:
       label: Python version
-      placeholder: 3.13
+      placeholder: '3.13'
     validations:
       required: true
   - type: input
-    id: env-lintro
+    id: env-winnow
     attributes:
-      label: Lintro version
+      label: winnow version
       placeholder: 0.x.y
     validations:
       required: true
   - type: checkboxes
     id: tools
     attributes:
-      label: Tools involved
+      label: Features involved
       options:
-        - label: Ruff
-        - label: pydoclint
-        - label: Prettier
-        - label: Yamllint
-        - label: Hadolint
+        - label: Media scanning
+        - label: File organization
+        - label: Metadata extraction
+        - label: CLI interface
         - label: Other
   - type: textarea
     id: logs
@@ -89,7 +87,7 @@ body:
     id: config
     attributes:
       label: Relevant configuration files
-      description: .lintro or tool configs
+      description: winnow config or tool configs
       render: yaml
   - type: textarea
     id: minimal

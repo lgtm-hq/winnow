@@ -1,6 +1,6 @@
 ---
 name: Question
-description: Ask a question about Lintro
+description: Ask a question about winnow
 labels: [question, needs-triage]
 body:
   - type: textarea
@@ -24,20 +24,19 @@ body:
     id: env-python
     attributes:
       label: Python version
-      placeholder: 3.13
+      placeholder: '3.13'
   - type: input
-    id: env-lintro
+    id: env-winnow
     attributes:
-      label: Lintro version
+      label: winnow version
       placeholder: 0.x.y
   - type: dropdown
     id: install
     attributes:
       label: Installation method
       options:
-        - PyPI (pip install lintro)
+        - PyPI (pip install winnow-media)
         - Dev install (pip install -e .)
-        - Docker (ghcr.io/lgtm-hq/py-lintro:latest)
         - Other
   - type: textarea
     id: examples
@@ -52,4 +51,3 @@ body:
         - label: I checked the docs
         - label: I searched existing issues
         - label: I tried examples in the README
-        - label: I checked the tool analysis docs

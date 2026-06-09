@@ -814,16 +814,6 @@ dependencies = [
     { name = "rich" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "assertpy" },
-    { name = "lintro" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pyyaml" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "assertpy" },
@@ -836,18 +826,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "assertpy", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "click", specifier = ">=8.1.8" },
-    { name = "lintro", marker = "extra == 'dev'", specifier = ">=0.61" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
     { name = "pydantic", specifier = ">=2.10" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "rich", specifier = ">=14.0" },
 ]
-provides-extras = ["dev", "face", "cv", "ai-detect"]
+provides-extras = ["face", "cv", "ai-detect"]
 
 [package.metadata.requires-dev]
 dev = [

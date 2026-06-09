@@ -18,10 +18,7 @@
     {
       "groupName": "linting tools",
       "groupSlug": "linting-tools",
-      "matchPackageNames": [
-        "ghcr.io/lgtm-hq/py-lintro",
-        "lintro"
-      ],
+      "matchPackageNames": ["lintro"],
       "automerge": false
     }
   ]

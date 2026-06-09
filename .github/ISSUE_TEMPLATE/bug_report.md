@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve Lintro
+about: Create a report to help us improve winnow
 title: '[bug] '
 labels: ['bug', 'needs-triage']
 assignees: ''
@@ -25,22 +25,20 @@ What is the bug?
 
 - OS:
 - Python:
-- Lintro:
+- winnow:
 
 ### Installation Method
 
-- [ ] PyPI (`pip install lintro`)
+- [ ] PyPI (`pip install winnow-media`)
 - [ ] Development install (`pip install -e .`)
-- [ ] Docker (`docker run ghcr.io/lgtm-hq/py-lintro:latest`)
 - [ ] Other: \***\*\_\*\***
 
-### Tools Involved
+### Features Involved
 
-- [ ] Ruff
-- [ ] pydoclint
-- [ ] Prettier
-- [ ] Yamllint
-- [ ] Hadolint
+- [ ] Media scanning
+- [ ] File organization
+- [ ] Metadata extraction
+- [ ] CLI interface
 - [ ] Other: \***\*\_\*\***
 
 ## Additional Context
@@ -53,7 +51,7 @@ What is the bug?
 
 ### Configuration Files
 
-If relevant, include your configuration files (`.lintro`, tool configs, etc.)
+If relevant, include your configuration files (winnow config, tool configs, etc.)
 
 ### Minimal Example (if code-related)
 

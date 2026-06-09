@@ -1,7 +1,7 @@
 # Project Governance
 
-This document defines the decision-making and roles for the `py-lintro` project. It aims
-to provide clarity, continuity, and accountability to contributors and users.
+This document defines the decision-making and roles for the `winnow` project. It aims to
+provide clarity, continuity, and accountability to contributors and users.
 
 ## Roles
 

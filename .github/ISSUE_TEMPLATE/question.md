@@ -1,6 +1,6 @@
 ---
 name: Question
-about: Ask a question about Lintro
+about: Ask a question about winnow
 title: '[question] '
 labels: ['question', 'needs-triage']
 assignees: ''
@@ -20,13 +20,12 @@ What are you trying to accomplish? What have you tried?
 
 - OS:
 - Python:
-- Lintro:
+- winnow:
 
 ### Installation Method
 
-- [ ] PyPI (`pip install lintro`)
+- [ ] PyPI (`pip install winnow-media`)
 - [ ] Development install (`pip install -e .`)
-- [ ] Docker (`docker run ghcr.io/lgtm-hq/py-lintro:latest`)
 - [ ] Other: \***\*\_\*\***
 
 ## What I've Tried
@@ -45,7 +44,7 @@ If relevant, include examples:
 
 ```bash
 # Command you ran
-lintro check --some-option
+winnow --help
 ```
 
 ```python
@@ -59,7 +58,7 @@ def example():
 If relevant, include your configuration:
 
 ```yaml
-# .lintro file or other config
+# winnow config or other config
 ```
 
 ## Research Done

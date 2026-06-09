@@ -1,10 +1,4 @@
 ---
-enhancement:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'winnow/**'
-          - 'tests/**'
-
 ci:
   - changed-files:
       - any-glob-to-any-file:

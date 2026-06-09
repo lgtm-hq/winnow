@@ -35,14 +35,6 @@ classifiers = [
 dependencies = ["click>=8.1.8", "loguru>=0.7.3", "pydantic>=2.10", "rich>=14.0"]
 
 [project.optional-dependencies]
-dev = [
-  "assertpy>=1.1",
-  "lintro>=0.61",
-  "mypy>=1.14",
-  "pytest>=8.0",
-  "pytest-cov>=6.0",
-  "pyyaml>=6.0",
-]
 face = []
 cv = []
 ai-detect = []

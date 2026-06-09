@@ -1,6 +1,6 @@
 ---
 name: Feature request
-description: Suggest an idea for Lintro
+description: Suggest an idea for winnow
 labels: [enhancement, needs-triage]
 body:
   - type: input
