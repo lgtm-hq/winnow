@@ -30,6 +30,11 @@ jobs:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       egress-policy: block
       egress-preset: pypi
+      allowed-endpoints-mode: append
+      allowed-endpoints: >
+        astral.sh:443
+        releases.astral.sh:443
+        github-releases.githubusercontent.com:443
 
   pypi-upload:
     name: Upload to TestPyPI
