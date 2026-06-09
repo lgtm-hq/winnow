@@ -4,7 +4,9 @@ name: Security - OSV Audit
 
 'on':
   pull_request:
+    branches: [main]
   merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   schedule:
@@ -25,6 +27,8 @@ jobs:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       # yamllint disable-line rule:line-length
       lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
+      runner-image: ubuntu-24.04
+      upload-comment-artifact: ${{ github.event_name == 'pull_request' }}
       egress-policy: block
       egress-preset: quality
     permissions:
@@ -91,7 +95,6 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
     with:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
-      upstream-result: ${{ needs.security-audit.result }}
       egress-policy: block
       egress-preset: github-tooling
     permissions:
