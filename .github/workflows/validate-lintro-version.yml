@@ -30,8 +30,12 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-validate-lintro-version.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
     with:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+      # Caller repos must pass lintro-image; resolve-lintro-image.sh defaults to
+      # lgtm-ci-owned paths that do not exist in consumer repositories.
+      # yamllint disable-line rule:line-length
+      lintro-image: ghcr.io/lgtm-hq/py-lintro:0.61.0@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
       egress-policy: block
-      egress-preset: github-tooling
+      egress-preset: quality
     permissions:
       # read: read pyproject.toml and workflow files for version sync checks
       contents: read

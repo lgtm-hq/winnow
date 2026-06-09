@@ -28,6 +28,8 @@ jobs:
       packages: read
     with:
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+      # yamllint disable-line rule:line-length
+      lintro-image: ghcr.io/lgtm-hq/py-lintro:0.61.0@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
       egress-policy: block
       egress-preset: quality
 
