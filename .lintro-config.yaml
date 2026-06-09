@@ -1,0 +1,50 @@
+---
+# Lintro configuration for winnow
+# https://github.com/lgtm-hq/py-lintro
+
+enforce:
+  line_length: 88
+
+execution:
+  enabled_tools: []
+  tool_order: 'priority'
+  fail_fast: false
+  parallel: true
+
+defaults:
+  prettier:
+    semi: true
+    singleQuote: true
+    tabWidth: 2
+    printWidth: 100
+    trailingComma: 'es5'
+  yamllint:
+    extends: 'default'
+    rules:
+      line-length:
+        max: 88
+        allow-non-breakable-inline-mappings: true
+
+tools:
+  ruff:
+    enabled: true
+  black:
+    enabled: true
+  prettier:
+    enabled: true
+  markdownlint:
+    enabled: true
+  yamllint:
+    enabled: true
+  bandit:
+    enabled: true
+  actionlint:
+    enabled: true
+  pytest:
+    enabled: true
+  hadolint:
+    enabled: false
+  gitleaks:
+    enabled: true
+  osv_scanner:
+    enabled: true
