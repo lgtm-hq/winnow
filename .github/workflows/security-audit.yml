@@ -33,6 +33,54 @@ jobs:
       # read: access package metadata used by the security audit tooling
       packages: read
 
+  # Org ruleset (checks-winnow): 🔐 Security Audit
+  security-audit-required:
+    name: '🔐 Security Audit'
+    needs: security-audit
+    if: >-
+      always() &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.draft == false
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout lgtm-ci tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: lgtm-hq/lgtm-ci
+          path: .lgtm-ci-tooling
+          ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
+          sparse-checkout: |
+            .github/actions/harden-runner
+            .github/actions/resolve-egress-allowlist
+            scripts/ci/
+          sparse-checkout-cone-mode: true
+          persist-credentials: false
+
+      - name: Resolve egress allowlist
+        id: egress
+        uses: ./.lgtm-ci-tooling/.github/actions/resolve-egress-allowlist
+        with:
+          egress-policy: block
+          egress-preset: github-tooling
+
+      - name: Harden runner
+        uses: ./.lgtm-ci-tooling/.github/actions/harden-runner
+        with:
+          egress-policy: block
+          allowed-endpoints: ${{ steps.egress.outputs['allowed-endpoints'] }}
+
+      - name: Assert required check
+        env:
+          UPSTREAM_RESULT: ${{ needs.security-audit.result }}
+          STATUS_OUTPUT: ${{ needs.security-audit.outputs.status }}
+          STATUS_EXPECTED: passed
+        run: bash .lgtm-ci-tooling/scripts/ci/actions/assert-required-check.sh
+
   publish-security-audit-comment:
     needs: security-audit
     if: >-
