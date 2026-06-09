@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# For license details, see the repository root LICENSE file.
+---
+name: Security - CodeQL Code Scanning
+
+'on':
+  push:
+    branches: [main]
+    paths: ['**.py', 'pyproject.toml', '.github/**']
+  pull_request:
+    branches: [main]
+    paths: ['**.py', 'pyproject.toml', '.github/**']
+  merge_group:
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  codeql:
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-codeql.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    with:
+      languages: python
+      build-mode: none
+      config-file: .github/codeql/codeql-config.yml
+      category: '/language:all'
+      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      egress-policy: block
+      egress-preset: github-tooling
+      allowed-endpoints-mode: append
+      allowed-endpoints: release-assets.githubusercontent.com:443
+    permissions:
+      contents: read
+      security-events: write

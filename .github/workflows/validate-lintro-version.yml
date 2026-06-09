@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+---
+name: Quality Check - Lintro Version Sync
+
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'pyproject.toml'
+      - '.github/workflows/quality-ci.yml'
+      - '.github/workflows/validate-lintro-version.yml'
+  merge_group:
+  push:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - '.github/workflows/quality-ci.yml'
+      - '.github/workflows/validate-lintro-version.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: validate-lintro-version-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-validate-lintro-version.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    with:
+      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      egress-policy: block
+      egress-preset: github-tooling
+    permissions:
+      contents: read
+      packages: read

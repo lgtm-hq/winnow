@@ -1,0 +1,72 @@
+---
+enhancement:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'winnow/**'
+          - 'tests/**'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/actions/**'
+          - 'scripts/**'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - 'README.md'
+          - 'CHANGELOG.md'
+          - '**/*.md'
+          - '!.github/**/*.md'
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'pyproject.toml'
+          - 'uv.lock'
+          - 'renovate.json'
+
+maintenance:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/CODEOWNERS'
+          - '.github/labeler.yml'
+          - '.allstar/**'
+
+security:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/*security*.yml'
+          - '.github/workflows/*codeql*.yml'
+          - '.github/workflows/sbom*.yml'
+          - '.gitleaks.toml'
+          - '.osv-scanner.toml'
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'winnow/**'
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'winnow/cli.py'
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.winnow-config.yaml'
+          - 'winnow/config/**'
+
+testing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'tests/**'
+
+release:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/publish*.yml'
+          - '.github/workflows/release*.yml'
