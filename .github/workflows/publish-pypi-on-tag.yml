@@ -57,6 +57,8 @@ jobs:
       contents: read
     with:
       python-version: '3.13'
+      verify-tag-version: true
+      ensure-tag-on-default-branch: true
       artifact-name: python-dist
       tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       egress-policy: block
