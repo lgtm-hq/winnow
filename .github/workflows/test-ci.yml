@@ -22,11 +22,11 @@ jobs:
     # yamllint disable-line rule:line-length
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
     with:
-      publish-test-summary: true
+      publish-test-summary: false
       python-versions: '3.11,3.12,3.13'
       test-path: tests
       coverage: true
-      coverage-format: xml
+      coverage-format: json
       coverage-threshold: 85
       upload-coverage: true
       draft-pr-skip: true
@@ -62,6 +62,38 @@ jobs:
       runner-image: ubuntu-24.04
       upstream-result: ${{ needs.test.result }}
       passed-output: ${{ needs.test.outputs.passed }}
+      egress-policy: block
+      egress-preset: github-tooling
+
+  publish-test-summary:
+    needs: test
+    if: >-
+      !cancelled()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (
+        github.event.pull_request.draft == false
+        || github.event.action == 'ready_for_review'
+      )
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-test-summary.yml@cecca744299be6a34f3b4ea4f18c00262081ab61 # v0.41.0
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      test-suite-name: Python Compatibility
+      comment-marker: python-test-results
+      tests-passed: ${{ needs.test.outputs.tests-passed }}
+      tests-failed: ${{ needs.test.outputs.tests-failed }}
+      tests-total: ${{ needs.test.outputs.tests-total }}
+      coverage-percent: ${{ needs.test.outputs.coverage-percent }}
+      coverage-threshold: 85
+      job-result: ${{ needs.test.result }}
+      rich-coverage-comment: true
+      coverage-artifact-name: python-coverage
+      coverage-file: coverage.json
+      coverage-format: auto
+      tooling-ref: 'cecca744299be6a34f3b4ea4f18c00262081ab61' # v0.41.0
       egress-policy: block
       egress-preset: github-tooling
 
