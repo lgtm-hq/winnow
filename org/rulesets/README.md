@@ -5,14 +5,17 @@ Source-of-truth payload for the **`checks-winnow`** org ruleset. Synced to GitHu
 
 Required status checks on the default branch:
 
-| Gate job (workflow)       | Workflow file        | GitHub check context                             |
-| ------------------------- | -------------------- | ------------------------------------------------ |
-| `test-suite-coverage`     | `test-ci.yml`        | `test-suite-coverage / 🧪 Test Suite & Coverage` |
-| `security-audit-required` | `security-audit.yml` | `🔐 Security Audit`                              |
-| `lintro-code-quality`     | `quality-ci.yml`     | `lintro-code-quality / 🛠️ Lintro Code Quality`   |
+| Required check            | Workflow file        | GitHub check context                           |
+| ------------------------- | -------------------- | ---------------------------------------------- |
+| `test`                    | `test-ci.yml`        | `test / Python Compatibility`                  |
+| `security-audit-required` | `security-audit.yml` | `🔐 Security Audit`                            |
+| `lintro-code-quality`     | `quality-ci.yml`     | `lintro-code-quality / 🛠️ Lintro Code Quality` |
 
-See org ruleset comments on those jobs in `.github/workflows/`. The filename column
-lists the specific workflow files referenced by the glob
+The test check is reported directly by `reusable-test-python.yml`
+(`job-name: Python Compatibility`). Quality and security still use thin gate jobs where
+the ruleset display name differs from the work reusable check path.
+
+The filename column lists workflow files under
 `.github/workflows/{test,quality,security}-*.yml`.
 
 ## Bypass configuration
@@ -27,5 +30,5 @@ lists the specific workflow files referenced by the glob
 | `RepositoryRole`    | `4`        | Maintain — allowed PR bypass |
 | `RepositoryRole`    | `5`        | Admin — allowed PR bypass    |
 
-These mirror the `bypass_actors` entries in `checks-py-lintro.json` and other org check
+These mirror the `bypass_actors` entries in `checks-winnow.json` and other org check
 rulesets.
