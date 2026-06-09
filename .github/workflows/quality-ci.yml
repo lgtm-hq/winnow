@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 ---
-name: CI - Quality
+name: Quality - Lint & Format
 
 'on':
   push:
@@ -20,12 +20,14 @@ concurrency:
 jobs:
   quality:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-quality-lint.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-quality-lint.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     permissions:
+      # read: checkout repository for lintro analysis
       contents: read
+      # read: pull py-lintro Docker image from GHCR
       packages: read
     with:
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       egress-policy: block
       egress-preset: quality
 
@@ -40,10 +42,12 @@ jobs:
         || github.event.action == 'ready_for_review'
       )
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-quality-summary.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-quality-summary.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     permissions:
+      # read: checkout repository metadata
       contents: read
+      # write: post quality summary comment on the PR
       pull-requests: write
     with:
       exit-code: ${{ needs.quality.outputs.exit-code }}
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0

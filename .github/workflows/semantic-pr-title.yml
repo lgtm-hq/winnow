@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # For license details, see the repository root LICENSE file.
 ---
-name: Quality Check - PR Title Validation
+name: PR - Title Validation
 
 'on':
   pull_request:
@@ -17,9 +17,9 @@ concurrency:
 jobs:
   semantic-title:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-semantic-pr-title.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-semantic-pr-title.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     with:
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       egress-policy: block
       egress-preset: github-tooling
     permissions:

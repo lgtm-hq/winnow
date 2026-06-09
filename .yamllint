@@ -2,10 +2,10 @@
 extends: default
 
 ignore:
-  - test_samples/
   - node_modules/
   - .venv/
   - venv/
+  - .lintro/
 
 rules:
   # GitHub Actions comments often don't follow indentation expectations

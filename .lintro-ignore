@@ -1,4 +1,15 @@
-htmlcov/
-.venv/
-dist/
-build/
+# Ignore build artifacts and tooling caches from all linting/formatting
+
+build
+dist
+node_modules
+.venv
+venv
+env
+# Claude Code project memory and config (not source code)
+.claude
+# Sparse lgtm-ci tooling checkout for reusable workflow scripts (not project source)
+.lgtm-ci-tooling
+
+__pycache__
+.lintro/*

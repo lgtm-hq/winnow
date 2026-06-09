@@ -15,18 +15,20 @@ permissions: {}
 
 concurrency:
   group: security-audit-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   security-audit:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     with:
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       egress-policy: block
       egress-preset: quality
     permissions:
+      # read: checkout lockfiles and manifests for OSV scanning
       contents: read
+      # read: access package metadata used by the security audit tooling
       packages: read
 
   publish-security-audit-comment:
@@ -36,12 +38,14 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     with:
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       upstream-result: ${{ needs.security-audit.result }}
       egress-policy: block
       egress-preset: github-tooling
     permissions:
+      # read: checkout repository for comment generation
       contents: read
+      # write: post OSV audit summary on the PR
       pull-requests: write

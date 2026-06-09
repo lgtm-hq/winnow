@@ -1,4 +1,4 @@
-.PHONY: setup install test lint fmt clean help
+.PHONY: all setup install test lint fmt clean help
 
 -include .env
 
@@ -7,7 +7,6 @@ all: setup test
 setup:
 	@echo "Setting up development environment with uv..."
 	uv sync --dev
-	uv pip install -e .
 	@echo "Setup complete. Try 'make test' or 'make lint'."
 
 install: setup
@@ -31,4 +30,4 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 help:
-	@echo "Targets: setup, install, test, lint, fmt, clean"
+	@echo "Targets: all, setup, install, test, lint, fmt, clean"

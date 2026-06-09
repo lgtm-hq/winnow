@@ -38,7 +38,7 @@ What is the bug?
 - [ ] Media scanning
 - [ ] File organization
 - [ ] Metadata extraction
-- [ ] CLI interface
+- [ ] CLI
 - [ ] Other: \***\*\_\*\***
 
 ## Additional Context

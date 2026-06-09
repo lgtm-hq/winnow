@@ -20,10 +20,10 @@ concurrency:
 jobs:
   test:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     with:
       publish-test-summary: false
-      python-versions: '3.11,3.13'
+      python-versions: '3.11,3.12,3.13'
       test-path: tests
       coverage: true
       coverage-format: xml
@@ -32,16 +32,15 @@ jobs:
       draft-pr-skip: true
       job-name: Python Compatibility
       runner-image: ubuntu-24.04
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       egress-policy: block
-      egress-preset: pypi
-      allowed-endpoints-mode: append
-      allowed-endpoints: >
-        astral.sh:443
-        releases.astral.sh:443
+      egress-preset: quality
     permissions:
+      # write: merge matrix artifacts and update workflow summaries
       actions: write
+      # read: checkout repository and install dependencies
       contents: read
+      # write: post test results and coverage comments on PRs
       pull-requests: write
 
   test-suite-coverage:
@@ -53,11 +52,11 @@ jobs:
         github.event.pull_request.draft == false
       )
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-required-check.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-required-check.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     permissions:
       contents: read
     with:
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       job-name: '🧪 Test Suite & Coverage'
       runner-image: ubuntu-24.04
       upstream-result: ${{ needs.test.result }}
@@ -73,16 +72,19 @@ jobs:
       github.event_name == 'push' &&
       needs.test.outputs.passed == 'true'
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python-publish.yml@f469f4d5c187f0700ccec4c023152fb68ee3dc89 # v0.32.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python-publish.yml@43325346d688be984d6bde155603d18fbdd89278 # v0.33.0
     with:
       coverage-percent: ${{ needs.test.outputs.coverage-percent }}
       upload-coverage: true
       job-name: Deploy Coverage to Pages
       runner-image: ubuntu-24.04
-      tooling-ref: 'f469f4d5c187f0700ccec4c023152fb68ee3dc89' # v0.32.3
+      tooling-ref: '43325346d688be984d6bde155603d18fbdd89278' # v0.33.0
       egress-policy: block
       egress-preset: github-pages
     permissions:
+      # read: download coverage artifacts from the test job
       contents: read
+      # write: publish coverage report to GitHub Pages
       pages: write
+      # write: OIDC token for Pages deployment
       id-token: write

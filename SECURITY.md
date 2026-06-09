@@ -13,10 +13,9 @@ Please **do not** create public GitHub issues for security vulnerabilities.
 
 ### How to Report
 
-1. **Email**: `turbocoder13@gmail.com`
-2. **Subject**: Include `SECURITY: winnow` in the subject line
-3. **GitHub**:
+1. **GitHub advisory** (preferred):
    [Private security advisory](https://github.com/lgtm-hq/winnow/security/advisories/new)
+2. **Email** (fallback): `security@lgtm-hq.io` with `SECURITY: winnow` in the subject
 
 ### What to Include
 
