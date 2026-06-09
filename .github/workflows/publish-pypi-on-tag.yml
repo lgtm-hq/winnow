@@ -11,12 +11,6 @@ name: Publish - PyPI Production
     tags:
       - '*.*.*'
       - v*.*.*
-      - '*.*.*a*'
-      - v*.*.*a*
-      - '*.*.*b*'
-      - v*.*.*b*
-      - '*.*.*rc*'
-      - v*.*.*rc*
   workflow_dispatch:
 
 permissions: {}
