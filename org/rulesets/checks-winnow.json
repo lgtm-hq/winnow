@@ -1,0 +1,59 @@
+{
+  "ruleset_id": 17448561,
+  "name": "checks-winnow",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": ["~DEFAULT_BRANCH"]
+    },
+    "repository_name": {
+      "exclude": [],
+      "include": ["winnow"],
+      "protected": false
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "test-suite-coverage / 🧪 Test Suite & Coverage"
+          },
+          {
+            "context": "🔐 Security Audit"
+          },
+          {
+            "context": "lintro-code-quality / 🛠️ Lintro Code Quality"
+          }
+        ]
+      }
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 2,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 4,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    }
+  ]
+}
