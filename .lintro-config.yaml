@@ -33,8 +33,6 @@ defaults:
       line_length: 88
       code_blocks: false
       tables: false
-    MD024:
-      siblings_only: true
 
   yamllint:
     extends: 'default'

@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -- duplicate headings are standard in changelogs -->
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
