@@ -21,13 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.0.2] - 2026-06-13
 
-### Bug Fixes
+### Fixed
 
 - **ci**: wire Homebrew tap dispatch and package smoke test (#103) (9b1ae51)
 
 ## [0.0.1] - 2026-06-09
 
-### Bug Fixes
+### Fixed
 
 - **ci**: repair release and PR title workflow startup failures (#101) (b34f766)
 
