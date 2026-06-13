@@ -19,6 +19,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.0.2] - 2026-06-13
+
+### Bug Fixes
+
+- **ci**: wire Homebrew tap dispatch and package smoke test (#103) (9b1ae51)
+
 ## [0.0.1] - 2026-06-09
 
 ### Bug Fixes
