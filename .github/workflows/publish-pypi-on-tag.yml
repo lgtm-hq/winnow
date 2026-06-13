@@ -109,9 +109,20 @@ jobs:
           tooling-ref: '6a80f4a55e4080272b2d93b30cc292d618f5dd5a' # v0.45.0
           validate: 'false'
       - name: Install and verify CLI
+        env:
+          EXPECTED_VERSION: ${{ needs.pypi-build.outputs.version }}
         run: |
           uv pip install --system "${{ steps.prepare.outputs.dist-path }}"/*.whl
-          winnow --version
+          ACTUAL_VERSION="$(
+            winnow --version \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' \
+              | head -1
+          )"
+          if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "Expected winnow --version to report ${EXPECTED_VERSION}," \
+              "got ${ACTUAL_VERSION}"
+            exit 1
+          fi
 
   pypi-upload:
     name: Upload to PyPI
@@ -192,7 +203,7 @@ jobs:
 
   homebrew-dispatch:
     name: Notify Homebrew Tap
-    needs: [pypi-upload, github-release]
+    needs: [pypi-upload, github-release, pypi-build]
     if: >-
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
@@ -217,6 +228,6 @@ jobs:
         uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@6a80f4a55e4080272b2d93b30cc292d618f5dd5a # v0.45.0
         with:
           formula: winnow
-          version: ${{ github.ref_name }}
+          version: ${{ needs.pypi-build.outputs.version }}
           pypi-package: winnow-media
           token: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
