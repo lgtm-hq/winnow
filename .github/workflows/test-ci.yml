@@ -29,6 +29,7 @@ jobs:
       coverage-format: auto
       coverage-threshold: 85
       upload-coverage: true
+      extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
       job-name: Python Compatibility
       runner-image: ubuntu-24.04

@@ -63,7 +63,10 @@ packages = ["winnow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-markers", "--strict-config"]
+addopts = ["--strict-markers", "--strict-config", "-m", "not integration"]
+markers = [
+  "integration: end-to-end tests that build artifacts or spawn external tools (opt-in)",
+]
 
 [tool.coverage.run]
 source = ["winnow"]
