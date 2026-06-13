@@ -58,6 +58,11 @@ uv pip install --python "$venv_python" "$wheel_file"
 
 cli_path="${smoke_venv_dir}/.venv/bin/${cli_command}"
 
+if [[ ! -x "$cli_path" ]]; then
+	echo "[smoke-test-distribution] ERROR: CLI not found at ${cli_path} (check CLI_COMMAND=${cli_command})" >&2
+	exit 1
+fi
+
 log_info "Verifying ${cli_command} --version reports ${EXPECTED_VERSION}"
 actual_version="$(
 	"$cli_path" --version |

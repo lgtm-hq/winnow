@@ -12,9 +12,15 @@ setup:
 install: setup
 
 test:
-	@echo "Running tests with coverage..."
+	@echo "Running unit tests with coverage (integration tests excluded)..."
 	uv run pytest --cov=winnow --cov-report=term-missing --cov-report=xml --cov-report=html
 	@echo "Coverage reports: htmlcov/index.html, coverage.xml"
+
+test-integration:
+	@echo "Running integration tests..."
+	uv run pytest -m integration
+
+test-all: test test-integration
 
 lint:
 	@echo "Running lintro check..."
@@ -30,4 +36,4 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 help:
-	@echo "Targets: all, setup, install, test, lint, fmt, clean"
+	@echo "Targets: all, setup, install, test, test-integration, test-all, lint, fmt, clean"

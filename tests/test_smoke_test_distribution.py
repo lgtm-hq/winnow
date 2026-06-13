@@ -8,12 +8,14 @@ import subprocess  # nosec B404
 from pathlib import Path
 from typing import cast
 
+import pytest
 from assertpy import assert_that
 
 from winnow import __version__
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SMOKE_SCRIPT = _REPO_ROOT / "scripts" / "ci" / "release" / "smoke-test-distribution.sh"
+_CLI_COMMAND = "winnow"
 
 
 def _require_executable(name: str) -> str:
@@ -23,6 +25,7 @@ def _require_executable(name: str) -> str:
     return cast(str, executable)
 
 
+@pytest.mark.integration
 def test_smoke_test_distribution_installs_wheel_and_reports_version(
     tmp_path: Path,
 ) -> None:
@@ -46,6 +49,7 @@ def test_smoke_test_distribution_installs_wheel_and_reports_version(
             **os.environ,
             "DIST_PATH": str(dist_dir),
             "EXPECTED_VERSION": __version__,
+            "CLI_COMMAND": _CLI_COMMAND,
         },
         check=False,
         capture_output=True,
