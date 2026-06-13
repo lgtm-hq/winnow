@@ -1,4 +1,4 @@
-.PHONY: all setup install test lint fmt clean help
+.PHONY: all setup install test test-integration test-all lint fmt clean help
 
 -include .env
 
