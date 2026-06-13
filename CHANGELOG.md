@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.0.3] - 2026-06-13
+
+### Bug Fixes
+
+- **ci**: install release smoke test wheel in isolated venv (#105) (2590135)
+
 ## [0.0.2] - 2026-06-13
 
 ### Fixed
