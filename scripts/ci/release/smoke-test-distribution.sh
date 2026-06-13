@@ -46,11 +46,21 @@ if [[ -z "$wheel_file" ]]; then
 fi
 
 log_info "Installing wheel: $wheel_file"
-uv pip install --system "$wheel_file"
+
+smoke_venv_dir="$(mktemp -d)"
+trap 'rm -rf "$smoke_venv_dir"' EXIT
+
+log_info "Creating isolated virtual environment in ${smoke_venv_dir}"
+uv venv "${smoke_venv_dir}/.venv"
+
+venv_python="${smoke_venv_dir}/.venv/bin/python"
+uv pip install --python "$venv_python" "$wheel_file"
+
+cli_path="${smoke_venv_dir}/.venv/bin/${cli_command}"
 
 log_info "Verifying ${cli_command} --version reports ${EXPECTED_VERSION}"
 actual_version="$(
-	"$cli_command" --version |
+	"$cli_path" --version |
 		grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?' |
 		head -1
 )"
