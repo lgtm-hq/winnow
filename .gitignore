@@ -1,4 +1,6 @@
 # -------------------- Custom --------------------
+# Org ruleset payloads belong in lgtm-ci, not consumer repos.
+org/rulesets/
 .settings
 .classpath
 .project
