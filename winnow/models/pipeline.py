@@ -32,6 +32,21 @@ class RunMetadata(BaseModel):
     source_roots: list[Path] = Field(default_factory=list)
     config_path: Path | None = None
 
+    @model_validator(mode="after")
+    def completed_at_is_not_before_started_at(self) -> RunMetadata:
+        """Ensure completed_at is not earlier than started_at.
+
+        Returns:
+            Validated run metadata.
+
+        Raises:
+            ValueError: If completed_at precedes started_at.
+        """
+        if self.completed_at is not None and self.completed_at < self.started_at:
+            msg = "completed_at cannot be earlier than started_at"
+            raise ValueError(msg)
+        return self
+
     @property
     def elapsed_seconds(self) -> float | None:
         """Return elapsed runtime in seconds when the run has completed.

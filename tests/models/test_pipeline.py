@@ -45,6 +45,19 @@ def test_pipeline_result_validation() -> None:
     assert_that(result.steps_completed[0]).is_equal_to(PipelineStep.DISCOVERY)
 
 
+def test_run_metadata_rejects_completed_at_before_started_at() -> None:
+    """RunMetadata rejects completed_at earlier than started_at."""
+    started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+    completed = started - timedelta(seconds=1)
+
+    with pytest.raises(ValidationError, match="completed_at cannot be earlier"):
+        RunMetadata(
+            started_at=started,
+            completed_at=completed,
+            winnow_version="0.0.3",
+        )
+
+
 def test_pipeline_result_rejects_inconsistent_duplicate_counts() -> None:
     """PipelineResult rejects duplicate_files_found below group count."""
     started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
