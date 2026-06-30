@@ -26,8 +26,22 @@ def test_duplicate_pair_validation() -> None:
 def test_duplicate_pair_rejects_identical_paths() -> None:
     """DuplicatePair rejects pairs where both paths are identical."""
     same_path = Path("/photos/a.jpg")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Duplicate pair paths must differ"):
         DuplicatePair(path_a=same_path, path_b=same_path)
+
+
+def test_duplicate_pair_rejects_identical_paths_after_assignment() -> None:
+    """DuplicatePair re-validates when either path is assigned after construction."""
+    path_a = Path("/photos/a.jpg")
+    path_b = Path("/photos/b.jpg")
+
+    pair = DuplicatePair(path_a=path_a, path_b=path_b)
+    with pytest.raises(ValidationError, match="Duplicate pair paths must differ"):
+        pair.path_a = path_b
+
+    pair = DuplicatePair(path_a=path_a, path_b=path_b)
+    with pytest.raises(ValidationError, match="Duplicate pair paths must differ"):
+        pair.path_b = path_a
 
 
 def test_duplicate_group_add_file_and_to_dict() -> None:

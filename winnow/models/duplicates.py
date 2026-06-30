@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from winnow.models.media import MediaType
 
@@ -37,25 +44,46 @@ class DuplicatePair(BaseModel):
     path_b: Path
     similarity: float = Field(default=1.0, ge=0.0, le=1.0)
 
-    @field_validator("path_b")
+    @field_validator("path_a", "path_b", mode="after")
     @classmethod
-    def paths_must_differ(cls, path_b: Path, info: ValidationInfo) -> Path:
-        """Ensure the two paired paths are not identical.
+    def path_must_differ_from_sibling(
+        cls,
+        value: Path,
+        info: ValidationInfo,
+    ) -> Path:
+        """Ensure the assigned path differs from the sibling path.
 
         Args:
-            path_b: Second path in the duplicate pair.
+            value: Path value being validated.
             info: Validation context from Pydantic.
 
         Returns:
-            The validated second path.
+            The validated path.
+
+        Raises:
+            ValueError: If the path matches the sibling path.
+        """
+        sibling_field = "path_b" if info.field_name == "path_a" else "path_a"
+        sibling = info.data.get(sibling_field)
+        if sibling is not None and value == sibling:
+            msg = "Duplicate pair paths must differ"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def paths_must_differ(self) -> DuplicatePair:
+        """Ensure the two paired paths are not identical.
+
+        Returns:
+            Validated duplicate pair.
 
         Raises:
             ValueError: If both paths refer to the same file.
         """
-        if hasattr(info, "data") and info.data.get("path_a") == path_b:
+        if self.path_a == self.path_b:
             msg = "Duplicate pair paths must differ"
             raise ValueError(msg)
-        return path_b
+        return self
 
 
 class DuplicateGroup(BaseModel):
