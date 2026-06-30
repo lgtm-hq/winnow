@@ -81,3 +81,14 @@ def test_quality_score_validation() -> None:
         height=1080,
     )
     assert_that(score.composite_score).is_equal_to(0.91)
+
+
+def test_quality_score_rejects_negative_values() -> None:
+    """QualityScore rejects negative composite and quality metric values."""
+    with pytest.raises(ValidationError):
+        QualityScore(
+            composite_score=-1,
+            resolution=0,
+            quality_metric=-0.5,
+            file_size=0,
+        )

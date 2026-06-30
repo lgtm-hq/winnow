@@ -22,14 +22,14 @@ class MediaMetadata(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-    width: int | None = None
-    height: int | None = None
-    duration_seconds: float | None = None
+    width: int | None = Field(default=None, ge=0)
+    height: int | None = Field(default=None, ge=0)
+    duration_seconds: float | None = Field(default=None, ge=0)
     codec: str | None = None
-    bitrate: int | None = None
+    bitrate: int | None = Field(default=None, ge=0)
     image_format: str | None = None
     color_mode: str | None = None
-    bit_depth: int | None = None
+    bit_depth: int | None = Field(default=None, ge=0)
     has_alpha: bool | None = None
 
 

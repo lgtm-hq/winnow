@@ -22,14 +22,14 @@ class QualityScore(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-    composite_score: float
+    composite_score: float = Field(ge=0)
     resolution: int = Field(ge=0)
-    quality_metric: float
+    quality_metric: float = Field(ge=0)
     file_size: int = Field(ge=0)
     creation_date: datetime | None = None
     image_format: str | None = None
     color_mode: str | None = None
-    bit_depth: int | None = None
+    bit_depth: int | None = Field(default=None, ge=0)
     has_alpha: bool | None = None
     width: int | None = Field(default=None, ge=0)
     height: int | None = Field(default=None, ge=0)

@@ -48,6 +48,24 @@ def test_media_file_rejects_negative_size() -> None:
         )
 
 
+def test_media_metadata_rejects_negative_metrics() -> None:
+    """MediaMetadata rejects negative dimensions and media metrics."""
+    with pytest.raises(ValidationError):
+        MediaMetadata(
+            width=-1, height=-1, duration_seconds=-1, bitrate=-1, bit_depth=-8
+        )
+
+    with pytest.raises(ValidationError):
+        MediaFile(
+            path=Path("/photos/example.jpg"),
+            media_type=MediaType.VIDEO,
+            creation_date=datetime(2024, 1, 1, tzinfo=UTC),
+            extension=".mp4",
+            size_bytes=1024,
+            metadata=MediaMetadata(width=-1, duration_seconds=-1, bitrate=-1),
+        )
+
+
 def test_media_type_serialization() -> None:
     """MediaType serializes to lowercase auto values."""
     assert_that(MediaType.VIDEO.value).is_equal_to("video")
