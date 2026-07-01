@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import MutableMapping
 from pathlib import Path
+from types import MappingProxyType
+from typing import cast
 
 import pytest
 from assertpy import assert_that
 
+import winnow
 from winnow.exceptions import (
     CacheError,
     ConfigError,
@@ -62,9 +66,12 @@ def test_winnow_error_str_includes_context_fields(tmp_path: Path) -> None:
     rendered = str(error)
 
     assert_that(rendered).contains("hash mismatch")
-    assert_that(rendered).contains(f"file_path={media_path}")
     assert_that(rendered).contains("operation=verify_hash")
+    assert_that(rendered).contains(f"file_path={media_path}")
     assert_that(rendered).contains("details={'algorithm': 'blake3'}")
+    assert_that(rendered.index("operation=verify_hash")).is_less_than(
+        rendered.index(f"file_path={media_path}"),
+    )
 
 
 def test_winnow_error_as_dict_includes_type_and_context(tmp_path: Path) -> None:
@@ -97,6 +104,32 @@ def test_error_context_as_dict_omits_empty_fields() -> None:
     context = ErrorContext(operation="scan")
 
     assert_that(context.as_dict()).is_equal_to({"operation": "scan"})
+
+
+def test_error_context_details_are_immutable() -> None:
+    """ErrorContext copies and freezes details so callers cannot mutate them."""
+    mutable_details = {"codec": "hevc"}
+    context = ErrorContext(details=mutable_details)
+
+    mutable_details["injected"] = "value"
+
+    assert_that(context.details).is_equal_to({"codec": "hevc"})
+    assert_that(isinstance(context.details, MappingProxyType)).is_true()
+    with pytest.raises(TypeError):
+        cast(MutableMapping[str, object], context.details)["injected"] = "value"
+
+
+def test_winnow_error_as_dict_always_includes_context_key() -> None:
+    """Structured dict output always includes a context object."""
+    payload = WinnowError("simple failure").as_dict()
+
+    assert_that(payload).is_equal_to(
+        {
+            "type": "WinnowError",
+            "message": "simple failure",
+            "context": {},
+        },
+    )
 
 
 def test_winnow_error_supports_exception_chaining() -> None:
@@ -152,15 +185,19 @@ def test_domain_exceptions_can_be_caught_by_base_type() -> None:
 
 def test_no_bare_except_in_winnow_source() -> None:
     """Winnow source must not use bare except clauses."""
-    package_root = Path(__file__).resolve().parents[1] / "winnow"
-    offenders: list[str] = []
+    package_root = Path(winnow.__file__).resolve().parent
+    repo_root = package_root.parent
+    source_files = list(package_root.rglob("*.py"))
 
-    for source_path in package_root.rglob("*.py"):
-        tree = ast.parse(source_path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ExceptHandler) and node.type is None:
-                offenders.append(
-                    f"{source_path.relative_to(package_root.parent)}:{node.lineno}",
-                )
+    assert_that(source_files).is_not_empty()
+
+    offenders = [
+        f"{source_path.relative_to(repo_root)}:{node.lineno}"
+        for source_path in source_files
+        for node in ast.walk(
+            ast.parse(source_path.read_text(encoding="utf-8")),
+        )
+        if isinstance(node, ast.ExceptHandler) and node.type is None
+    ]
 
     assert_that(offenders).is_empty()

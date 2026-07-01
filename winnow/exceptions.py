@@ -13,15 +13,24 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=True)
 class ErrorContext:
     """Structured context attached to a :class:`WinnowError`."""
 
     operation: str | None = None
     file_path: Path | str | None = None
     details: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Normalize details into an immutable mapping."""
+        object.__setattr__(
+            self,
+            "details",
+            MappingProxyType(dict(self.details)),
+        )
 
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-friendly dict representation of this context.
@@ -68,10 +77,10 @@ class WinnowError(Exception):
     def __str__(self) -> str:
         """Format the error message with any structured context."""
         parts = [self.message]
-        if self.context.file_path is not None:
-            parts.append(f"file_path={self.context.file_path}")
         if self.context.operation is not None:
             parts.append(f"operation={self.context.operation}")
+        if self.context.file_path is not None:
+            parts.append(f"file_path={self.context.file_path}")
         if self.context.details:
             parts.append(f"details={dict(self.context.details)}")
         return " | ".join(parts)
@@ -82,14 +91,11 @@ class WinnowError(Exception):
         Returns:
             Error type, message, and any populated context fields.
         """
-        payload: dict[str, object] = {
+        return {
             "type": type(self).__name__,
             "message": self.message,
+            "context": self.context.as_dict(),
         }
-        context = self.context.as_dict()
-        if context:
-            payload["context"] = context
-        return payload
 
 
 class ConfigError(WinnowError):
