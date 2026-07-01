@@ -58,6 +58,19 @@ def test_run_metadata_rejects_completed_at_before_started_at() -> None:
         )
 
 
+def test_run_metadata_rejects_mismatched_timezone_awareness() -> None:
+    """RunMetadata rejects mixed naive and timezone-aware timestamps."""
+    started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+    completed = datetime(2024, 6, 1, 12, 1)
+
+    with pytest.raises(ValidationError, match="timezone-aware or both be naive"):
+        RunMetadata(
+            started_at=started,
+            completed_at=completed,
+            winnow_version="0.0.3",
+        )
+
+
 def test_pipeline_result_rejects_inconsistent_duplicate_counts() -> None:
     """PipelineResult rejects duplicate_files_found below group count."""
     started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)

@@ -42,7 +42,17 @@ class RunMetadata(BaseModel):
         Raises:
             ValueError: If completed_at precedes started_at.
         """
-        if self.completed_at is not None and self.completed_at < self.started_at:
+        if self.completed_at is None:
+            return self
+        started_aware = self.started_at.tzinfo is not None
+        completed_aware = self.completed_at.tzinfo is not None
+        if started_aware != completed_aware:
+            msg = (
+                "started_at and completed_at must both be timezone-aware "
+                "or both be naive"
+            )
+            raise ValueError(msg)
+        if self.completed_at < self.started_at:
             msg = "completed_at cannot be earlier than started_at"
             raise ValueError(msg)
         return self
