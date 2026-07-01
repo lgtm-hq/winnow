@@ -21,6 +21,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.1.0] - 2026-07-01
+
+### Features
+
+- **models**: add Pydantic domain models and StrEnum types (#108) (6a70e8c)
+
+### Documentation
+
+- **adr**: add ADR 0001 API-first platform CLI-first phasing (#107) (a9b7de1)
+
+### Other Changes
+
+- **repo**: remove org ruleset payloads from winnow (4f9a4a0)
+
 ## [0.0.3] - 2026-06-13
 
 ### Bug Fixes
