@@ -33,6 +33,8 @@ def test_pipeline_result_validation() -> None:
     started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
     run = RunMetadata(started_at=started, winnow_version="0.0.3")
     group = DuplicateGroup(group_number=1, media_type=MediaType.IMAGE)
+    group.add_file(Path("/photos/a.jpg"))
+    group.add_file(Path("/photos/b.jpg"))
     result = PipelineResult(
         run=run,
         steps_completed=[PipelineStep.DISCOVERY, PipelineStep.SCAN],
@@ -72,17 +74,19 @@ def test_run_metadata_rejects_mismatched_timezone_awareness() -> None:
 
 
 def test_pipeline_result_rejects_inconsistent_duplicate_counts() -> None:
-    """PipelineResult rejects duplicate_files_found below group count."""
+    """PipelineResult rejects duplicate_files_found that do not match group files."""
     started = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
     run = RunMetadata(started_at=started, winnow_version="0.0.3")
-    groups = [
-        DuplicateGroup(group_number=1, media_type=MediaType.IMAGE),
-        DuplicateGroup(group_number=2, media_type=MediaType.VIDEO),
-    ]
+    group = DuplicateGroup(group_number=1, media_type=MediaType.IMAGE)
+    group.add_file(Path("/photos/a.jpg"))
+    group.add_file(Path("/photos/b.jpg"))
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError,
+        match="duplicate_files_found must match duplicate file count in groups",
+    ):
         PipelineResult(
             run=run,
-            duplicate_groups=groups,
+            duplicate_groups=[group],
             duplicate_files_found=1,
         )

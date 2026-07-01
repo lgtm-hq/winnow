@@ -83,7 +83,7 @@ class PipelineResult(BaseModel):
 
     @model_validator(mode="after")
     def duplicate_counts_are_consistent(self) -> PipelineResult:
-        """Ensure duplicate file count is not less than group count.
+        """Ensure duplicate_files_found matches files recorded in groups.
 
         Returns:
             Validated pipeline result.
@@ -91,8 +91,9 @@ class PipelineResult(BaseModel):
         Raises:
             ValueError: If duplicate file count is inconsistent.
         """
-        if self.duplicate_files_found < len(self.duplicate_groups):
-            msg = "duplicate_files_found cannot be less than duplicate group count"
+        duplicate_file_count = sum(len(group.files) for group in self.duplicate_groups)
+        if self.duplicate_files_found != duplicate_file_count:
+            msg = "duplicate_files_found must match duplicate file count in groups"
             raise ValueError(msg)
         return self
 
