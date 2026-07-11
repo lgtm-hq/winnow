@@ -48,9 +48,20 @@ jobs:
       # lacks. On pull_request the action prefers the runner toolcache and
       # rarely downloads, but merge_group/push runs pull the linked default
       # CLI version and hard-fail on the egress block when it misses the
-      # toolcache (e.g. v2.26.0 rollout, 2026-07-11).
-      allowed-endpoints: 'release-assets.githubusercontent.com:443'
-      allowed-endpoints-mode: append
+      # toolcache (e.g. v2.26.0 rollout, 2026-07-11). The reusable's setup
+      # job hardens with this raw input before the allowlist resolver is
+      # checked out, so the full endpoint list must be passed (the reusable
+      # input default plus the release-assets host) rather than an
+      # append-mode single host.
+      allowed-endpoints: >
+        github.com:443
+        api.github.com:443
+        codeload.github.com:443
+        objects.githubusercontent.com:443
+        raw.githubusercontent.com:443
+        uploads.github.com:443
+        pipelines.actions.githubusercontent.com:443
+        release-assets.githubusercontent.com:443
     permissions:
       # read: checkout repository for CodeQL analysis
       contents: read
