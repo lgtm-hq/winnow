@@ -20,7 +20,7 @@ concurrency:
 jobs:
   # Compat mode: multi-version matrix, no coverage or PR comments
   # (workflow-contract § Compat vs coverage contract, #340).
-  # Org ruleset (checks-winnow): test / Python Compatibility
+  # Org ruleset (checks-winnow): test / 🧪 Python Compatibility
   #                              test / Aggregate Python Results
   test:
     # yamllint disable-line rule:line-length
@@ -32,7 +32,7 @@ jobs:
       coverage: false
       extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
-      job-name: Python Compatibility
+      job-name: '🧪 Python Compatibility'
       runner-image: ubuntu-24.04
       tooling-ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
       egress-policy: block

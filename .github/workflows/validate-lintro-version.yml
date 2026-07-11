@@ -5,7 +5,7 @@ name: Quality Check - Lintro Version Sync
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # No paths filter: `validate / Validate Lintro Version` is a required
+    # No paths filter: `validate / 🧾 Validate Lintro Version` is a required
     # status check, and a path-filtered workflow that does not run leaves
     # that context absent (not skipped), which permanently blocks PRs and
     # merge-queue entries that touch only non-matching files
@@ -35,6 +35,8 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-validate-lintro-version.yml@66cad82ead0e5d119928c895c7d7da9c837989e5 # v0.52.3
     with:
       tooling-ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
+      # Org ruleset (checks-winnow): validate / 🧾 Validate Lintro Version
+      job-name: '🧾 Validate Lintro Version'
       # Caller repos must pass lintro-image; resolve-lintro-image.sh defaults to
       # lgtm-ci-owned paths that do not exist in consumer repositories.
       # yamllint disable-line rule:line-length
