@@ -5,17 +5,6 @@
   ],
   "packageRules": [
     {
-      "matchDatasources": ["docker"],
-      "matchUpdateTypes": ["digest", "patch"],
-      "automerge": true,
-      "automergeType": "branch"
-    },
-    {
-      "groupName": "pytest packages",
-      "groupSlug": "pytest",
-      "matchPackageNames": ["/^pytest/"]
-    },
-    {
       "groupName": "linting tools",
       "groupSlug": "linting-tools",
       "matchPackageNames": ["lintro"],
