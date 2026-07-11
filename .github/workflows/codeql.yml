@@ -43,6 +43,14 @@ jobs:
       tooling-ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
       egress-policy: block
       egress-preset: github-tooling
+      # CodeQL bundle downloads redirect to
+      # release-assets.githubusercontent.com, which the github-tooling preset
+      # lacks. On pull_request the action prefers the runner toolcache and
+      # rarely downloads, but merge_group/push runs pull the linked default
+      # CLI version and hard-fail on the egress block when it misses the
+      # toolcache (e.g. v2.26.0 rollout, 2026-07-11).
+      allowed-endpoints: 'release-assets.githubusercontent.com:443'
+      allowed-endpoints-mode: append
     permissions:
       # read: checkout repository for CodeQL analysis
       contents: read
