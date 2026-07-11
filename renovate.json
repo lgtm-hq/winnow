@@ -2,13 +2,5 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>lgtm-hq/.github:renovate-config"
-  ],
-  "packageRules": [
-    {
-      "groupName": "linting tools",
-      "groupSlug": "linting-tools",
-      "matchPackageNames": ["lintro"],
-      "automerge": false
-    }
   ]
 }
