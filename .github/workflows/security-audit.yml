@@ -25,6 +25,8 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@66cad82ead0e5d119928c895c7d7da9c837989e5 # v0.52.3
     with:
       tooling-ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
+      # Org ruleset (checks-winnow): security-audit / 🔐 Security Audit
+      job-name: '🔐 Security Audit'
       # yamllint disable-line rule:line-length
       lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
       runner-image: ubuntu-24.04
@@ -36,58 +38,6 @@ jobs:
       contents: read
       # read: access package metadata used by the security audit tooling
       packages: read
-
-  # Org ruleset (checks-winnow): 🔐 Security Audit
-  security-audit-required:
-    name: '🔐 Security Audit'
-    needs: security-audit
-    if: >-
-      always() &&
-      (
-        github.event_name != 'pull_request' ||
-        github.event.pull_request.draft == false
-      )
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      # Direct step-security invocation with a literal allowlist: egress
-      # enforcement requires the remote action's pre hook, which GitHub skips
-      # for workspace-local composites and cannot read step outputs
-      # (lgtm-ci workflow-contract § egress enforcement). Endpoints mirror the
-      # github-tooling preset.
-      - name: Harden runner
-        # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            raw.githubusercontent.com:443
-            uploads.github.com:443
-            pipelines.actions.githubusercontent.com:443
-
-      - name: Checkout lgtm-ci tooling
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: lgtm-hq/lgtm-ci
-          path: .lgtm-ci-tooling
-          ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
-          sparse-checkout: |
-            scripts/ci/
-          sparse-checkout-cone-mode: true
-          persist-credentials: false
-
-      - name: Assert required check
-        env:
-          UPSTREAM_RESULT: ${{ needs.security-audit.result }}
-          STATUS_OUTPUT: ${{ needs.security-audit.outputs.status }}
-          STATUS_EXPECTED: passed
-        run: bash .lgtm-ci-tooling/scripts/ci/actions/assert-required-check.sh
 
   publish-security-audit-comment:
     needs: security-audit
