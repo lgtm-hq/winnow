@@ -28,8 +28,9 @@ jobs:
       egress-policy: block
       egress-preset: sbom
     permissions:
-      # read: checkout repository for SBOM generation
-      contents: read
+      # write: attach SBOM to release assets (required by reusable-sbom job
+      # permissions at v0.52.3; also covers repository checkout)
+      contents: write
       # write: upload vulnerability findings to the Security tab
       security-events: write
       # write: OIDC token for SBOM attestation signing

@@ -97,3 +97,5 @@ jobs:
       pages: write
       # write: OIDC token for Pages deployment
       id-token: write
+      # write: delete stale same-run Pages artifacts on rerun (lgtm-ci#415)
+      actions: write
