@@ -1,6 +1,7 @@
 # Winnow
 
 <!-- markdownlint-disable MD013 -- badge URLs exceed 88 characters -->
+
 [![CI](https://github.com/lgtm-hq/winnow/actions/workflows/test-ci.yml/badge.svg)](https://github.com/lgtm-hq/winnow/actions/workflows/test-ci.yml)
 [![Coverage](https://codecov.io/gh/lgtm-hq/winnow/branch/main/graph/badge.svg)](https://codecov.io/gh/lgtm-hq/winnow)
 [![PyPI](https://img.shields.io/pypi/v/winnow-media?label=pypi)](https://pypi.org/project/winnow-media/)
@@ -32,11 +33,11 @@ recommended).
 ```bash
 uv pip install winnow-media
 # or: pip install winnow-media
-winnow --version
+uv run winnow --version
 ```
 
-Optional dependency groups (`face`, `cv`, `ai-detect`) are declared in
-`pyproject.toml` but not wired to features yet.
+Optional dependency groups (`face`, `cv`, `ai-detect`) are declared in `pyproject.toml`
+but not wired to features yet.
 
 ### From source
 
@@ -44,7 +45,7 @@ Optional dependency groups (`face`, `cv`, `ai-detect`) are declared in
 git clone https://github.com/lgtm-hq/winnow.git
 cd winnow
 make setup    # uv sync --dev
-winnow --help
+uv run winnow --help
 ```
 
 ## Usage
@@ -53,18 +54,18 @@ Only the commands below work in the current release. There are no media-processi
 subcommands yet.
 
 ```bash
-winnow              # prints version and points to --help
-winnow --help       # show available options
-winnow --version    # print package version
+uv run winnow              # prints version and points to --help
+uv run winnow --help       # show available options
+uv run winnow --version    # print package version
 ```
 
 Example output:
 
 ```text
-$ winnow
+$ uv run winnow
 winnow 0.2.0 — use --help for commands.
 
-$ winnow --version
+$ uv run winnow --version
 winnow, version 0.2.0
 ```
 
@@ -72,14 +73,14 @@ winnow, version 0.2.0
 
 Future releases will add subcommands for scanning libraries, grouping duplicates, and
 applying organization rules. Shapes will follow the domain models in `winnow/models/`
-and the API-first plan in [ADR 0001](docs/adr/0001-api-first-platform.md). Do not
-expect the examples below to work today:
+and the API-first plan in [ADR 0001](docs/adr/0001-api-first-platform.md). Do not expect
+the examples below to work today:
 
 ```bash
 # PLANNED — not available yet
-winnow scan /path/to/photos
-winnow duplicates review
-winnow organize --dry-run
+uv run winnow scan /path/to/photos
+uv run winnow duplicates review
+uv run winnow organize --dry-run
 ```
 
 ## Features
@@ -89,18 +90,20 @@ winnow organize --dry-run
 - **Skeleton CLI** — Click entry point with `--help` and `--version`
 - **Domain models** — Pydantic v2 models for media files, duplicates, pipeline steps,
   and configuration ([`winnow/models/`](winnow/models/))
-- **Exception hierarchy** — structured errors with context ([`winnow/exceptions.py`](winnow/exceptions.py))
+- **Exception hierarchy** — structured errors with context
+  ([`winnow/exceptions.py`](winnow/exceptions.py))
 - **Quality bar** — lintro lint/format, 85% test coverage gate, multi-version CI
 
 ### Roadmap
 
-Winnow follows an [API-first, CLI-first phasing plan](docs/adr/0001-api-first-platform.md):
+Winnow follows an
+[API-first, CLI-first phasing plan](docs/adr/0001-api-first-platform.md):
 
-| Phase | Focus | Highlights |
-| ----- | ----- | ---------- |
-| **Now** | Foundation | Models, CLI skeleton, CI/CD, ADRs |
+| Phase       | Focus        | Highlights                                                                                                       |
+| ----------- | ------------ | ---------------------------------------------------------------------------------------------------------------- |
+| **Now**     | Foundation   | Models, CLI skeleton, CI/CD, ADRs                                                                                |
 | **Phase 1** | Core product | Library scanning, duplicate detection, organization workflows via CLI **and** HTTP API sharing one service layer |
-| **Phase 2** | Web UI | Presentation-only frontend over the OpenAPI contract |
+| **Phase 2** | Web UI       | Presentation-only frontend over the OpenAPI contract                                                             |
 
 Planned capabilities (not shipped):
 
