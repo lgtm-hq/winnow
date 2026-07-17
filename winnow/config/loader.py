@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import cast
 
 from dynaconf import Dynaconf
+from dynaconf.utils.parse_conf import boolean_fix, parse_conf_data
 from pydantic import TypeAdapter, ValidationError
 
 from winnow.config.defaults import (
@@ -22,8 +23,7 @@ from winnow.models.config import WinnowConfig
 from winnow.models.enums import SymlinkPolicy
 
 _INTERNAL_DYNACONF_KEYS = frozenset({"LOAD_DOTENV"})
-_DISABLED_ENVVAR_PREFIX = "__WINNOW_ENV_DISABLED__"
-_DYNACONF_ENVVAR_PREFIX = "DYNACONF_"
+_ENVVAR_PREFIX = f"{ENVVAR_PREFIX}_"
 _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
 _BOOL_ADAPTER = TypeAdapter(bool)
@@ -324,20 +324,18 @@ def _load_dynaconf_data(
         ConfigError: If Dynaconf cannot parse the config file.
     """
     settings_files = [str(config_path)] if config_path is not None else []
-    env_prefix = ENVVAR_PREFIX if load_env else _DISABLED_ENVVAR_PREFIX
-    hidden_env_prefixes = [_DYNACONF_ENVVAR_PREFIX]
-    if not load_env:
-        hidden_env_prefixes.append(f"{ENVVAR_PREFIX}_")
     try:
-        with _hidden_environment_prefixes(tuple(hidden_env_prefixes)):
-            settings = Dynaconf(
-                envvar_prefix=env_prefix,
-                settings_files=settings_files,
-                environments=False,
-                load_dotenv=False,
-                merge_enabled=True,
-            )
-            raw_data = cast("Mapping[str, object]", settings.as_dict())
+        settings = Dynaconf(
+            envvar_prefix=None,
+            settings_files=settings_files,
+            environments=False,
+            load_dotenv=False,
+            merge_enabled=True,
+        )
+        raw_data = cast("Mapping[str, object]", settings.as_dict())
+        env_data, explicit_env_keys = (
+            _load_env_data(dict(os.environ)) if load_env else ({}, frozenset())
+        )
     except Exception as exc:
         raise ConfigError(
             "Unable to load Winnow configuration",
@@ -351,28 +349,90 @@ def _load_dynaconf_data(
         for key, value in raw_data.items()
         if key not in _INTERNAL_DYNACONF_KEYS
     }
-    return _normalize_mapping(user_data)
+    normalized_data = _normalize_mapping(user_data)
+    _merge_mapping(normalized_data, env_data)
+    _sync_symlink_env_overrides(normalized_data, explicit_env_keys)
+    return normalized_data
 
 
-@contextmanager
-def _hidden_environment_prefixes(prefixes: tuple[str, ...]) -> Iterator[None]:
-    """Temporarily hide environment variables with selected prefixes.
+def _load_env_data(
+    environ: Mapping[str, str],
+) -> tuple[dict[str, object], frozenset[str]]:
+    """Load Winnow environment overrides from an explicit environment snapshot.
 
     Args:
-        prefixes: Environment variable name prefixes to hide.
+        environ: Environment mapping to inspect.
 
-    Yields:
-        Control while matching environment variables are hidden.
+    Returns:
+        Parsed override data and explicitly provided top-level setting keys.
     """
-    hidden_values = {
-        key: value for key, value in os.environ.items() if key.startswith(prefixes)
-    }
-    for key in hidden_values:
-        os.environ.pop(key)
-    try:
-        yield
-    finally:
-        os.environ.update(hidden_values)
+    data: dict[str, object] = {}
+    explicit_keys: set[str] = set()
+    for env_key, env_value in environ.items():
+        if not env_key.startswith(_ENVVAR_PREFIX):
+            continue
+        setting_key = env_key.removeprefix(_ENVVAR_PREFIX)
+        key_parts = [part.lower() for part in setting_key.split("__") if part]
+        if not key_parts:
+            continue
+        if len(key_parts) == 1:
+            explicit_keys.add(key_parts[0])
+        parsed_value = parse_conf_data(boolean_fix(env_value), tomlfy=True)
+        _set_env_value(data=data, key_parts=key_parts, value=parsed_value)
+
+    return data, frozenset(explicit_keys)
+
+
+def _set_env_value(
+    data: dict[str, object],
+    key_parts: list[str],
+    value: object,
+) -> None:
+    """Set a parsed environment value into nested config data."""
+    current = data
+    for key_part in key_parts[:-1]:
+        child = current.get(key_part)
+        if not isinstance(child, dict):
+            child = {}
+            current[key_part] = child
+        current = child
+    current[key_parts[-1]] = value
+
+
+def _merge_mapping(
+    data: dict[str, object],
+    overrides: Mapping[str, object],
+) -> None:
+    """Merge overrides into config data, preserving unrelated nested keys."""
+    for key, value in overrides.items():
+        existing_value = data.get(key)
+        if isinstance(existing_value, dict) and isinstance(value, Mapping):
+            _merge_mapping(existing_value, value)
+            continue
+        data[key] = value
+
+
+def _sync_symlink_env_overrides(
+    data: dict[str, object],
+    explicit_env_keys: frozenset[str],
+) -> None:
+    """Reconcile legacy symlink settings when only one env override is present."""
+    has_follow_override = _FOLLOW_SYMLINKS_KEY in explicit_env_keys
+    has_policy_override = _SYMLINK_POLICY_KEY in explicit_env_keys
+    if has_follow_override == has_policy_override:
+        return
+    if has_follow_override:
+        _sync_symlink_settings(
+            data=data,
+            key=_FOLLOW_SYMLINKS_KEY,
+            value=data.get(_FOLLOW_SYMLINKS_KEY),
+        )
+        return
+    _sync_symlink_settings(
+        data=data,
+        key=_SYMLINK_POLICY_KEY,
+        value=data.get(_SYMLINK_POLICY_KEY),
+    )
 
 
 def _normalize_mapping(data: Mapping[str, object]) -> dict[str, object]:
@@ -497,10 +557,25 @@ def _write_config_file(config: WinnowConfig, config_path: Path) -> None:
     Raises:
         ConfigError: If the file cannot be written.
     """
+    temp_path: Path | None = None
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(render_config_yaml(config), encoding="utf-8")
+        with NamedTemporaryFile(
+            "w",
+            dir=config_path.parent,
+            encoding="utf-8",
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(render_config_yaml(config))
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        temp_path.replace(config_path)
     except OSError as exc:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
         raise ConfigError(
             "Unable to write Winnow configuration",
             operation="write_config",

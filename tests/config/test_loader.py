@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import cast
 
@@ -99,6 +100,61 @@ def test_load_config_applies_environment_overrides(
     assert_that(config.dry_run).is_true()
     assert_that(config.workers).is_equal_to(6)
     assert_that(config.cache.enabled).is_false()
+
+
+def test_load_config_syncs_follow_symlinks_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify WINNOW_FOLLOW_SYMLINKS alone derives the matching policy."""
+    monkeypatch.setenv("WINNOW_FOLLOW_SYMLINKS", "true")
+
+    config = load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that(config.follow_symlinks).is_true()
+    assert_that(config.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+
+
+def test_load_config_syncs_symlink_policy_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify WINNOW_SYMLINK_POLICY alone derives the matching follow flag."""
+    monkeypatch.setenv("WINNOW_SYMLINK_POLICY", "follow")
+
+    config = load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that(config.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+    assert_that(config.follow_symlinks).is_true()
+
+
+def test_load_config_preserves_explicit_symlink_environment_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify explicit conflicting symlink env overrides remain invalid."""
+    monkeypatch.setenv("WINNOW_FOLLOW_SYMLINKS", "true")
+    monkeypatch.setenv("WINNOW_SYMLINK_POLICY", "skip")
+
+    with pytest.raises(ConfigError) as error:
+        load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that(str(error.value)).contains("validate_config")
+
+
+def test_load_config_does_not_mutate_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify config loading leaves matching environment variables untouched."""
+    monkeypatch.setenv("WINNOW_WORKERS", "6")
+    monkeypatch.setenv("DYNACONF_WORKERS", "8")
+
+    config = load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that(config.workers).is_equal_to(6)
+    assert_that(os.environ["WINNOW_WORKERS"]).is_equal_to("6")
+    assert_that(os.environ["DYNACONF_WORKERS"]).is_equal_to("8")
 
 
 def test_load_config_can_disable_environment_overrides(
