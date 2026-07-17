@@ -830,7 +830,14 @@ def _stage_destination_for_replace(destination: Path) -> tuple[Path, bool]:
     if destination.is_dir() and not destination.is_symlink():
         destination.replace(tombstone)
         return tombstone, True
-    copy_path(source=destination, destination=tombstone)
+    try:
+        copy_path(source=destination, destination=tombstone)
+    except (OSError, shutil.Error) as error:
+        try:
+            _cleanup_path(tombstone)
+        except (OSError, shutil.Error) as cleanup_error:
+            error.add_note(f"cleanup failed: {cleanup_error}")
+        raise
     return tombstone, False
 
 

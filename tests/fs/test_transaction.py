@@ -23,6 +23,7 @@ from winnow.fs import (
     transactional_file_ops,
 )
 from winnow.fs import transaction as transaction_module
+from winnow.fs._path_ops import copy_path as copy_path_helper
 
 
 def test_atomic_copy_overwrites_destination_and_records_backup(
@@ -651,6 +652,39 @@ def test_copy_overwrite_keeps_destination_present_throughout(
 
     assert_that(destination.read_text(encoding="utf-8")).is_equal_to("new\n")
     assert_that(observed_missing).does_not_contain(True)
+
+
+def test_copy_overwrite_failure_removes_partial_tombstone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed overwrite staging copy removes its partial tombstone."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    def fail_destination_staging_copy(
+        *,
+        source: Path,
+        destination: Path,
+    ) -> None:
+        """Write a partial tombstone, then fail staging the overwritten file."""
+        if source == tmp_path / "destination.txt":
+            destination.write_text("partial\n", encoding="utf-8")
+            raise OSError("staging copy failed")
+        copy_path_helper(source=source, destination=destination)
+
+    monkeypatch.setattr(transaction_module, "copy_path", fail_destination_staging_copy)
+
+    with pytest.raises(FileSystemOperationError):
+        atomic_copy(source=source, destination=destination, backup=False)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("old\n")
+    assert_that([path.name for path in tmp_path.iterdir()]).contains_only(
+        "source.txt",
+        "destination.txt",
+    )
 
 
 def test_rollback_restores_overwritten_file_content(tmp_path: Path) -> None:
