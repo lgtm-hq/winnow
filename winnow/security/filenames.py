@@ -97,9 +97,14 @@ def sanitize_filename(
         )
 
     if len(os.fsencode(sanitized)) > max_length:
-        # The first character is guaranteed non-strippable by the strip above,
-        # so truncation preserves a non-empty component.
         sanitized = _truncate_to_byte_length(sanitized, max_length).rstrip(". ")
+        if not sanitized:
+            raise SecurityError(
+                "filename cannot be sanitized to a safe value",
+                operation="sanitize_filename",
+                file_path=name,
+                details={"sanitized": sanitized},
+            )
 
     return sanitized
 

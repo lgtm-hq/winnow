@@ -132,3 +132,9 @@ def test_sanitize_filename_does_not_split_multibyte_character_at_limit() -> None
 
     assert_that(result).is_equal_to("😀")
     assert_that(len(os.fsencode(result))).is_less_than_or_equal_to(5)
+
+
+def test_sanitize_filename_rejects_multibyte_character_over_byte_limit() -> None:
+    """A leading character wider than max_length cannot yield a safe filename."""
+    with pytest.raises(SecurityError, match="cannot be sanitized"):
+        sanitize_filename("😀", max_length=3)
