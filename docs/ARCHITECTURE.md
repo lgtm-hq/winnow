@@ -67,6 +67,8 @@ flowchart TB
 
   CLI --> Pipeline
   API --> Pipeline
+  CLI --> Config
+  API --> Config
   Pipeline --> Services
   Pipeline --> Config
   Services --> Models
@@ -74,6 +76,10 @@ flowchart TB
   Services --> Config
   FS --> Security
 ```
+
+Adapters may read `config/` directly for bootstrapping only (loading and validating
+settings at startup); domain logic receives configuration through services and the
+pipeline rather than reading it ad hoc.
 
 | Layer                    | Responsibility                                      | Must not contain              |
 | ------------------------ | --------------------------------------------------- | ----------------------------- |
@@ -177,6 +183,10 @@ defines the contract today:
 | 3    | `SCAN`          | Hash content (`hash/`), dated layout (epic [#7][epic-7] "Execution") |
 | 4    | `DEDUPLICATION` | Group duplicates, rank quality, propose actions                      |
 | 5    | `REPORTING`     | Persist run metadata, export report artifacts                        |
+
+Naming note: the `SCAN` enum value corresponds to the step epic [#7][epic-7] calls
+"Execution"; content hashing itself is scoped by epic [#6][epic-6], and the final split
+between steps 3 and 4 is not yet settled.
 
 `PipelineResult` aggregates `RunMetadata`, completed steps, duplicate groups, counts,
 and non-fatal error strings. Step implementations will live under
