@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "winnow-media"
-version = "0.4.0"
+version = "0.5.0"
 description = "Winnow your media library — organize photos and videos, detect duplicates, and keep the best copies."
 readme = "README.md"
 requires-python = ">=3.11"
