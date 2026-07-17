@@ -725,6 +725,91 @@ def test_rollback_or_raise_raises_on_failed_rollback_step(
             active_transaction.rollback_or_raise()
 
 
+def _tree_snapshot(root: Path) -> dict[str, str | None]:
+    """Capture relative paths and file contents beneath a directory tree."""
+    snapshot: dict[str, str | None] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        if path.is_file() and not path.is_symlink():
+            snapshot[relative] = path.read_text(encoding="utf-8")
+        else:
+            snapshot[relative] = None
+    return snapshot
+
+
+def test_copy_directory_tree_syncs_and_commits(tmp_path: Path) -> None:
+    """Copying a nested directory tree stages, syncs, and commits every entry."""
+    source = tmp_path / "tree"
+    (source / "nested" / "deep").mkdir(parents=True)
+    (source / "file.txt").write_text("top\n", encoding="utf-8")
+    (source / "nested" / "leaf.txt").write_text("leaf\n", encoding="utf-8")
+    (source / "nested" / "deep" / "buried.txt").write_text("buried\n", encoding="utf-8")
+    destination = tmp_path / "copied"
+
+    log = atomic_copy(source=source, destination=destination, backup=False)
+
+    assert_that(log.operation).is_equal_to(FileOperation.COPY)
+    assert_that((destination / "file.txt").read_text(encoding="utf-8")).is_equal_to(
+        "top\n",
+    )
+    assert_that(
+        (destination / "nested" / "deep" / "buried.txt").read_text(encoding="utf-8"),
+    ).is_equal_to("buried\n")
+    assert_that([path.name for path in tmp_path.iterdir()]).contains_only(
+        "tree",
+        "copied",
+    )
+
+
+def test_copy_rejects_directory_destination_inside_source_tree(
+    tmp_path: Path,
+) -> None:
+    """Copying a directory beneath itself is rejected without touching the tree."""
+    source = tmp_path / "tree"
+    (source / "nested").mkdir(parents=True)
+    (source / "file.txt").write_text("payload\n", encoding="utf-8")
+    (source / "nested" / "leaf.txt").write_text("leaf\n", encoding="utf-8")
+    destination = source / "clone"
+
+    snapshot_before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(FileSystemOperationError):
+        atomic_copy(source=source, destination=destination, backup=False)
+
+    assert_that(_tree_snapshot(tmp_path)).is_equal_to(snapshot_before)
+
+
+def test_move_rejects_directory_destination_inside_source_tree_on_exdev(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The EXDEV move fallback rejects a destination inside the source tree."""
+    source = tmp_path / "tree"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (source / "file.txt").write_text("payload\n", encoding="utf-8")
+    destination = nested / "clone"
+
+    original_replace = Path.replace
+
+    def cross_device_replace(self: Path, target: str | Path) -> Path:
+        """Force the EXDEV copy fallback when staging the source rename."""
+        if self == source and Path(target).parent == nested:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", cross_device_replace)
+
+    snapshot_before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(FileSystemOperationError):
+        atomic_move(source=source, destination=destination, backup=False)
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+
+    assert_that(_tree_snapshot(tmp_path)).is_equal_to(snapshot_before)
+
+
 def test_rollback_or_raise_passes_when_rollback_succeeds(tmp_path: Path) -> None:
     """rollback_or_raise is silent when every rollback step succeeds."""
     source = tmp_path / "source.txt"

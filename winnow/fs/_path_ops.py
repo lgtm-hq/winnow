@@ -46,8 +46,10 @@ def sync_path(path: Path) -> None:
     """Flush a staged file or directory tree to stable storage, best effort.
 
     Called on staged content before an atomic replace so a crash cannot leave
-    a successfully renamed destination with unwritten data. Directory trees
-    are synced file by file; symlinks need no syncing.
+    a successfully renamed destination with unwritten data. Directory trees are
+    synced file by file, then their directory entries are fsynced bottom-up
+    (deepest first) before the staged root directory, so the tree structure is
+    durable and not just the file contents; symlinks need no syncing.
     """
     if path.is_symlink():
         return
@@ -55,9 +57,21 @@ def sync_path(path: Path) -> None:
         _sync_file(path)
         return
     if path.is_dir():
+        nested_directories: list[Path] = []
         for child in sorted(path.rglob("*")):
-            if child.is_file() and not child.is_symlink():
+            if child.is_symlink():
+                continue
+            if child.is_file():
                 _sync_file(child)
+            elif child.is_dir():
+                nested_directories.append(child)
+        for directory in sorted(
+            nested_directories,
+            key=lambda entry: len(entry.parts),
+            reverse=True,
+        ):
+            sync_directory(directory)
+        sync_directory(path)
 
 
 def sync_directory(path: Path) -> None:

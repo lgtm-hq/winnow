@@ -142,6 +142,11 @@ class FileSystemTransaction:
         try:
             _validate_source(source=source, operation=FileOperation.COPY)
             _validate_destination_parent(destination)
+            _reject_recursive_directory_copy(
+                source=source,
+                destination=destination,
+                operation=FileOperation.COPY,
+            )
             copy_path(source=source, destination=temp_path)
             sync_path(temp_path)
 
@@ -365,6 +370,11 @@ class FileSystemTransaction:
             except OSError as error:
                 if error.errno != errno.EXDEV:
                     raise
+                _reject_recursive_directory_copy(
+                    source=source,
+                    destination=destination,
+                    operation=FileOperation.MOVE,
+                )
                 copy_path(source=source, destination=temp_path)
                 sync_path(temp_path)
 
@@ -375,6 +385,9 @@ class FileSystemTransaction:
             if not source_moved_to_temp:
                 source_tombstone = _temporary_path(source)
                 source.replace(source_tombstone)
+
+            if source.parent != destination.parent:
+                sync_directory(source.parent)
         except (OSError, shutil.Error) as error:
             operation_error = _operation_error(
                 operation=FileOperation.MOVE,
@@ -847,6 +860,35 @@ def _temporary_path(path: Path) -> Path:
         candidate = path.parent / f".{path.name}.{uuid4().hex}.tmp"
         if not path_exists(candidate):
             return candidate
+
+
+def _reject_recursive_directory_copy(
+    *,
+    source: Path,
+    destination: Path,
+    operation: FileOperation,
+) -> None:
+    """Reject copying a real directory into a destination inside its own tree.
+
+    Staging happens next to the destination, so a destination that resolves
+    beneath the source would create the temporary copy within the source and
+    recurse into it, consuming disk without bound. Symlinked and non-directory
+    sources cannot recurse and are left untouched.
+
+    Raises:
+        OSError: With ``errno.EINVAL`` when the destination resolves inside the
+            source directory tree.
+    """
+    if not source.is_dir() or source.is_symlink():
+        return
+    resolved_source = source.resolve()
+    resolved_destination = destination.resolve()
+    if resolved_source in resolved_destination.parents:
+        raise OSError(
+            errno.EINVAL,
+            f"cannot {operation.value} directory into its own subtree: "
+            f"{source} -> {destination}",
+        )
 
 
 def _validate_destination_parent(destination: Path) -> None:
