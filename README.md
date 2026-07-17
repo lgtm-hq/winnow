@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/lgtm-hq/winnow/badge)](https://scorecard.dev/viewer/?uri=github.com/lgtm-hq/winnow)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
 <!-- markdownlint-enable MD013 -->
 
 Winnow your media library — organize photos and videos, detect duplicates, and keep the
@@ -30,9 +31,13 @@ recommended).
 
 ### From PyPI
 
+Use uv's project workflow so the dependency and command run from the same managed
+environment:
+
 ```bash
-uv pip install winnow-media
-# or: pip install winnow-media
+uv init winnow-demo
+cd winnow-demo
+uv add winnow-media
 uv run winnow --version
 ```
 
@@ -99,11 +104,11 @@ uv run winnow organize --dry-run
 Winnow follows an
 [API-first, CLI-first phasing plan](docs/adr/0001-api-first-platform.md):
 
-| Phase       | Focus        | Highlights                                                                                                       |
-| ----------- | ------------ | ---------------------------------------------------------------------------------------------------------------- |
-| **Now**     | Foundation   | Models, CLI skeleton, CI/CD, ADRs                                                                                |
-| **Phase 1** | Core product | Library scanning, duplicate detection, organization workflows via CLI **and** HTTP API sharing one service layer |
-| **Phase 2** | Web UI       | Presentation-only frontend over the OpenAPI contract                                                             |
+| Phase       | Focus        | Highlights                                 |
+| ----------- | ------------ | ------------------------------------------ |
+| **Now**     | Foundation   | Models, CLI skeleton, CI/CD, ADRs          |
+| **Phase 1** | Core product | Scan, dedupe, and organize via CLI and API |
+| **Phase 2** | Web UI       | Presentation-only frontend over OpenAPI    |
 
 Planned capabilities (not shipped):
 
