@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from dynaconf import Dynaconf
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from winnow.config.defaults import (
     ENVVAR_PREFIX,
@@ -19,10 +19,15 @@ from winnow.config.defaults import (
 from winnow.config.schema import default_config_data, render_config_yaml
 from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
+from winnow.models.enums import SymlinkPolicy
 
 _INTERNAL_DYNACONF_KEYS = frozenset({"LOAD_DOTENV"})
 _DISABLED_ENVVAR_PREFIX = "__WINNOW_ENV_DISABLED__"
 _DYNACONF_ENVVAR_PREFIX = "DYNACONF_"
+_FOLLOW_SYMLINKS_KEY = "follow_symlinks"
+_SYMLINK_POLICY_KEY = "symlink_policy"
+_BOOL_ADAPTER = TypeAdapter(bool)
+_SYMLINK_POLICY_ADAPTER = TypeAdapter(SymlinkPolicy)
 
 
 def find_config_path(
@@ -214,6 +219,7 @@ def set_config_value(
     current_config = _load_file_config_for_write(target_path)
     data = default_config_data(current_config)
     _set_nested_value(data=data, dotted_key=key, value=value)
+    _sync_symlink_settings(data=data, key=key, value=value)
     updated_config = validate_config_data(data=data, file_path=target_path)
     _write_config_file(config=updated_config, config_path=target_path)
     return updated_config
@@ -451,6 +457,32 @@ def _set_nested_value(
             )
         current = child
     current[key_parts[-1]] = value
+
+
+def _sync_symlink_settings(
+    data: dict[str, object],
+    key: str,
+    value: object,
+) -> None:
+    """Keep legacy and policy symlink settings consistent during single-key sets."""
+    if key == _FOLLOW_SYMLINKS_KEY:
+        try:
+            follow_symlinks = _BOOL_ADAPTER.validate_python(value)
+        except ValidationError:
+            return
+        data[_FOLLOW_SYMLINKS_KEY] = follow_symlinks
+        data[_SYMLINK_POLICY_KEY] = (
+            SymlinkPolicy.FOLLOW.value if follow_symlinks else SymlinkPolicy.SKIP.value
+        )
+        return
+
+    if key == _SYMLINK_POLICY_KEY:
+        try:
+            policy = _SYMLINK_POLICY_ADAPTER.validate_python(value)
+        except ValidationError:
+            return
+        data[_SYMLINK_POLICY_KEY] = policy.value
+        data[_FOLLOW_SYMLINKS_KEY] = policy is SymlinkPolicy.FOLLOW
 
 
 def _write_config_file(config: WinnowConfig, config_path: Path) -> None:

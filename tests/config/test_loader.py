@@ -17,7 +17,7 @@ from winnow.config import (
     show_config,
 )
 from winnow.exceptions import ConfigError
-from winnow.models.enums import HashAlgorithm
+from winnow.models.enums import HashAlgorithm, SymlinkPolicy
 
 
 def test_load_config_returns_defaults_without_file(tmp_path: Path) -> None:
@@ -177,3 +177,63 @@ def test_set_config_value_ignores_dynaconf_environment(
 
     assert_that(updated_config.workers).is_equal_to(2)
     assert_that(reloaded_config.workers).is_equal_to(2)
+
+
+def test_set_config_value_updates_symlink_policy_with_follow_flag(
+    tmp_path: Path,
+) -> None:
+    """Verify setting follow_symlinks also persists the matching policy."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    generate_default_config(config_path=config_path)
+
+    followed_config = set_config_value(
+        "follow_symlinks",
+        True,
+        config_path=config_path,
+    )
+    followed_reload = load_config(config_path=config_path, load_env=False)
+    skipped_config = set_config_value(
+        "follow_symlinks",
+        False,
+        config_path=config_path,
+    )
+    skipped_reload = load_config(config_path=config_path, load_env=False)
+
+    assert_that(followed_config.follow_symlinks).is_true()
+    assert_that(followed_config.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+    assert_that(followed_reload.follow_symlinks).is_true()
+    assert_that(followed_reload.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+    assert_that(skipped_config.follow_symlinks).is_false()
+    assert_that(skipped_config.symlink_policy).is_equal_to(SymlinkPolicy.SKIP)
+    assert_that(skipped_reload.follow_symlinks).is_false()
+    assert_that(skipped_reload.symlink_policy).is_equal_to(SymlinkPolicy.SKIP)
+
+
+def test_set_config_value_updates_follow_flag_with_symlink_policy(
+    tmp_path: Path,
+) -> None:
+    """Verify setting symlink_policy also persists the matching follow flag."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    generate_default_config(config_path=config_path)
+
+    followed_config = set_config_value(
+        "symlink_policy",
+        "follow",
+        config_path=config_path,
+    )
+    followed_reload = load_config(config_path=config_path, load_env=False)
+    error_config = set_config_value(
+        "symlink_policy",
+        SymlinkPolicy.ERROR,
+        config_path=config_path,
+    )
+    error_reload = load_config(config_path=config_path, load_env=False)
+
+    assert_that(followed_config.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+    assert_that(followed_config.follow_symlinks).is_true()
+    assert_that(followed_reload.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+    assert_that(followed_reload.follow_symlinks).is_true()
+    assert_that(error_config.symlink_policy).is_equal_to(SymlinkPolicy.ERROR)
+    assert_that(error_config.follow_symlinks).is_false()
+    assert_that(error_reload.symlink_policy).is_equal_to(SymlinkPolicy.ERROR)
+    assert_that(error_reload.follow_symlinks).is_false()
