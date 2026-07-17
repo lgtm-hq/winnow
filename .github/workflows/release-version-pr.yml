@@ -30,11 +30,16 @@ jobs:
       egress-policy: block
       egress-preset: pypi
       # lgtm-ci v0.50.0+ needs explicit harden-runner endpoints after presets.
-      allowed-endpoints: >-
-        github.com:443 api.github.com:443 codeload.github.com:443
-        objects.githubusercontent.com:443 raw.githubusercontent.com:443
-        uploads.github.com:443 pipelines.actions.githubusercontent.com:443
-        pypi.org:443 files.pythonhosted.org:443
+      allowed-endpoints: >
+        github.com:443
+        api.github.com:443
+        codeload.github.com:443
+        objects.githubusercontent.com:443
+        raw.githubusercontent.com:443
+        uploads.github.com:443
+        pipelines.actions.githubusercontent.com:443
+        pypi.org:443
+        files.pythonhosted.org:443
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
