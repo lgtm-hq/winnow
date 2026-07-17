@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.6.0] - 2026-07-17
+
+### Added
+
+- **config**: add Dynaconf YAML config loader (#131) (cd8b957)
+
 ## [0.5.0] - 2026-07-17
 
 ### Added
