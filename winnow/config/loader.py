@@ -471,9 +471,11 @@ def _sync_symlink_settings(
         except ValidationError:
             return
         data[_FOLLOW_SYMLINKS_KEY] = follow_symlinks
-        data[_SYMLINK_POLICY_KEY] = (
-            SymlinkPolicy.FOLLOW.value if follow_symlinks else SymlinkPolicy.SKIP.value
-        )
+        if follow_symlinks:
+            data[_SYMLINK_POLICY_KEY] = SymlinkPolicy.FOLLOW.value
+            return
+        if data.get(_SYMLINK_POLICY_KEY) == SymlinkPolicy.FOLLOW.value:
+            data[_SYMLINK_POLICY_KEY] = SymlinkPolicy.SKIP.value
         return
 
     if key == _SYMLINK_POLICY_KEY:

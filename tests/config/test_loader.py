@@ -209,6 +209,39 @@ def test_set_config_value_updates_symlink_policy_with_follow_flag(
     assert_that(skipped_reload.symlink_policy).is_equal_to(SymlinkPolicy.SKIP)
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [SymlinkPolicy.ERROR, SymlinkPolicy.SKIP],
+)
+def test_set_config_value_preserves_compatible_non_following_policy(
+    tmp_path: Path,
+    policy: SymlinkPolicy,
+) -> None:
+    """Verify disabling symlink following preserves compatible policies."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text(
+        "\n".join(
+            [
+                "follow_symlinks: false",
+                f"symlink_policy: {policy.value}",
+            ],
+        ),
+        encoding="utf-8",
+    )
+
+    updated_config = set_config_value(
+        "follow_symlinks",
+        False,
+        config_path=config_path,
+    )
+    reloaded_config = load_config(config_path=config_path, load_env=False)
+
+    assert_that(updated_config.follow_symlinks).is_false()
+    assert_that(updated_config.symlink_policy).is_equal_to(policy)
+    assert_that(reloaded_config.follow_symlinks).is_false()
+    assert_that(reloaded_config.symlink_policy).is_equal_to(policy)
+
+
 def test_set_config_value_updates_follow_flag_with_symlink_policy(
     tmp_path: Path,
 ) -> None:
