@@ -21,6 +21,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.3.0] - 2026-07-17
+
+### Added
+
+- **security**: add path validation and symlink protection (#129) (c10f198)
+
+### Changed
+
+- **arch**: add ARCHITECTURE.md module boundaries (#130) (260a728)
+- **repo**: rewrite README with install, usage, and badges (#128) (b8c58d7)
+- **maintenance**: add weekly GHCR image cleanup (#126) (ca3e4e9)
+
 ## [0.2.1] - 2026-07-17
 
 ### Changed
