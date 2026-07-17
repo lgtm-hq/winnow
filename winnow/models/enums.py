@@ -41,3 +41,11 @@ class FileAction(StrEnum):
     MOVE = auto()
     REVIEW = auto()
     SKIP = auto()
+
+
+class SymlinkPolicy(StrEnum):
+    """Symlink handling policies for media discovery."""
+
+    SKIP = auto()
+    FOLLOW = auto()
+    ERROR = auto()

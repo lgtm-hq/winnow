@@ -32,7 +32,13 @@ classifiers = [
   "Topic :: Multimedia :: Graphics",
   "Topic :: System :: Filesystems",
 ]
-dependencies = ["click>=8.3.3", "loguru>=0.7.3", "pydantic>=2.10", "rich>=14.0"]
+dependencies = [
+  "click>=8.3.3",
+  "dynaconf[yaml]>=3.3.2",
+  "loguru>=0.7.3",
+  "pydantic>=2.10",
+  "rich>=14.0",
+]
 
 [project.optional-dependencies]
 face = []
