@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from enum import Enum
+from io import StringIO
 from pathlib import Path
 from typing import cast
+
+from ruamel.yaml import YAML
 
 from winnow.models.config import WinnowConfig
 
@@ -57,81 +59,37 @@ def render_config_yaml(
     Returns:
         YAML document text ending with a newline.
     """
+    data: object
     if config is None:
         data = default_config_data()
     elif isinstance(config, WinnowConfig):
         data = default_config_data(config)
     else:
-        data = dict(config)
-    return "\n".join(_render_mapping(data)).rstrip() + "\n"
+        data = _yaml_safe(config)
+
+    yaml = YAML()
+    yaml.default_flow_style = False
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    stream = StringIO()
+    yaml.dump(data, stream)
+    return stream.getvalue()
 
 
-def _render_mapping(data: Mapping[str, object], indent: int = 0) -> list[str]:
-    """Render a mapping as indented YAML lines.
-
-    Args:
-        data: Mapping to serialize.
-        indent: Current indentation width.
-
-    Returns:
-        Serialized YAML lines.
-    """
-    lines: list[str] = []
-    prefix = " " * indent
-    for key, value in data.items():
-        if isinstance(value, Mapping):
-            lines.append(f"{prefix}{key}:")
-            lines.extend(_render_mapping(value, indent=indent + 2))
-        elif isinstance(value, list):
-            lines.extend(_render_list(key=str(key), values=value, indent=indent))
-        else:
-            lines.append(f"{prefix}{key}: {_format_scalar(value)}")
-    return lines
-
-
-def _render_list(key: str, values: list[object], indent: int) -> list[str]:
-    """Render a list value as YAML lines.
+def _yaml_safe(value: object) -> object:
+    """Convert domain values to types supported by the YAML serializer.
 
     Args:
-        key: Mapping key for the list.
-        values: List values to render.
-        indent: Current indentation width.
+        value: Value to normalize before serialization.
 
     Returns:
-        Serialized YAML lines.
+        A recursively normalized value.
     """
-    prefix = " " * indent
-    if not values:
-        return [f"{prefix}{key}: []"]
-
-    lines = [f"{prefix}{key}:"]
-    item_prefix = " " * (indent + 2)
-    for value in values:
-        if isinstance(value, Mapping):
-            lines.append(f"{item_prefix}-")
-            lines.extend(_render_mapping(value, indent=indent + 4))
-        else:
-            lines.append(f"{item_prefix}- {_format_scalar(value)}")
-    return lines
-
-
-def _format_scalar(value: object) -> str:
-    """Format a scalar value as YAML-compatible text.
-
-    Args:
-        value: Scalar value to serialize.
-
-    Returns:
-        YAML scalar representation.
-    """
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _yaml_safe(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_yaml_safe(item) for item in value]
     if isinstance(value, Enum):
-        return json.dumps(value.value)
+        return value.value
     if isinstance(value, Path):
-        return json.dumps(str(value))
-    return json.dumps(str(value))
+        return str(value)
+    return value

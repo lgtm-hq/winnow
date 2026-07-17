@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from winnow.models.enums import HashAlgorithm, MediaCategory, SortOrder, SymlinkPolicy
 
@@ -15,7 +16,7 @@ class CacheSettings(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     enabled: bool = True
-    directory: Path = Path("~/.cache/winnow")
+    directory: Path = Field(default_factory=lambda: Path.home() / ".cache" / "winnow")
     max_size_mb: int = Field(default=1024, ge=1)
     ttl_seconds: int = Field(default=604_800, ge=0)
 
@@ -53,3 +54,11 @@ class WinnowConfig(BaseModel):
     workers: int = Field(default=1, ge=1)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
+
+    @model_validator(mode="after")
+    def _reject_conflicting_symlink_settings(self) -> Self:
+        """Reject contradictory legacy and policy symlink settings."""
+        follows_by_policy = self.symlink_policy is SymlinkPolicy.FOLLOW
+        if self.follow_symlinks != follows_by_policy:
+            raise ValueError("follow_symlinks conflicts with symlink_policy")
+        return self

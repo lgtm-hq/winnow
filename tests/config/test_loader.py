@@ -92,12 +92,28 @@ def test_load_config_applies_environment_overrides(
     monkeypatch.setenv("WINNOW_DRY_RUN", "true")
     monkeypatch.setenv("WINNOW_WORKERS", "6")
     monkeypatch.setenv("WINNOW_CACHE__ENABLED", "false")
+    monkeypatch.setenv("DYNACONF_WORKERS", "8")
 
     config = load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
 
     assert_that(config.dry_run).is_true()
     assert_that(config.workers).is_equal_to(6)
     assert_that(config.cache.enabled).is_false()
+
+
+def test_load_config_can_disable_environment_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify disabled environment loading ignores Dynaconf defaults."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n", encoding="utf-8")
+    monkeypatch.setenv("WINNOW_WORKERS", "6")
+    monkeypatch.setenv("DYNACONF_WORKERS", "8")
+
+    config = load_config(config_path=config_path, load_env=False)
+
+    assert_that(config.workers).is_equal_to(2)
 
 
 def test_load_config_wraps_invalid_config_errors(tmp_path: Path) -> None:
@@ -145,3 +161,19 @@ def test_set_config_value_and_reset_config_persist_changes(tmp_path: Path) -> No
 
     assert_that(reset.cache.enabled).is_true()
     assert_that(reset_reloaded.cache.enabled).is_true()
+
+
+def test_set_config_value_ignores_dynaconf_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify persisting a key does not merge unrelated DYNACONF variables."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n", encoding="utf-8")
+    monkeypatch.setenv("DYNACONF_WORKERS", "8")
+
+    updated_config = set_config_value("dry_run", False, config_path=config_path)
+    reloaded_config = load_config(config_path=config_path, load_env=False)
+
+    assert_that(updated_config.workers).is_equal_to(2)
+    assert_that(reloaded_config.workers).is_equal_to(2)

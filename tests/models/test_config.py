@@ -23,6 +23,7 @@ def test_winnow_config_defaults() -> None:
     assert_that(config.symlink_policy).is_equal_to(SymlinkPolicy.SKIP)
     assert_that(config.workers).is_equal_to(1)
     assert_that(config.cache).is_instance_of(CacheSettings)
+    assert_that(config.cache.directory).is_equal_to(Path.home() / ".cache" / "winnow")
     assert_that(config.paths).is_instance_of(PathSettings)
 
 
@@ -48,3 +49,12 @@ def test_winnow_config_rejects_invalid_workers() -> None:
     """WinnowConfig rejects worker counts below one."""
     with pytest.raises(ValidationError):
         WinnowConfig(workers=0)
+
+
+def test_winnow_config_rejects_conflicting_symlink_settings() -> None:
+    """WinnowConfig rejects contradictory symlink flags and policies."""
+    with pytest.raises(ValidationError):
+        WinnowConfig(follow_symlinks=True, symlink_policy=SymlinkPolicy.ERROR)
+
+    with pytest.raises(ValidationError):
+        WinnowConfig(follow_symlinks=False, symlink_policy=SymlinkPolicy.FOLLOW)

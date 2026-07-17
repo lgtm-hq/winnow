@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import os
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -19,6 +21,8 @@ from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
 
 _INTERNAL_DYNACONF_KEYS = frozenset({"LOAD_DOTENV"})
+_DISABLED_ENVVAR_PREFIX = "__WINNOW_ENV_DISABLED__"
+_DYNACONF_ENVVAR_PREFIX = "DYNACONF_"
 
 
 def find_config_path(
@@ -314,15 +318,20 @@ def _load_dynaconf_data(
         ConfigError: If Dynaconf cannot parse the config file.
     """
     settings_files = [str(config_path)] if config_path is not None else []
+    env_prefix = ENVVAR_PREFIX if load_env else _DISABLED_ENVVAR_PREFIX
+    hidden_env_prefixes = [_DYNACONF_ENVVAR_PREFIX]
+    if not load_env:
+        hidden_env_prefixes.append(f"{ENVVAR_PREFIX}_")
     try:
-        settings = Dynaconf(
-            envvar_prefix=ENVVAR_PREFIX if load_env else None,
-            settings_files=settings_files,
-            environments=False,
-            load_dotenv=False,
-            merge_enabled=True,
-        )
-        raw_data = cast("Mapping[str, object]", settings.as_dict())
+        with _hidden_environment_prefixes(tuple(hidden_env_prefixes)):
+            settings = Dynaconf(
+                envvar_prefix=env_prefix,
+                settings_files=settings_files,
+                environments=False,
+                load_dotenv=False,
+                merge_enabled=True,
+            )
+            raw_data = cast("Mapping[str, object]", settings.as_dict())
     except Exception as exc:
         raise ConfigError(
             "Unable to load Winnow configuration",
@@ -337,6 +346,27 @@ def _load_dynaconf_data(
         if key not in _INTERNAL_DYNACONF_KEYS
     }
     return _normalize_mapping(user_data)
+
+
+@contextmanager
+def _hidden_environment_prefixes(prefixes: tuple[str, ...]) -> Iterator[None]:
+    """Temporarily hide environment variables with selected prefixes.
+
+    Args:
+        prefixes: Environment variable name prefixes to hide.
+
+    Yields:
+        Control while matching environment variables are hidden.
+    """
+    hidden_values = {
+        key: value for key, value in os.environ.items() if key.startswith(prefixes)
+    }
+    for key in hidden_values:
+        os.environ.pop(key)
+    try:
+        yield
+    finally:
+        os.environ.update(hidden_values)
 
 
 def _normalize_mapping(data: Mapping[str, object]) -> dict[str, object]:
