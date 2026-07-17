@@ -1,4 +1,4 @@
-# AGENTS.md
+# Winnow Agent Instructions
 
 ## Cursor Cloud specific instructions
 
@@ -11,8 +11,10 @@ duplicating them. Key non-obvious notes:
 
 - Tooling is managed by [`uv`](https://docs.astral.sh/uv/) (installed to `~/.local/bin`)
   and the lint helper `markdownlint-cli2` (installed via npm to `~/.npm-global/bin`).
-  Both paths are added to `PATH` in `~/.bashrc`. If a tool is "not found", run
-  `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"`.
+  Both paths are added to `PATH` in `~/.bashrc`, but that file is only sourced by
+  interactive bash shells — non-interactive sessions (`bash -c`, `sh`, `zsh`) won't pick
+  it up. If a tool is "not found", prepend
+  `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"` to the script block.
 - Run everything through `uv run ...` (e.g. `uv run winnow --help`, `uv run pytest`). Do
   not invoke a system `python`/`pytest`; the project deps live in the uv-managed venv.
 - Lint uses `lintro` (`make lint`), which orchestrates ~26 tools. In CI these run inside
