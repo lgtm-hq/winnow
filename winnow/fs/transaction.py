@@ -591,8 +591,22 @@ def _cleanup_empty_directory(path: Path) -> None:
 
 def _cleanup_backups(backups: list[Path]) -> None:
     """Remove persistent backups orphaned by a failed operation."""
+    errors: list[Exception] = []
     for backup in backups:
-        _cleanup_path(backup)
+        try:
+            _cleanup_path(backup)
+        except (OSError, shutil.Error) as cleanup_error:
+            errors.append(cleanup_error)
+    if not errors:
+        return
+    aggregate_error = FileSystemOperationError(
+        "failed to clean up filesystem backups",
+        operation="fs.backup.cleanup",
+        details={"errors": [str(error) for error in errors]},
+    )
+    for secondary_error in errors[1:]:
+        aggregate_error.add_note(f"backup cleanup failed: {secondary_error}")
+    raise aggregate_error from errors[0]
 
 
 def _cleanup_path(path: Path) -> None:
@@ -679,7 +693,7 @@ def _run_cleanups(
     for cleanup in cleanups:
         try:
             cleanup()
-        except (OSError, shutil.Error) as cleanup_error:
+        except (OSError, shutil.Error, FileSystemOperationError) as cleanup_error:
             error.add_note(f"cleanup failed: {cleanup_error}")
 
 

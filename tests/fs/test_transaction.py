@@ -365,6 +365,31 @@ def test_copy_failure_removes_orphaned_backup(
     assert_that(list(backup_directory.iterdir())).is_empty()
 
 
+def test_backup_cleanup_attempts_every_backup_before_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Orphaned backup cleanup attempts every path before reporting failures."""
+    backup_a = tmp_path / "a.txt.bak"
+    backup_b = tmp_path / "b.txt.bak"
+    backup_a.write_text("a\n", encoding="utf-8")
+    backup_b.write_text("b\n", encoding="utf-8")
+    calls: list[Path] = []
+
+    def fail_cleanup(path: Path) -> None:
+        """Record cleanup attempts and raise a deterministic failure."""
+        calls.append(path)
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(transaction_module, "_cleanup_path", fail_cleanup)
+
+    with pytest.raises(FileSystemOperationError) as exc_info:
+        transaction_module._cleanup_backups([backup_a, backup_b])
+
+    assert_that(calls).is_equal_to([backup_a, backup_b])
+    assert_that(exc_info.value.context.details["errors"]).is_length(2)
+
+
 def test_commit_attempts_all_cleanups_before_raising(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
