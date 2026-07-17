@@ -695,6 +695,8 @@ def _run_cleanups(
             cleanup()
         except (OSError, shutil.Error, FileSystemOperationError) as cleanup_error:
             error.add_note(f"cleanup failed: {cleanup_error}")
+            for note in getattr(cleanup_error, "__notes__", ()):
+                error.add_note(f"cleanup detail: {note}")
 
 
 def _restore_tombstone(

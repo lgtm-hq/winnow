@@ -97,7 +97,20 @@ def restore_backup(
         _run_cleanups(operation_error, cleanups)
         raise operation_error from error
     if tombstone is not None and path_exists(tombstone):
-        remove_path(tombstone)
+        try:
+            remove_path(tombstone)
+        except (OSError, shutil.Error) as error:
+            raise FileSystemOperationError(
+                "failed to clean up restored filesystem backup",
+                operation="fs.restore.cleanup",
+                file_path=destination,
+                details={
+                    "error": str(error),
+                    "restored": True,
+                    "tombstone": str(tombstone),
+                    "tombstone_remains": True,
+                },
+            ) from error
 
 
 def _cleanup_created_directories(created_dirs: list[Path]) -> None:

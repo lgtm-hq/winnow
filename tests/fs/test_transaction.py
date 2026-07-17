@@ -390,6 +390,36 @@ def test_backup_cleanup_attempts_every_backup_before_raising(
     assert_that(exc_info.value.context.details["errors"]).is_length(2)
 
 
+def test_run_cleanups_preserves_nested_backup_cleanup_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup aggregation notes remain attached to the primary error."""
+    backup_a = tmp_path / "a.txt.bak"
+    backup_b = tmp_path / "b.txt.bak"
+    backup_a.write_text("a\n", encoding="utf-8")
+    backup_b.write_text("b\n", encoding="utf-8")
+
+    def fail_cleanup(path: Path) -> None:
+        """Raise a path-specific cleanup failure for aggregation."""
+        raise OSError(f"cleanup failed for {path.name}")
+
+    monkeypatch.setattr(transaction_module, "_cleanup_path", fail_cleanup)
+    primary_error = FileSystemOperationError(
+        "failed to apply filesystem copy",
+        operation="fs.copy",
+    )
+
+    transaction_module._run_cleanups(
+        primary_error,
+        [lambda: transaction_module._cleanup_backups([backup_a, backup_b])],
+    )
+
+    assert_that(getattr(primary_error, "__notes__", [])).contains(
+        "cleanup detail: backup cleanup failed: cleanup failed for b.txt.bak",
+    )
+
+
 def test_commit_attempts_all_cleanups_before_raising(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

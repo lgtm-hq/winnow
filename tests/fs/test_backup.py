@@ -143,6 +143,40 @@ def test_create_backup_preserves_copy_error_when_partial_cleanup_fails(
     )
 
 
+def test_restore_backup_reports_tombstone_cleanup_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-restore tombstone cleanup failures report the restore was applied."""
+    backup_path = tmp_path / "settings.yaml.bak"
+    destination = tmp_path / "settings.yaml"
+    backup_path.write_text("restored\n", encoding="utf-8")
+    destination.write_text("current\n", encoding="utf-8")
+
+    def fail_tombstone_remove(path: Path) -> None:
+        """Fail only when removing the restore tombstone."""
+        if path.name.startswith(".settings.yaml."):
+            raise OSError("tombstone cleanup failed")
+        remove_fs_path(path)
+
+    monkeypatch.setattr(backup_module, "remove_path", fail_tombstone_remove)
+
+    with pytest.raises(FileSystemOperationError) as exc_info:
+        restore_backup(backup_path=backup_path, destination=destination)
+
+    error = exc_info.value
+    tombstones = [
+        path for path in tmp_path.iterdir() if path.name.startswith(".settings.yaml.")
+    ]
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("restored\n")
+    assert_that(tombstones).is_length(1)
+    assert_that(tombstones[0].read_text(encoding="utf-8")).is_equal_to("current\n")
+    assert_that(error.__cause__).is_instance_of(OSError)
+    assert_that(error.context.operation).is_equal_to("fs.restore.cleanup")
+    assert_that(error.context.details).contains_entry({"restored": True})
+    assert_that(error.context.details).contains_entry({"tombstone_remains": True})
+
+
 def test_restore_backup_preserves_destination_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
