@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.7.0] - 2026-07-17
+
+### Added
+
+- **fs**: add atomic filesystem operations and backups (#133) (5aed22e)
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
