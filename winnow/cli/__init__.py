@@ -14,7 +14,7 @@ __all__ = ["main"]
 @click.version_option(version=__version__, prog_name="winnow")
 @no_color_option()
 @click.pass_context
-def main(ctx: click.Context, no_color: bool) -> None:
+def main(ctx: click.Context, *, no_color: bool) -> None:
     """Winnow your media library."""
     context_obj = ctx.ensure_object(dict)
     context_obj["no_color"] = no_color

@@ -6,12 +6,14 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import click
+import pytest
 from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow import __version__
 from winnow.cli import main
 from winnow.cli.standards import (
+    OutputFormat,
     cache_options,
     config_path_option,
     dry_run_option,
@@ -236,3 +238,60 @@ def test_workers_option_rejects_zero_workers() -> None:
     assert_that(result.exit_code).is_not_equal_to(0)
     assert_that(result.output).contains("Invalid value for '--workers'")
     assert_that(result.output).contains("x>=1")
+
+
+def test_format_option_accepts_custom_default() -> None:
+    """A custom default format appears in help and parses as the default."""
+
+    @click.command()
+    @format_option(default=OutputFormat.JSON)
+    def report(**kwargs: object) -> None:
+        """Echo parsed parameters for assertions."""
+        click.echo(f"format={kwargs['format']}")
+
+    runner = CliRunner()
+    help_result = runner.invoke(report, ["--help"])
+    parse_result = runner.invoke(report, [])
+
+    assert_that(help_result.exit_code).is_equal_to(0)
+    assert_that(help_result.output).contains("[default: json]")
+    assert_that(parse_result.exit_code).is_equal_to(0)
+    assert_that(parse_result.output).contains("format=json")
+
+
+def test_format_option_rejects_unknown_default() -> None:
+    """An unsupported default format fails fast at decorator creation."""
+    with pytest.raises(ValueError):
+        format_option(default="xml")
+
+
+def test_workers_option_accepts_custom_default() -> None:
+    """A custom worker default appears in help and parses as the default."""
+
+    @click.command()
+    @workers_option(default=8)
+    def process(**kwargs: object) -> None:
+        """Echo parsed parameters for assertions."""
+        click.echo(f"workers={kwargs['workers']}")
+
+    runner = CliRunner()
+    help_result = runner.invoke(process, ["--help"])
+    parse_result = runner.invoke(process, [])
+
+    assert_that(help_result.output).contains("default: 8")
+    assert_that(parse_result.output).contains("workers=8")
+
+
+def test_cache_ttl_rejects_negative_values() -> None:
+    """A negative cache TTL fails at parse time."""
+
+    @click.command()
+    @cache_options()
+    def cached(**kwargs: object) -> None:
+        """Accept cache options for assertions."""
+        del kwargs
+
+    runner = CliRunner()
+    result = runner.invoke(cached, ["--cache-ttl", "-5"])
+
+    assert_that(result.exit_code).is_not_equal_to(0)

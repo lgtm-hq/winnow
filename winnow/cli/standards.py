@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, TypeAlias, TypeVar, cast
 
@@ -12,12 +13,23 @@ ClickCallback: TypeAlias = Callable[..., Any]
 CommandCallback = TypeVar("CommandCallback", bound=ClickCallback)
 OptionDecorator: TypeAlias = Callable[[ClickCallback], ClickCallback]
 
-FORMAT_CHOICES = ("json", "csv", "table", "markdown")
+
+class OutputFormat(StrEnum):
+    """Supported output formats for reporting commands."""
+
+    JSON = auto()
+    CSV = auto()
+    TABLE = auto()
+    MARKDOWN = auto()
+
+
+FORMAT_CHOICES = tuple(output_format.value for output_format in OutputFormat)
 DEFAULT_WORKERS = 4
 
 __all__ = [
     "DEFAULT_WORKERS",
     "FORMAT_CHOICES",
+    "OutputFormat",
     "cache_options",
     "config_path_option",
     "dry_run_option",
@@ -104,20 +116,27 @@ def no_color_option() -> OptionDecorator:
     )
 
 
-def format_option(default: str = "table") -> OptionDecorator:
+def format_option(
+    default: OutputFormat | str = OutputFormat.TABLE,
+) -> OptionDecorator:
     """Create the standard output format option decorator.
 
     Args:
-        default: Default output format.
+        default: Default output format, as an :class:`OutputFormat` or its
+            string value.
 
     Returns:
         A decorator that adds ``--format`` and ``-f``.
+
+    Raises:
+        ValueError: If ``default`` is not a supported output format.
     """
+    default_format = OutputFormat(default)
     return _option(
         "--format",
         "-f",
         type=click.Choice(FORMAT_CHOICES),
-        default=default,
+        default=default_format.value,
         show_default=True,
         help="Output format.",
     )
@@ -210,7 +229,7 @@ def cache_options() -> OptionDecorator:
             command,
             _option(
                 "--cache-ttl",
-                type=int,
+                type=click.IntRange(min=0),
                 default=None,
                 help="Cache time-to-live in seconds.",
             ),
