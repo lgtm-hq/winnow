@@ -16,8 +16,8 @@ from winnow.media.registry import (
 
 __all__ = [
     "AUDIO_FORMATS",
-    "DEFAULT_FORMATS",
     "DEFAULT_FORMAT_REGISTRY",
+    "DEFAULT_FORMATS",
     "FormatRegistry",
     "IMAGE_FORMATS",
     "VIDEO_FORMATS",

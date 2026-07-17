@@ -15,7 +15,7 @@ from winnow.media import (
 )
 from winnow.models.media import MediaType
 
-COMMON_FORMAT_CASES: tuple[tuple[str, MediaType], ...] = (
+COMMON_FORMAT_CASES: list[tuple[str, MediaType]] = [
     ("jpeg", MediaType.IMAGE),
     ("jpg", MediaType.IMAGE),
     ("png", MediaType.IMAGE),
@@ -59,7 +59,7 @@ COMMON_FORMAT_CASES: tuple[tuple[str, MediaType], ...] = (
     ("wav", MediaType.AUDIO),
     ("aac", MediaType.AUDIO),
     ("ogg", MediaType.AUDIO),
-)
+]
 
 
 @pytest.mark.parametrize(("extension", "expected_media_type"), COMMON_FORMAT_CASES)
@@ -80,12 +80,12 @@ def test_default_format_registry_exports_all_default_formats() -> None:
 
 @pytest.mark.parametrize(
     ("extension", "expected_extension", "expected_media_type"),
-    (
+    [
         (".JpEg", "jpeg", MediaType.IMAGE),
         ("Vacation.MP4", "mp4", MediaType.VIDEO),
         (".hidden.MP4", "mp4", MediaType.VIDEO),
         ("/media/family/SONG.FLAC", "flac", MediaType.AUDIO),
-    ),
+    ],
 )
 def test_lookup_normalizes_case_dots_file_names_and_paths(
     extension: str,
