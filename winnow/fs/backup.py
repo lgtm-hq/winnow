@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
-from winnow.fs._path_ops import copy_path, path_exists, remove_path
+from winnow.fs._path_ops import copy_path, path_exists, remove_path, sync_path
 from winnow.fs.backup_options import BackupOptions
 from winnow.fs.errors import FileSystemOperationError
 
@@ -44,6 +44,7 @@ def create_backup(
     staging_path = backup_directory / f".{backup_path.name}.{uuid4().hex}.partial"
     try:
         copy_path(source=path, destination=staging_path)
+        sync_path(staging_path)
         staging_path.replace(backup_path)
     except (OSError, shutil.Error) as error:
         _run_cleanups(error, [lambda: _cleanup_path(staging_path)])
@@ -72,6 +73,7 @@ def restore_backup(
         created_parent_dirs = _create_parent_directories(destination.parent)
         staging_path = _staging_path(destination)
         copy_path(source=backup_path, destination=staging_path)
+        sync_path(staging_path)
         if path_exists(destination):
             tombstone = _staging_path(destination)
             destination.replace(tombstone)
