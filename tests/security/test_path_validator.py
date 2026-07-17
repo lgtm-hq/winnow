@@ -135,6 +135,43 @@ def test_validate_path_rejects_symlinked_parent_under_reject_policy(
         validator.validate_path(link_dir / "photo.jpg")
 
 
+def test_validate_path_accepts_path_under_symlinked_root_alias(
+    tmp_path: Path,
+) -> None:
+    """A path using a symlinked root alias is accepted under REJECT policy."""
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    real_root = real_root.resolve()
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(real_root)
+    validator = PathValidator(
+        allowed_roots=[real_root],
+        symlink_policy=SymlinkPolicy.REJECT,
+    )
+
+    result = validator.validate_path(alias_root / "photo.jpg")
+
+    assert_that(result).is_equal_to(real_root / "photo.jpg")
+
+
+def test_validate_path_reports_escape_for_out_of_root_symlinked_ancestor(
+    root: Path,
+    tmp_path: Path,
+) -> None:
+    """An out-of-root path via a symlinked ancestor reports an escape."""
+    real_outside = tmp_path / "outside"
+    real_outside.mkdir()
+    link_outside = tmp_path / "outside_link"
+    link_outside.symlink_to(real_outside)
+    validator = PathValidator(
+        allowed_roots=[root],
+        symlink_policy=SymlinkPolicy.REJECT,
+    )
+
+    with pytest.raises(SecurityError, match="escapes the allowed roots"):
+        validator.validate_path(link_outside / "file.jpg")
+
+
 def test_validate_path_follows_symlink_to_target_inside_root(root: Path) -> None:
     """Under FOLLOW policy, a symlink to an in-root target resolves."""
     real = root / "real.jpg"

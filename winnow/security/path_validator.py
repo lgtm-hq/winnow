@@ -197,22 +197,51 @@ class PathValidator:
         )
 
     def _first_symlink(self, absolute: Path) -> Path | None:
-        """Return the first symlink at or below the allowed roots.
+        """Return the first untrusted symlink below the containing root.
 
-        The walk starts at the candidate and moves upward, stopping once an
-        allowed root is reached so that symlinks in trusted parent directories
-        are not misreported.
+        The walk starts at the candidate and moves upward, stopping at the
+        ancestor that maps to an allowed root so that symlinks in trusted
+        parent directories (including a symlinked root alias) are not
+        misreported. When the candidate lies outside every allowed root, no
+        symlink is reported; the containment check in
+        :meth:`validate_path` then surfaces the real "escapes the allowed
+        roots" violation instead of a misleading symlink error.
 
         Args:
             absolute: Absolute, unresolved candidate path.
 
         Returns:
-            The first symlink found within the roots, or None.
+            The first symlink found below the containing root, or None when
+            there is none or the candidate is outside all roots.
+        """
+        boundary = self._root_boundary(absolute)
+        if boundary is None:
+            return None
+        for ancestor in (absolute, *absolute.parents):
+            if ancestor == boundary:
+                break
+            if ancestor.is_symlink():
+                return ancestor
+        return None
+
+    def _root_boundary(self, absolute: Path) -> Path | None:
+        """Return the ancestor of ``absolute`` that maps to an allowed root.
+
+        Ancestors are examined from the candidate upward and resolved so that
+        a root reached through a symlinked alias (for example, ``/linked``
+        pointing at a resolved root ``/real``) is still recognized. This marks
+        the boundary between the trusted root and the untrusted components the
+        caller supplied beneath it.
+
+        Args:
+            absolute: Absolute, unresolved candidate path.
+
+        Returns:
+            The ancestor whose resolved form equals an allowed root, or None
+            when the candidate resolves outside every allowed root.
         """
         roots = set(self._allowed_roots)
         for ancestor in (absolute, *absolute.parents):
-            if ancestor in roots:
-                break
-            if ancestor.is_symlink():
+            if ancestor.resolve() in roots:
                 return ancestor
         return None

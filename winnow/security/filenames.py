@@ -16,9 +16,6 @@ from winnow.exceptions import SecurityError
 DEFAULT_MAX_LENGTH = 255
 """Conservative maximum filename length supported by common filesystems."""
 
-_RESERVED_NAMES = frozenset({".", ".."})
-"""Path components that never denote a real file and must be rejected."""
-
 _PATH_SEPARATORS = frozenset({"/", "\\"})
 """Directory separators that must never appear inside a single component."""
 
@@ -87,7 +84,7 @@ def sanitize_filename(
     )
     sanitized = sanitized.strip().strip(".").strip()
 
-    if not sanitized or sanitized in _RESERVED_NAMES:
+    if not sanitized:
         raise SecurityError(
             "filename cannot be sanitized to a safe value",
             operation="sanitize_filename",
@@ -97,7 +94,7 @@ def sanitize_filename(
 
     if len(sanitized) > max_length:
         # The first character is guaranteed non-strippable by the strip above,
-        # so truncation preserves a non-empty, non-reserved component.
+        # so truncation preserves a non-empty component.
         sanitized = sanitized[:max_length].rstrip(". ")
 
     return sanitized
