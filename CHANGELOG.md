@@ -21,6 +21,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.2.1] - 2026-07-17
+
+### Changed
+
+- add Cursor Cloud dev environment instructions (AGENTS.md) (#122) (fcf8e0d)
+- **ci**: adopt canonical emoji check names (#121) (66be32e)
+- **ci**: adopt lgtm-ci v0.52.3 and fix path-filtered required checks (#119) (25614d1)
+- **renovate**: drop linting-tools group superseded by org preset (#118) (966636e)
+- **renovate**: drop package rules redundant with org preset (#115) (ae71217)
+
+### Fixed
+
+- **release**: allow release-version-pr PyPI egress (#134) (137a730)
+- **deps**: bump setuptools to 83.0.0 to clear OSV vulnerability (#124) (c428879)
+
 ## [0.2.0] - 2026-07-01
 
 ### Features
