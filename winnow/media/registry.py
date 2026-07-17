@@ -165,6 +165,7 @@ class FormatRegistry:
 
     def register(
         self,
+        *,
         extension: str,
         media_type: MediaType | str,
     ) -> None:
@@ -271,23 +272,34 @@ def media_type_for_extension(
 def normalize_extension(extension: str) -> str:
     """Normalize an extension, file name, or path for registry lookup.
 
+    A path with no suffix normalizes to ``""``. A bare dotless token (for
+    example ``"makefile"``) is treated as an extension itself, so passing a
+    suffix-less bare filename queries that token as a key.
+
     Args:
         extension: Raw extension, file name, or path.
 
     Returns:
-        Lowercase extension without leading dots.
+        Lowercase extension without leading dots, or ``""`` when the input
+        holds no extension.
     """
     candidate = extension.strip()
     if not candidate:
         return ""
-    if "." in candidate or "/" in candidate or "\\" in candidate:
+    has_separator = "/" in candidate or "\\" in candidate
+    if has_separator or "." in candidate:
         suffix = PurePath(candidate).suffix
+        if not suffix and has_separator:
+            return ""
         candidate = suffix or candidate
     return candidate.lstrip(".").casefold()
 
 
 def _lookup_mime_type(extension: str) -> MediaType | None:
     """Infer a media type from an extension using the stdlib MIME table.
+
+    ``mimetypes`` consults platform tables (for example ``/etc/mime.types`` or
+    the Windows registry), so fallback results can vary across machines.
 
     Args:
         extension: Normalized extension without a leading dot.
@@ -378,6 +390,10 @@ def _coerce_config_bool(
 
 
 DEFAULT_FORMAT_REGISTRY = create_default_format_registry()
+"""Shared mutable process-wide registry backing :func:`media_type_for_extension`.
+
+Registrations on this instance are visible to every caller that relies on the
+default; use :func:`create_default_format_registry` for an isolated registry."""
 
 __all__ = [
     "AUDIO_FORMATS",

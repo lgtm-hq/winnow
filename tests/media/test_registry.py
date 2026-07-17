@@ -165,3 +165,25 @@ def test_from_config_rejects_unknown_media_type() -> None:
                 "include_defaults": False,
             },
         )
+
+
+def test_normalize_extension_returns_empty_for_suffixless_path() -> None:
+    """A path without a suffix normalizes to an empty extension."""
+    assert_that(normalize_extension("/media/family/SONG")).is_equal_to("")
+    assert_that(normalize_extension("C:\\photos\\IMG")).is_equal_to("")
+
+
+def test_lookup_returns_none_for_suffixless_path() -> None:
+    """Looking up a suffix-less path yields no media type, not a MIME guess."""
+    registry = create_default_format_registry()
+
+    assert_that(registry.lookup("/media/family/SONG")).is_none()
+
+
+def test_register_overrides_default_mapping() -> None:
+    """A custom registration replaces the built-in mapping for an extension."""
+    registry = create_default_format_registry()
+
+    registry.register(extension="gif", media_type=MediaType.VIDEO)
+
+    assert_that(registry.lookup("gif")).is_equal_to(MediaType.VIDEO)
