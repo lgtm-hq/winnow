@@ -5,6 +5,14 @@ separators, NUL bytes, or control characters. They are intentionally
 conservative so that downstream features (for example, safe rename and
 export flows) can rely on the returned value being a single, well-formed
 path component.
+
+Scope: the rules target POSIX filesystems. Windows-specific constraints --
+reserved characters (``<>:"|?*``), reserved device names (``CON``, ``NUL``,
+``COM1``...), and trailing dots -- are deliberately out of scope.
+
+Replacing format (``Cf``) characters can mangle legitimate emoji ZWJ
+sequences, and inputs made entirely of forbidden characters collapse toward
+the replacement string, so bulk-rename flows should deduplicate results.
 """
 
 from __future__ import annotations

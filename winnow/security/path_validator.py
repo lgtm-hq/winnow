@@ -142,6 +142,10 @@ class PathValidator:
     def _to_absolute(self, path: Path | str) -> Path:
         """Return an absolute path without resolving symlinks.
 
+        ``~`` and ``~user`` are not expanded: they are treated as literal
+        relative components anchored under the base directory, which fails
+        closed rather than silently escaping to a home directory.
+
         Args:
             path: Candidate path, absolute or relative.
 
