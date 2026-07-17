@@ -10,6 +10,7 @@ from __future__ import annotations
 import mimetypes
 from collections.abc import Mapping
 from pathlib import PurePath
+from threading import Lock
 from types import MappingProxyType
 from typing import Self
 
@@ -99,7 +100,7 @@ class FormatRegistry:
             extension is not registered.
     """
 
-    __slots__ = ("_extension_map", "use_mime_fallback")
+    __slots__ = ("_extension_map", "_lock", "use_mime_fallback")
 
     def __init__(
         self,
@@ -109,6 +110,7 @@ class FormatRegistry:
         use_mime_fallback: bool = True,
     ) -> None:
         self._extension_map: dict[str, MediaType] = {}
+        self._lock = Lock()
         self.use_mime_fallback = use_mime_fallback
 
         if include_defaults:
@@ -119,22 +121,31 @@ class FormatRegistry:
     @classmethod
     def from_config(
         cls,
-        formats: Mapping[str, MediaType | str],
-        *,
-        include_defaults: bool = True,
-        use_mime_fallback: bool = True,
+        config: Mapping[str, object] | None = None,
     ) -> Self:
-        """Build a registry from a config-style extension mapping.
+        """Build a registry from a config-file mapping.
 
         Args:
-            formats: Mapping of extensions to ``MediaType`` values or strings.
-            include_defaults: Whether to include Winnow's built-in formats.
-            use_mime_fallback: Whether unknown extensions may fall back to MIME
-                type detection.
+            config: Mapping shaped like the future config-file section. The
+                supported keys are ``formats`` (extension mapping whose values
+                are ``MediaType`` instances or strings), ``include_defaults``
+                (``bool``), and ``use_mime_fallback`` (``bool``).
 
         Returns:
             Registry populated from default and custom extension mappings.
         """
+        config_mapping = {} if config is None else config
+        formats = _coerce_config_formats(config_mapping.get("formats", {}))
+        include_defaults = _coerce_config_bool(
+            config=config_mapping,
+            key="include_defaults",
+            default=True,
+        )
+        use_mime_fallback = _coerce_config_bool(
+            config=config_mapping,
+            key="use_mime_fallback",
+            default=True,
+        )
         return cls(
             formats=formats,
             include_defaults=include_defaults,
@@ -149,7 +160,8 @@ class FormatRegistry:
             Normalized extension names without leading dots mapped to media
             types.
         """
-        return MappingProxyType(self._extension_map)
+        with self._lock:
+            return MappingProxyType(dict(self._extension_map))
 
     def register(
         self,
@@ -169,7 +181,9 @@ class FormatRegistry:
         if not normalized_extension:
             raise ValueError("extension must contain at least one non-dot character")
 
-        self._extension_map[normalized_extension] = _coerce_media_type(media_type)
+        coerced_media_type = _coerce_media_type(media_type)
+        with self._lock:
+            self._extension_map[normalized_extension] = coerced_media_type
 
     def register_many(
         self,
@@ -183,8 +197,17 @@ class FormatRegistry:
         Raises:
             ValueError: If any extension or media type is invalid.
         """
+        normalized_formats: dict[str, MediaType] = {}
         for extension, media_type in formats.items():
-            self.register(extension=extension, media_type=media_type)
+            normalized_extension = normalize_extension(extension)
+            if not normalized_extension:
+                raise ValueError(
+                    "extension must contain at least one non-dot character"
+                )
+            normalized_formats[normalized_extension] = _coerce_media_type(media_type)
+
+        with self._lock:
+            self._extension_map.update(normalized_formats)
 
     def lookup(self, extension: str) -> MediaType | None:
         """Look up a media type by extension.
@@ -201,7 +224,8 @@ class FormatRegistry:
         if not normalized_extension:
             return None
 
-        media_type = self._extension_map.get(normalized_extension)
+        with self._lock:
+            media_type = self._extension_map.get(normalized_extension)
         if media_type is not None:
             return media_type
         if not self.use_mime_fallback:
@@ -256,11 +280,9 @@ def normalize_extension(extension: str) -> str:
     candidate = extension.strip()
     if not candidate:
         return ""
-    if "/" in candidate or "\\" in candidate:
+    if "." in candidate or "/" in candidate or "\\" in candidate:
         suffix = PurePath(candidate).suffix
         candidate = suffix or candidate
-    elif "." in candidate and not candidate.startswith("."):
-        candidate = candidate.rsplit(".", maxsplit=1)[-1]
     return candidate.lstrip(".").casefold()
 
 
@@ -301,6 +323,58 @@ def _coerce_media_type(media_type: MediaType | str) -> MediaType:
         return MediaType(normalized_value)
     except ValueError:
         raise ValueError(f"unsupported media type: {media_type}") from None
+
+
+def _coerce_config_formats(value: object) -> dict[str, MediaType | str]:
+    """Validate and return config-file extension mappings.
+
+    Args:
+        value: Raw ``formats`` value from the registry config section.
+
+    Returns:
+        Mapping of extension strings to media type values.
+
+    Raises:
+        ValueError: If ``value`` is not a valid extension mapping.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("formats must be a mapping")
+
+    formats: dict[str, MediaType | str] = {}
+    for extension, media_type in value.items():
+        if not isinstance(extension, str):
+            raise ValueError("format extension keys must be strings")
+        if not isinstance(media_type, str):
+            raise ValueError("format media types must be strings or MediaType values")
+        formats[extension] = media_type
+    return formats
+
+
+def _coerce_config_bool(
+    *,
+    config: Mapping[str, object],
+    key: str,
+    default: bool,
+) -> bool:
+    """Read a boolean option from a config-file mapping.
+
+    Args:
+        config: Raw registry config section.
+        key: Boolean option name.
+        default: Value to use when ``key`` is absent.
+
+    Returns:
+        Configured boolean value or ``default``.
+
+    Raises:
+        ValueError: If the configured value is not a boolean.
+    """
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{key} must be a boolean")
 
 
 DEFAULT_FORMAT_REGISTRY = create_default_format_registry()

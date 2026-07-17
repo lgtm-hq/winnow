@@ -83,6 +83,7 @@ def test_default_format_registry_exports_all_default_formats() -> None:
     (
         (".JpEg", "jpeg", MediaType.IMAGE),
         ("Vacation.MP4", "mp4", MediaType.VIDEO),
+        (".hidden.MP4", "mp4", MediaType.VIDEO),
         ("/media/family/SONG.FLAC", "flac", MediaType.AUDIO),
     ),
 )
@@ -109,16 +110,20 @@ def test_custom_extension_can_be_registered() -> None:
 def test_registry_can_be_created_from_config_mapping() -> None:
     """Config-style mappings can extend or replace default formats."""
     registry = FormatRegistry.from_config(
-        formats={
-            "m4a": "audio",
-            ".still": "IMAGE",
+        {
+            "formats": {
+                "m4a": "audio",
+                ".still": "IMAGE",
+                "clip": MediaType.VIDEO,
+            },
+            "include_defaults": False,
+            "use_mime_fallback": False,
         },
-        include_defaults=False,
-        use_mime_fallback=False,
     )
 
     assert_that(registry.lookup("m4a")).is_equal_to(MediaType.AUDIO)
     assert_that(registry.lookup(".still")).is_equal_to(MediaType.IMAGE)
+    assert_that(registry.lookup("clip")).is_equal_to(MediaType.VIDEO)
     assert_that(registry.lookup("jpg")).is_none()
 
 
@@ -155,6 +160,8 @@ def test_from_config_rejects_unknown_media_type() -> None:
     """Config mappings must use a supported media type value."""
     with pytest.raises(ValueError, match="unsupported media type"):
         FormatRegistry.from_config(
-            formats={"mystery": "document"},
-            include_defaults=False,
+            {
+                "formats": {"mystery": "document"},
+                "include_defaults": False,
+            },
         )
