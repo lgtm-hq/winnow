@@ -117,8 +117,8 @@ Planned capabilities (not shipped):
 - Local SQLite storage; no cloud dependency required
 - OpenAPI schema as the stable integration surface for automation and UI
 
-Track progress on the [issue board](https://github.com/lgtm-hq/winnow/issues) and
-in the in-repo [documentation](docs/).
+Track progress on the [issue board](https://github.com/lgtm-hq/winnow/issues) and in the
+in-repo [documentation](docs/).
 
 ## Development
 
