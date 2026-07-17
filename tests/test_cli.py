@@ -20,6 +20,7 @@ from winnow.cli.standards import (
     output_option,
     processing_command_options,
     reporting_command_options,
+    standard_command_options,
     workers_option,
     yes_option,
 )
@@ -86,6 +87,15 @@ def test_version_option_prints_package_version() -> None:
     result = runner.invoke(main, ["--version"])
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains(__version__)
+
+
+def test_main_mutates_existing_context_object_for_root_options() -> None:
+    """Root option state is added to an existing Click context object."""
+    context_obj: dict[str, object] = {"existing": "kept"}
+    result = CliRunner().invoke(main, ["--no-color"], obj=context_obj)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(context_obj).is_equal_to({"existing": "kept", "no_color": True})
 
 
 def test_standard_option_factories_expose_conventional_flags() -> None:
@@ -177,8 +187,20 @@ def test_standard_option_factories_parse_canonical_parameter_names() -> None:
     assert_that(result.output).contains("yes=True")
 
 
+def test_standard_command_options_exclude_root_no_color_flag() -> None:
+    """Shared subcommand options leave --no-color on the root command."""
+    command = _command_with_options([standard_command_options])
+    result = CliRunner().invoke(command, ["--help"])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("--config")
+    assert_that(result.output).contains("--dry-run")
+    assert_that(result.output).contains("--yes")
+    assert_that(result.output).does_not_contain("--no-color")
+
+
 def test_reporting_command_options_apply_standard_and_report_flags() -> None:
-    """Reporting composite applies standard, format, and output flags."""
+    """Reporting composite applies subcommand, format, and output flags."""
     command = _command_with_options([reporting_command_options])
     result = CliRunner().invoke(command, ["--help"])
 
@@ -186,13 +208,13 @@ def test_reporting_command_options_apply_standard_and_report_flags() -> None:
     assert_that(result.output).contains("--config")
     assert_that(result.output).contains("--dry-run")
     assert_that(result.output).contains("--yes")
-    assert_that(result.output).contains("--no-color")
+    assert_that(result.output).does_not_contain("--no-color")
     assert_that(result.output).contains("--format")
     assert_that(result.output).contains("--output")
 
 
 def test_processing_command_options_apply_standard_worker_and_cache_flags() -> None:
-    """Processing composite applies standard, worker, and cache flags."""
+    """Processing composite applies subcommand, worker, and cache flags."""
     command = _command_with_options([processing_command_options])
     result = CliRunner().invoke(command, ["--help"])
 
@@ -200,7 +222,17 @@ def test_processing_command_options_apply_standard_worker_and_cache_flags() -> N
     assert_that(result.output).contains("--config")
     assert_that(result.output).contains("--dry-run")
     assert_that(result.output).contains("--yes")
-    assert_that(result.output).contains("--no-color")
+    assert_that(result.output).does_not_contain("--no-color")
     assert_that(result.output).contains("--workers")
     assert_that(result.output).contains("--enable-cache")
     assert_that(result.output).contains("--no-cache")
+
+
+def test_workers_option_rejects_zero_workers() -> None:
+    """Worker count must be a positive integer."""
+    command = _command_with_options([workers_option()])
+    result = CliRunner().invoke(command, ["--workers", "0"])
+
+    assert_that(result.exit_code).is_not_equal_to(0)
+    assert_that(result.output).contains("Invalid value for '--workers'")
+    assert_that(result.output).contains("x>=1")

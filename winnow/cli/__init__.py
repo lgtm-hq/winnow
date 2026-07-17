@@ -16,7 +16,8 @@ __all__ = ["main"]
 @click.pass_context
 def main(ctx: click.Context, no_color: bool) -> None:
     """Winnow your media library."""
-    ctx.obj = {"no_color": no_color}
+    context_obj = ctx.ensure_object(dict)
+    context_obj["no_color"] = no_color
     if ctx.invoked_subcommand is None:
         click.echo(f"winnow {__version__} — use --help for commands.")
 

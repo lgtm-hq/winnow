@@ -150,7 +150,7 @@ def workers_option(default: int = DEFAULT_WORKERS) -> OptionDecorator:
     return _option(
         "--workers",
         "-w",
-        type=int,
+        type=click.IntRange(min=1),
         default=default,
         show_default=True,
         help="Number of worker threads.",
@@ -223,6 +223,9 @@ def cache_options() -> OptionDecorator:
 def standard_command_options(command: CommandCallback) -> CommandCallback:
     """Apply standard options shared by most commands.
 
+    The root command owns ``--no-color`` and stores its value in ``ctx.obj`` for
+    subcommands.
+
     Args:
         command: Click command callback to decorate.
 
@@ -232,7 +235,6 @@ def standard_command_options(command: CommandCallback) -> CommandCallback:
     command = _apply_option(command, config_path_option())
     command = _apply_option(command, dry_run_option())
     command = _apply_option(command, yes_option())
-    command = _apply_option(command, no_color_option())
     return command
 
 
