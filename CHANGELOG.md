@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.5.0] - 2026-07-17
+
+### Added
+
+- **cli**: add shared Click option decorators (#127) (e3f3335)
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
