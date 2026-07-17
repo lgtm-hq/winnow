@@ -304,3 +304,136 @@ def test_atomic_mkdir_existing_directory_with_exist_ok_records_log(
     assert_that(log.operation).is_equal_to(FileOperation.MKDIR)
     assert_that(log.destination).is_equal_to(existing_directory)
     assert_that(existing_directory.is_dir()).is_true()
+
+
+def test_transaction_rejects_nested_entry(tmp_path: Path) -> None:
+    """Re-entering an already active transaction is rejected."""
+    del tmp_path
+    transaction = transactional_file_ops(backup=False)
+
+    with transaction:
+        with pytest.raises(FileSystemOperationError):
+            with transaction:
+                pass
+
+
+def test_transaction_rejects_operations_after_close(tmp_path: Path) -> None:
+    """Operations invoked after the context closes are rejected."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("content\n", encoding="utf-8")
+
+    transaction = transactional_file_ops(backup=False)
+    with transaction as active_transaction:
+        active_transaction.copy(source=source, destination=destination)
+
+    with pytest.raises(FileSystemOperationError):
+        transaction.copy(source=source, destination=tmp_path / "other.txt")
+
+
+def test_copy_failure_removes_orphaned_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed copy over an existing destination removes its created backup."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    backup_directory = tmp_path / "backups"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def failing_replace(self: Path, target: str | Path) -> Path:
+        """Fail when staging the destination aside to its tombstone."""
+        if str(Path(target).name).endswith(".tmp"):
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    with pytest.raises(FileSystemOperationError):
+        atomic_copy(
+            source=source,
+            destination=destination,
+            backup=BackupOptions(directory=backup_directory),
+        )
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("old\n")
+    assert_that(list(backup_directory.iterdir())).is_empty()
+
+
+def test_commit_attempts_all_cleanups_before_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every commit cleanup runs even when an earlier cleanup fails."""
+    target_a = tmp_path / "a.txt"
+    target_b = tmp_path / "b.txt"
+    target_a.write_text("a\n", encoding="utf-8")
+    target_b.write_text("b\n", encoding="utf-8")
+
+    calls: list[tuple[Path | None, ...]] = []
+
+    def failing_commit(*tombstones: Path | None) -> None:
+        """Record the call then raise a deterministic cleanup failure."""
+        calls.append(tombstones)
+        raise OSError("commit cleanup failed")
+
+    monkeypatch.setattr(transaction_module, "_commit_tombstones", failing_commit)
+
+    transaction = transactional_file_ops(backup=False)
+    with pytest.raises(FileSystemOperationError):
+        with transaction as active_transaction:
+            active_transaction.delete(target_a)
+            active_transaction.delete(target_b)
+
+    assert_that(calls).is_length(2)
+
+
+def test_rollback_failure_keeps_failed_log_applied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed rollback step leaves its own log un-rolled-back."""
+    source_a = tmp_path / "a.txt"
+    source_b = tmp_path / "b.txt"
+    destination_a = tmp_path / "dest_a.txt"
+    destination_b = tmp_path / "dest_b.txt"
+    source_a.write_text("a\n", encoding="utf-8")
+    source_b.write_text("b\n", encoding="utf-8")
+
+    original_cleanup = transaction_module._cleanup_path
+
+    def selective_cleanup(path: Path) -> None:
+        """Fail cleanup only for the second destination during rollback."""
+        if path == destination_b:
+            raise OSError("cleanup failed")
+        original_cleanup(path)
+
+    monkeypatch.setattr(transaction_module, "_cleanup_path", selective_cleanup)
+
+    transaction = transactional_file_ops(backup=False)
+    log_a: OperationLog | None = None
+    log_b: OperationLog | None = None
+    with pytest.raises(RuntimeError):
+        with transaction as active_transaction:
+            log_a = active_transaction.copy(
+                source=source_a,
+                destination=destination_a,
+            )
+            log_b = active_transaction.copy(
+                source=source_b,
+                destination=destination_b,
+            )
+            raise RuntimeError("abort batch")
+
+    assert_that(transaction.rollback_errors).is_not_empty()
+    assert_that(log_a).is_not_none()
+    assert_that(log_b).is_not_none()
+    if log_a is None or log_b is None:
+        return
+    assert_that(log_a.status).is_equal_to(OperationStatus.ROLLED_BACK)
+    assert_that(log_b.status).is_equal_to(OperationStatus.APPLIED)

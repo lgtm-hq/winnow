@@ -42,6 +42,7 @@ class FileSystemTransaction:
         self._rollback_steps: list[RollbackStep] = []
         self._commit_steps: list[CommitStep] = []
         self._logs: list[OperationLog] = []
+        self._active = False
         self._closed = False
         self.rollback_errors: tuple[Exception, ...] = ()
 
@@ -55,11 +56,21 @@ class FileSystemTransaction:
 
         Returns:
             This transaction instance.
+
+        Raises:
+            FileSystemOperationError: When the transaction is already active,
+                which would indicate an unsupported nested entry.
         """
+        if self._active:
+            raise FileSystemOperationError(
+                "cannot enter an already active filesystem transaction",
+                operation="fs.transaction.enter",
+            )
         self._logs.clear()
         self._rollback_steps.clear()
         self._commit_steps.clear()
         self.rollback_errors = ()
+        self._active = True
         self._closed = False
         return self
 
@@ -103,6 +114,7 @@ class FileSystemTransaction:
         Raises:
             FileSystemOperationError: When the copy cannot be applied.
         """
+        self._require_active()
         source = Path(source)
         destination = Path(destination)
         temp_path = _temporary_path(destination)
@@ -139,6 +151,7 @@ class FileSystemTransaction:
                         destination=destination,
                     )
                 )
+            cleanups.append(lambda: _cleanup_backups(backups))
             _run_cleanups(operation_error, cleanups)
             raise operation_error from error
 
@@ -174,6 +187,7 @@ class FileSystemTransaction:
         Raises:
             FileSystemOperationError: When the path cannot be deleted.
         """
+        self._require_active()
         path = Path(path)
         tombstone = _temporary_path(path)
         backups: list[Path] = []
@@ -185,12 +199,19 @@ class FileSystemTransaction:
                 backups.append(backup_path)
             path.replace(tombstone)
         except (OSError, shutil.Error) as error:
-            _cleanup_path(tombstone)
-            raise _operation_error(
+            operation_error = _operation_error(
                 operation=FileOperation.DELETE,
                 path=path,
                 error=error,
-            ) from error
+            )
+            _run_cleanups(
+                operation_error,
+                [
+                    lambda: _cleanup_path(tombstone),
+                    lambda: _cleanup_backups(backups),
+                ],
+            )
+            raise operation_error from error
 
         log = OperationLog(
             operation=FileOperation.DELETE,
@@ -227,6 +248,7 @@ class FileSystemTransaction:
         Raises:
             FileSystemOperationError: When the directory cannot be created.
         """
+        self._require_active()
         path = Path(path)
         created_paths: list[Path] = []
 
@@ -242,13 +264,16 @@ class FileSystemTransaction:
                 raise FileExistsError(path)
             created_paths = _create_directories(path=path, parents=parents)
         except OSError as error:
-            for created_path in reversed(created_paths):
-                _cleanup_empty_directory(created_path)
-            raise _operation_error(
+            operation_error = _operation_error(
                 operation=FileOperation.MKDIR,
                 path=path,
                 error=error,
-            ) from error
+            )
+            _run_cleanups(
+                operation_error,
+                [lambda: _rollback_mkdir(created_paths)],
+            )
+            raise operation_error from error
 
         log = OperationLog(
             operation=FileOperation.MKDIR,
@@ -279,6 +304,7 @@ class FileSystemTransaction:
         Raises:
             FileSystemOperationError: When the move cannot be applied.
         """
+        self._require_active()
         source = Path(source)
         destination = Path(destination)
         temp_path = _temporary_path(destination)
@@ -335,6 +361,7 @@ class FileSystemTransaction:
                         source_tombstone=source_tombstone,
                         source_moved_to_temp=source_moved_to_temp,
                     ),
+                    lambda: _cleanup_backups(backups),
                 ],
             )
             raise operation_error from error
@@ -366,24 +393,31 @@ class FileSystemTransaction:
     def commit(self) -> None:
         """Commit applied operations and clean up staging paths.
 
+        Every commit cleanup is attempted even when earlier ones fail, so a
+        single failing callback cannot strand tombstones that later callbacks
+        would remove.
+
         Raises:
             FileSystemOperationError: When commit cleanup fails.
         """
         if self._closed:
             return
         self._closed = True
-        try:
-            for step in self._commit_steps:
+        self._active = False
+        errors: list[Exception] = []
+        for step in self._commit_steps:
+            try:
                 step()
-        except (OSError, shutil.Error) as error:
+            except (OSError, shutil.Error) as error:
+                errors.append(error)
+        self._rollback_steps.clear()
+        self._commit_steps.clear()
+        if errors:
             raise FileSystemOperationError(
                 "failed to commit filesystem transaction",
                 operation="fs.transaction.commit",
-                details={"error": str(error)},
-            ) from error
-        finally:
-            self._rollback_steps.clear()
-            self._commit_steps.clear()
+                details={"errors": [str(error) for error in errors]},
+            ) from errors[0]
 
     def rollback(self) -> tuple[Exception, ...]:
         """Roll back applied operations in reverse order.
@@ -394,16 +428,21 @@ class FileSystemTransaction:
         if self._closed:
             return self.rollback_errors
         errors: list[Exception] = []
-        for step in reversed(self._rollback_steps):
+        for log, step in zip(
+            reversed(self._logs),
+            reversed(self._rollback_steps),
+            strict=True,
+        ):
             try:
                 step()
             except (OSError, shutil.Error) as error:
                 errors.append(error)
-        for log in self._logs:
-            log.status = OperationStatus.ROLLED_BACK
+            else:
+                log.status = OperationStatus.ROLLED_BACK
         self._rollback_steps.clear()
         self._commit_steps.clear()
         self._closed = True
+        self._active = False
         self.rollback_errors = tuple(errors)
         return self.rollback_errors
 
@@ -432,6 +471,19 @@ class FileSystemTransaction:
         self._logs.append(log)
         self._rollback_steps.append(rollback)
         self._commit_steps.append(commit)
+
+    def _require_active(self) -> None:
+        """Ensure the transaction is active before mutating the filesystem.
+
+        Raises:
+            FileSystemOperationError: When the transaction has not been entered
+                or has already been committed or rolled back.
+        """
+        if not self._active:
+            raise FileSystemOperationError(
+                "filesystem transaction is not active",
+                operation="fs.transaction",
+            )
 
 
 def atomic_copy(
@@ -535,6 +587,12 @@ def _cleanup_empty_directory(path: Path) -> None:
         path.rmdir()
     except FileNotFoundError:
         return
+
+
+def _cleanup_backups(backups: list[Path]) -> None:
+    """Remove persistent backups orphaned by a failed operation."""
+    for backup in backups:
+        _cleanup_path(backup)
 
 
 def _cleanup_path(path: Path) -> None:
