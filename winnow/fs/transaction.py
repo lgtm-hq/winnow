@@ -371,6 +371,7 @@ class FileSystemTransaction:
         """
         if self._closed:
             return
+        self._closed = True
         try:
             for step in self._commit_steps:
                 step()
@@ -380,9 +381,9 @@ class FileSystemTransaction:
                 operation="fs.transaction.commit",
                 details={"error": str(error)},
             ) from error
-        self._rollback_steps.clear()
-        self._commit_steps.clear()
-        self._closed = True
+        finally:
+            self._rollback_steps.clear()
+            self._commit_steps.clear()
 
     def rollback(self) -> tuple[Exception, ...]:
         """Roll back applied operations in reverse order.

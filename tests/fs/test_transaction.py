@@ -193,6 +193,45 @@ def test_rollback_after_commit_preserves_committed_log_status(
     assert_that(destination.read_text(encoding="utf-8")).is_equal_to("content\n")
 
 
+def test_rollback_after_failed_commit_cleanup_preserves_committed_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback after a commit cleanup failure must not undo committed work."""
+    target = tmp_path / "target.txt"
+    target.write_text("content\n", encoding="utf-8")
+
+    def fail_commit_tombstones(*tombstones: Path | None) -> None:
+        """Raise a deterministic commit cleanup failure for monkeypatching."""
+        del tombstones
+        raise OSError("commit cleanup failed")
+
+    monkeypatch.setattr(
+        transaction_module,
+        "_commit_tombstones",
+        fail_commit_tombstones,
+    )
+
+    transaction = transactional_file_ops(backup=False)
+    log: OperationLog | None = None
+    with pytest.raises(FileSystemOperationError):
+        with transaction as active_transaction:
+            log = active_transaction.delete(target)
+
+    assert_that(target.exists()).is_false()
+    assert_that(log).is_not_none()
+    if log is None:
+        return
+    assert_that(log.status).is_equal_to(OperationStatus.APPLIED)
+
+    errors = transaction.rollback()
+
+    assert_that(errors).is_empty()
+    assert_that(target.exists()).is_false()
+    assert_that(log.status).is_equal_to(OperationStatus.APPLIED)
+    assert_that(transaction.logs[0].status).is_equal_to(OperationStatus.APPLIED)
+
+
 def test_reused_transaction_clears_prior_run_logs(
     tmp_path: Path,
 ) -> None:
