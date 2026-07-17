@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -10,12 +11,20 @@ from types import TracebackType
 from typing import Literal, Self
 from uuid import uuid4
 
-from winnow.fs._path_ops import copy_path, path_exists, remove_path
+from winnow.fs._path_ops import (
+    copy_path,
+    path_exists,
+    remove_path,
+    sync_directory,
+    sync_path,
+)
 from winnow.fs.backup import create_backup
 from winnow.fs.backup_options import BackupOptions
 from winnow.fs.errors import FileSystemOperationError, FileSystemRollbackError
 from winnow.fs.operation_log import OperationLog
 from winnow.fs.operations import FileOperation, OperationStatus
+
+_LOGGER = logging.getLogger(__name__)
 
 RollbackStep = Callable[[], None]
 CommitStep = Callable[[], None]
@@ -90,11 +99,19 @@ class FileSystemTransaction:
         Returns:
             ``False`` so exceptions from the managed block are never suppressed.
         """
-        del exc_value, traceback
+        del traceback
         if exc_type is None:
             self.commit()
-        else:
-            self.rollback_errors = self.rollback()
+            return False
+        self.rollback_errors = self.rollback()
+        if self.rollback_errors:
+            _LOGGER.warning(
+                "filesystem transaction rollback left %d step(s) unrestored",
+                len(self.rollback_errors),
+            )
+            if exc_value is not None:
+                for rollback_error in self.rollback_errors:
+                    exc_value.add_note(f"rollback failed: {rollback_error}")
         return False
 
     def copy(
@@ -119,12 +136,14 @@ class FileSystemTransaction:
         destination = Path(destination)
         temp_path = _temporary_path(destination)
         destination_tombstone: Path | None = None
+        destination_renamed = False
         backups: list[Path] = []
 
         try:
             _validate_source(source=source, operation=FileOperation.COPY)
             _validate_destination_parent(destination)
             copy_path(source=source, destination=temp_path)
+            sync_path(temp_path)
 
             if path_exists(destination):
                 backup_path = create_backup(
@@ -133,10 +152,12 @@ class FileSystemTransaction:
                 )
                 if backup_path is not None:
                     backups.append(backup_path)
-                destination_tombstone = _temporary_path(destination)
-                destination.replace(destination_tombstone)
+                destination_tombstone, destination_renamed = (
+                    _stage_destination_for_replace(destination)
+                )
 
             temp_path.replace(destination)
+            sync_directory(destination.parent)
         except (OSError, shutil.Error) as error:
             operation_error = _operation_error(
                 operation=FileOperation.COPY,
@@ -145,12 +166,16 @@ class FileSystemTransaction:
             )
             cleanups: list[RollbackStep] = [lambda: _cleanup_path(temp_path)]
             if destination_tombstone is not None:
-                cleanups.append(
-                    lambda: _restore_tombstone(
-                        tombstone=destination_tombstone,
-                        destination=destination,
+                tombstone = destination_tombstone
+                if destination_renamed:
+                    cleanups.append(
+                        lambda: _restore_tombstone(
+                            tombstone=tombstone,
+                            destination=destination,
+                        )
                     )
-                )
+                else:
+                    cleanups.append(lambda: _cleanup_path(tombstone))
             cleanups.append(lambda: _cleanup_backups(backups))
             _run_cleanups(operation_error, cleanups)
             raise operation_error from error
@@ -294,6 +319,10 @@ class FileSystemTransaction:
     ) -> OperationLog:
         """Atomically move a path into place.
 
+        Only an overwritten destination is backed up: a plain rename destroys
+        nothing (rollback restores it by renaming back), so backing up the
+        source would double I/O for every move.
+
         Args:
             source: Existing file, directory, or symlink to move.
             destination: Destination path to create or replace.
@@ -309,6 +338,8 @@ class FileSystemTransaction:
         destination = Path(destination)
         temp_path = _temporary_path(destination)
         destination_tombstone: Path | None = None
+        destination_renamed = False
+        destination_replaced = False
         source_tombstone: Path | None = None
         source_moved_to_temp = False
         backups: list[Path] = []
@@ -317,10 +348,6 @@ class FileSystemTransaction:
             _validate_source(source=source, operation=FileOperation.MOVE)
             _validate_destination_parent(destination)
 
-            source_backup = create_backup(source, options=self._backup_options)
-            if source_backup is not None:
-                backups.append(source_backup)
-
             if path_exists(destination):
                 destination_backup = create_backup(
                     destination,
@@ -328,8 +355,9 @@ class FileSystemTransaction:
                 )
                 if destination_backup is not None:
                     backups.append(destination_backup)
-                destination_tombstone = _temporary_path(destination)
-                destination.replace(destination_tombstone)
+                destination_tombstone, destination_renamed = (
+                    _stage_destination_for_replace(destination)
+                )
 
             try:
                 source.replace(temp_path)
@@ -338,8 +366,11 @@ class FileSystemTransaction:
                 if error.errno != errno.EXDEV:
                     raise
                 copy_path(source=source, destination=temp_path)
+                sync_path(temp_path)
 
             temp_path.replace(destination)
+            destination_replaced = True
+            sync_directory(destination.parent)
 
             if not source_moved_to_temp:
                 source_tombstone = _temporary_path(source)
@@ -360,6 +391,8 @@ class FileSystemTransaction:
                         destination_tombstone=destination_tombstone,
                         source_tombstone=source_tombstone,
                         source_moved_to_temp=source_moved_to_temp,
+                        destination_renamed=destination_renamed,
+                        destination_replaced=destination_replaced,
                     ),
                     lambda: _cleanup_backups(backups),
                 ],
@@ -382,6 +415,8 @@ class FileSystemTransaction:
                 destination_tombstone=destination_tombstone,
                 source_tombstone=source_tombstone,
                 source_moved_to_temp=source_moved_to_temp,
+                destination_renamed=destination_renamed,
+                destination_replaced=destination_replaced,
             ),
             commit=lambda: _commit_tombstones(
                 destination_tombstone,
@@ -557,7 +592,7 @@ def atomic_move(
     Args:
         source: Existing file, directory, or symlink to move.
         destination: Destination path to create or replace.
-        backup: Backup configuration for moved and replaced paths.
+        backup: Backup configuration for replaced destinations.
 
     Returns:
         Structured log entry for the move operation.
@@ -741,26 +776,62 @@ def _rollback_move(
     destination_tombstone: Path | None,
     source_tombstone: Path | None,
     source_moved_to_temp: bool,
+    destination_renamed: bool,
+    destination_replaced: bool,
 ) -> None:
     """Roll back a completed or partially completed move operation."""
     if source_moved_to_temp:
-        if path_exists(destination) and not path_exists(source):
+        if (
+            destination_replaced
+            and path_exists(destination)
+            and not path_exists(source)
+        ):
             destination.replace(source)
         elif path_exists(temp_path) and not path_exists(source):
             temp_path.replace(source)
-        elif path_exists(destination):
-            remove_path(destination)
+        # When the source exists again despite the move, leave the moved data
+        # in place rather than discarding it.
     else:
-        _cleanup_path(destination)
+        if destination_replaced:
+            _cleanup_path(destination)
         _cleanup_path(temp_path)
         if source_tombstone is not None:
             _restore_tombstone(tombstone=source_tombstone, destination=source)
 
-    if destination_tombstone is not None:
+    if destination_tombstone is None:
+        return
+    if destination_renamed or destination_replaced:
         _restore_tombstone(
             tombstone=destination_tombstone,
             destination=destination,
         )
+    else:
+        # The destination was preserved in place (copy staging) and never
+        # replaced, so only the staged copy needs to be discarded.
+        _cleanup_path(destination_tombstone)
+
+
+def _stage_destination_for_replace(destination: Path) -> tuple[Path, bool]:
+    """Stage an existing destination so it can be replaced atomically.
+
+    Regular files and symlinks are preserved by copying them aside, so the
+    destination itself never disappears before ``Path.replace`` atomically
+    overwrites it. Real directories cannot be replaced atomically, so they are
+    renamed aside instead, which briefly removes the destination.
+
+    Args:
+        destination: Existing destination path about to be replaced.
+
+    Returns:
+        Tombstone path and whether the destination was renamed rather than
+        copied.
+    """
+    tombstone = _temporary_path(destination)
+    if destination.is_dir() and not destination.is_symlink():
+        destination.replace(tombstone)
+        return tombstone, True
+    copy_path(source=destination, destination=tombstone)
+    return tombstone, False
 
 
 def _temporary_path(path: Path) -> Path:

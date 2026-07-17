@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import shutil
 from pathlib import Path
 
@@ -12,10 +13,13 @@ from winnow.fs import (
     BackupOptions,
     FileOperation,
     FileSystemOperationError,
+    FileSystemRollbackError,
     OperationLog,
     OperationStatus,
     atomic_copy,
+    atomic_delete,
     atomic_mkdir,
+    atomic_move,
     transactional_file_ops,
 )
 from winnow.fs import transaction as transaction_module
@@ -345,8 +349,8 @@ def test_copy_failure_removes_orphaned_backup(
     original_replace = Path.replace
 
     def failing_replace(self: Path, target: str | Path) -> Path:
-        """Fail when staging the destination aside to its tombstone."""
-        if str(Path(target).name).endswith(".tmp"):
+        """Fail when atomically replacing the destination."""
+        if Path(target) == destination:
             raise OSError("replace failed")
         return original_replace(self, target)
 
@@ -492,3 +496,211 @@ def test_rollback_failure_keeps_failed_log_applied(
         return
     assert_that(log_a.status).is_equal_to(OperationStatus.ROLLED_BACK)
     assert_that(log_b.status).is_equal_to(OperationStatus.APPLIED)
+
+
+def test_atomic_move_renames_file_and_commits(tmp_path: Path) -> None:
+    """Atomic move renames a file without leaving staging artifacts."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("payload\n", encoding="utf-8")
+
+    log = atomic_move(source=source, destination=destination, backup=False)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("payload\n")
+    assert_that(source.exists()).is_false()
+    assert_that(log.operation).is_equal_to(FileOperation.MOVE)
+    assert_that(log.backups).is_empty()
+    assert_that(list(tmp_path.iterdir())).is_length(1)
+
+
+def test_atomic_move_does_not_back_up_plain_renames(tmp_path: Path) -> None:
+    """A move without an overwritten destination creates no backup copies."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    backup_directory = tmp_path / "backups"
+    source.write_text("payload\n", encoding="utf-8")
+
+    log = atomic_move(
+        source=source,
+        destination=destination,
+        backup=BackupOptions(directory=backup_directory),
+    )
+
+    assert_that(log.backups).is_empty()
+    assert_that(backup_directory.exists()).is_false()
+
+
+def test_atomic_move_backs_up_only_overwritten_destination(tmp_path: Path) -> None:
+    """A move over an existing destination backs up just the destroyed file."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    backup_directory = tmp_path / "backups"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    log = atomic_move(
+        source=source,
+        destination=destination,
+        backup=BackupOptions(directory=backup_directory),
+    )
+
+    assert_that(log.backups).is_length(1)
+    assert_that(log.backups[0].read_text(encoding="utf-8")).is_equal_to("old\n")
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("new\n")
+
+
+def test_atomic_delete_removes_path_and_keeps_backup(tmp_path: Path) -> None:
+    """Atomic delete removes the file and records the configured backup."""
+    target = tmp_path / "target.txt"
+    backup_directory = tmp_path / "backups"
+    target.write_text("payload\n", encoding="utf-8")
+
+    log = atomic_delete(target, backup=BackupOptions(directory=backup_directory))
+
+    assert_that(target.exists()).is_false()
+    assert_that(log.operation).is_equal_to(FileOperation.DELETE)
+    assert_that(log.backups).is_length(1)
+    assert_that(log.backups[0].read_text(encoding="utf-8")).is_equal_to("payload\n")
+
+
+def test_move_falls_back_to_copy_on_cross_device_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cross-filesystem move copies then removes the source atomically."""
+    source = tmp_path / "source.txt"
+    destination_dir = tmp_path / "dest"
+    destination_dir.mkdir()
+    destination = destination_dir / "destination.txt"
+    source.write_text("payload\n", encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def cross_device_replace(self: Path, target: str | Path) -> Path:
+        """Simulate EXDEV when renaming the source into the staging path."""
+        if self == source and Path(target).parent == destination_dir:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", cross_device_replace)
+
+    log = atomic_move(source=source, destination=destination, backup=False)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("payload\n")
+    assert_that(source.exists()).is_false()
+    assert_that(log.operation).is_equal_to(FileOperation.MOVE)
+    assert_that(list(destination_dir.iterdir())).is_length(1)
+    assert_that(list(tmp_path.iterdir())).is_length(1)
+
+
+def test_move_cross_device_failure_rolls_back_source_and_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed cross-device move restores both source and destination."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def cross_device_then_failing_replace(self: Path, target: str | Path) -> Path:
+        """Simulate EXDEV for the source, then fail the final replace."""
+        if self == source and str(Path(target).name).endswith(".tmp"):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if Path(target) == destination:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", cross_device_then_failing_replace)
+
+    with pytest.raises(FileSystemOperationError):
+        atomic_move(source=source, destination=destination, backup=False)
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+
+    assert_that(source.read_text(encoding="utf-8")).is_equal_to("new\n")
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("old\n")
+    assert_that(list(tmp_path.iterdir())).is_length(2)
+
+
+def test_copy_overwrite_keeps_destination_present_throughout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing a file destination never leaves it missing, even briefly."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    original_replace = Path.replace
+    observed_missing: list[bool] = []
+
+    def observing_replace(self: Path, target: str | Path) -> Path:
+        """Record whether the destination is absent before each rename."""
+        observed_missing.append(not destination.exists())
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", observing_replace)
+
+    atomic_copy(source=source, destination=destination, backup=False)
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("new\n")
+    assert_that(observed_missing).does_not_contain(True)
+
+
+def test_rollback_restores_overwritten_file_content(tmp_path: Path) -> None:
+    """Rolling back an overwriting copy restores the original file content."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        with transactional_file_ops(backup=False) as transaction:
+            transaction.copy(source=source, destination=destination)
+            assert_that(destination.read_text(encoding="utf-8")).is_equal_to("new\n")
+            raise RuntimeError("abort batch")
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("old\n")
+    assert_that(list(tmp_path.iterdir())).is_length(2)
+
+
+def test_rollback_or_raise_raises_on_failed_rollback_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rollback_or_raise surfaces rollback failures as a structured error."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("payload\n", encoding="utf-8")
+
+    def failing_cleanup(path: Path) -> None:
+        """Fail every cleanup to simulate an unrecoverable rollback."""
+        raise OSError("cleanup failed")
+
+    transaction = transactional_file_ops(backup=False)
+    with transaction as active_transaction:
+        active_transaction.copy(source=source, destination=destination)
+        monkeypatch.setattr(transaction_module, "_cleanup_path", failing_cleanup)
+        with pytest.raises(FileSystemRollbackError):
+            active_transaction.rollback_or_raise()
+
+
+def test_rollback_or_raise_passes_when_rollback_succeeds(tmp_path: Path) -> None:
+    """rollback_or_raise is silent when every rollback step succeeds."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("payload\n", encoding="utf-8")
+
+    transaction = transactional_file_ops(backup=False)
+    with transaction as active_transaction:
+        active_transaction.copy(source=source, destination=destination)
+        active_transaction.rollback_or_raise()
+
+    assert_that(destination.exists()).is_false()
+    assert_that(source.read_text(encoding="utf-8")).is_equal_to("payload\n")

@@ -8,6 +8,7 @@ for private helpers.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -17,7 +18,11 @@ def copy_path(
     source: Path,
     destination: Path,
 ) -> None:
-    """Copy a file, directory, or symlink preserving metadata."""
+    """Copy a file, directory, or symlink preserving metadata.
+
+    Mode and timestamps are preserved via ``copy2``/``copytree``; file
+    ownership is not.
+    """
     if source.is_dir() and not source.is_symlink():
         shutil.copytree(source, destination, symlinks=True)
         return
@@ -35,3 +40,54 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
         return
     path.unlink()
+
+
+def sync_path(path: Path) -> None:
+    """Flush a staged file or directory tree to stable storage, best effort.
+
+    Called on staged content before an atomic replace so a crash cannot leave
+    a successfully renamed destination with unwritten data. Directory trees
+    are synced file by file; symlinks need no syncing.
+    """
+    if path.is_symlink():
+        return
+    if path.is_file():
+        _sync_file(path)
+        return
+    if path.is_dir():
+        for child in sorted(path.rglob("*")):
+            if child.is_file() and not child.is_symlink():
+                _sync_file(child)
+
+
+def sync_directory(path: Path) -> None:
+    """Flush a directory entry so renames inside it are durable, best effort.
+
+    POSIX requires fsyncing the parent directory for a rename to be durable.
+    Platforms that cannot open directories for reading (e.g. Windows) are
+    skipped silently.
+    """
+    try:
+        directory_fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:  # pragma: no cover - platform-specific
+        pass
+    finally:
+        os.close(directory_fd)
+
+
+def _sync_file(path: Path) -> None:
+    """Flush one regular file's contents to stable storage, best effort."""
+    try:
+        file_fd = os.open(path, os.O_RDONLY)
+    except OSError:  # pragma: no cover - permission-specific
+        return
+    try:
+        os.fsync(file_fd)
+    except OSError:  # pragma: no cover - platform-specific
+        pass
+    finally:
+        os.close(file_fd)
