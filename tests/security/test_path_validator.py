@@ -172,6 +172,32 @@ def test_validate_path_rejects_external_alias_to_root_subdirectory(
         validator.validate_path(external_link / "photo.jpg")
 
 
+def test_validate_path_rejects_external_symlink_navigating_into_root_via_dotdot(
+    root: Path,
+    tmp_path: Path,
+) -> None:
+    """An external symlink whose ``..`` re-enters the root is rejected.
+
+    ``<ext_link>/../root/file`` resolves back inside the root, so the trusted
+    boundary lands on the ``../root`` prefix. The leading ``ext_link`` symlink
+    precedes that boundary and must still be detected under REJECT.
+    """
+    sibling = tmp_path / "sibling"
+    sibling.mkdir()
+    ext_link = tmp_path / "ext_link"
+    ext_link.symlink_to(sibling)
+    (root / "file.jpg").touch()
+    validator = PathValidator(
+        allowed_roots=[root],
+        symlink_policy=SymlinkPolicy.REJECT,
+    )
+    candidate = ext_link / ".." / root.name / "file.jpg"
+
+    assert_that(candidate.resolve()).is_equal_to((root / "file.jpg").resolve())
+    with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
+        validator.validate_path(candidate)
+
+
 def test_validate_path_warns_for_every_traversed_symlink(root: Path) -> None:
     """Under WARN policy, each traversed symlink emits its own warning."""
     real_dir = root / "real_dir"

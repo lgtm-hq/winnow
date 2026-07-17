@@ -216,13 +216,17 @@ class PathValidator:
         The candidate is scanned component by component from the filesystem
         anchor downward *without* collapsing ``..`` segments, so a symlink is
         detected even when a later ``..`` would resolve the path back inside a
-        root (for example ``<root>/link/../file``). Components at or above the
-        trusted root prefix -- the first prefix whose resolved form is exactly
-        a configured root, including a symlinked root alias -- are exempt, so a
-        legitimate alias for the root itself is never reported. Aliases that
-        resolve *beneath* a root (for example an external link targeting a
-        root subdirectory) do not establish a boundary and are therefore
-        reported.
+        root (for example ``<root>/link/../file``). Only the trusted root
+        prefix itself -- the first prefix whose resolved form is exactly a
+        configured root, including a symlinked root alias -- is exempt, so a
+        legitimate alias for the root itself is never reported. Every other
+        symlink component is reported, including symlinks that appear *before*
+        that boundary in the absolute path (for example an external symlink
+        ``/tmp/link`` in ``/tmp/link/../<root>/file`` whose trailing ``..``
+        navigates back into the root); those are still untrusted traversals.
+        Aliases that resolve *beneath* a root (for example an external link
+        targeting a root subdirectory) do not establish a boundary and are
+        therefore reported.
 
         When the fully resolved candidate lies outside every allowed root, no
         symlink is reported; the containment check in :meth:`validate_path`
@@ -242,8 +246,11 @@ class PathValidator:
 
         prefixes = self._ancestor_prefixes(absolute)
         boundary_index = self._trusted_root_index(prefixes)
-        start = 0 if boundary_index is None else boundary_index + 1
-        return [prefix for prefix in prefixes[start:] if prefix.is_symlink()]
+        return [
+            prefix
+            for index, prefix in enumerate(prefixes)
+            if index != boundary_index and prefix.is_symlink()
+        ]
 
     @staticmethod
     def _ancestor_prefixes(absolute: Path) -> list[Path]:
@@ -266,6 +273,12 @@ class PathValidator:
 
     def _trusted_root_index(self, prefixes: list[Path]) -> int | None:
         """Return the index of the trusted root prefix, if one exists.
+
+        The trusted prefix is the sole component exempt from symlink
+        reporting: it marks a legitimate alias for the root itself. It does
+        *not* extend trust to earlier components, so a symlink that precedes
+        this boundary (reached via ``..``) is still reported by
+        :meth:`_untrusted_symlinks`.
 
         Args:
             prefixes: Cumulative prefixes ordered from the anchor downward.
