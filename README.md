@@ -3,7 +3,6 @@
 <!-- markdownlint-disable MD013 -- badge URLs exceed 88 characters -->
 
 [![CI](https://github.com/lgtm-hq/winnow/actions/workflows/test-ci.yml/badge.svg)](https://github.com/lgtm-hq/winnow/actions/workflows/test-ci.yml)
-[![Coverage](https://codecov.io/gh/lgtm-hq/winnow/branch/main/graph/badge.svg)](https://codecov.io/gh/lgtm-hq/winnow)
 [![PyPI](https://img.shields.io/pypi/v/winnow-media?label=pypi)](https://pypi.org/project/winnow-media/)
 [![CodeQL](https://github.com/lgtm-hq/winnow/actions/workflows/codeql.yml/badge.svg)](https://github.com/lgtm-hq/winnow/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/lgtm-hq/winnow/badge)](https://scorecard.dev/viewer/?uri=github.com/lgtm-hq/winnow)
@@ -119,7 +118,7 @@ Planned capabilities (not shipped):
 - OpenAPI schema as the stable integration surface for automation and UI
 
 Track progress on the [issue board](https://github.com/lgtm-hq/winnow/issues) and
-[documentation site](https://lgtm-hq.github.io/winnow/).
+in the in-repo [documentation](docs/).
 
 ## Development
 
