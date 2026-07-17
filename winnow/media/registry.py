@@ -286,7 +286,8 @@ def normalize_extension(extension: str) -> str:
     candidate = extension.strip()
     if not candidate:
         return ""
-    has_separator = "/" in candidate or "\\" in candidate
+    candidate = candidate.replace("\\", "/")
+    has_separator = "/" in candidate
     if has_separator or "." in candidate:
         suffix = PurePath(candidate).suffix
         if not suffix and has_separator:

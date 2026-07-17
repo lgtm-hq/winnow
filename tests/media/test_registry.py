@@ -171,6 +171,7 @@ def test_normalize_extension_returns_empty_for_suffixless_path() -> None:
     """A path without a suffix normalizes to an empty extension."""
     assert_that(normalize_extension("/media/family/SONG")).is_equal_to("")
     assert_that(normalize_extension("C:\\photos\\IMG")).is_equal_to("")
+    assert_that(normalize_extension("C:\\photos.v1\\IMG")).is_equal_to("")
 
 
 def test_lookup_returns_none_for_suffixless_path() -> None:
