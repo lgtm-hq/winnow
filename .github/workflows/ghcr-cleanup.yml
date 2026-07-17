@@ -18,7 +18,8 @@ name: Maintenance - GHCR Registry Cleanup
       dry_run:
         description: 'Dry run (log only, no deletions)'
         required: false
-        default: false
+        # Default manual runs to non-destructive; opt in to real deletions.
+        default: true
         type: boolean
       min_age_days:
         description: 'Minimum age in days before deletion'
@@ -33,7 +34,43 @@ concurrency:
 permissions: {}
 
 jobs:
+  # The repo publishes no container images yet; the lgtm-ci reusable fails
+  # hard when the package is missing, so gate cleanup on package existence
+  # to keep scheduled runs green until an image-publishing workflow lands.
+  check-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout for the package existence script
+      packages: read # query GHCR package metadata via Packages API
+    outputs:
+      exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - name: Harden Runner
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+      - name: Checkout repository
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check GHCR package exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE_NAME: winnow
+        run: ./scripts/ci/maintenance/check-ghcr-package.sh
+
   prune-untagged:
+    needs: [check-package]
+    if: needs.check-package.outputs.exists == 'true'
     # yamllint disable-line rule:line-length
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-ghcr-cleanup.yml@66cad82ead0e5d119928c895c7d7da9c837989e5 # v0.52.3
     permissions:
