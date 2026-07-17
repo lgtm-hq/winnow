@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
+from importlib import import_module
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import cast
@@ -22,7 +24,46 @@ from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
 from winnow.models.enums import SymlinkPolicy
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _yaml_error_types() -> tuple[type[Exception], ...]:
+    """Return the YAMLError classes raised by installed and vendored ruamel.
+
+    Dynaconf parses YAML with its vendored ruamel.yaml, whose ``YAMLError`` is
+    unrelated to the installed ruamel.yaml's class, so both must be caught. The
+    modules ship no type stubs, hence the runtime lookup.
+
+    Returns:
+        YAMLError classes available in this environment.
+    """
+    error_types: list[type[Exception]] = []
+    try:
+        error_types.append(
+            cast("type[Exception]", import_module("ruamel.yaml.error").YAMLError),
+        )
+    except ImportError:  # pragma: no cover - ships with dynaconf[yaml]
+        pass
+    try:
+        error_types.append(
+            cast(
+                "type[Exception]",
+                import_module("dynaconf.vendor.ruamel.yaml.error").YAMLError,
+            ),
+        )
+    except ImportError:  # pragma: no cover - ships with dynaconf
+        pass
+    return tuple(error_types)
+
+
+_CONFIG_LOAD_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    *_yaml_error_types(),
+)
+
 _INTERNAL_DYNACONF_KEYS = frozenset({"LOAD_DOTENV"})
+_KNOWN_TOP_LEVEL_KEYS = frozenset(WinnowConfig.model_fields)
 _ENVVAR_PREFIX = f"{ENVVAR_PREFIX}_"
 _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
@@ -198,6 +239,9 @@ def set_config_value(
 ) -> WinnowConfig:
     """Set a dotted configuration key and persist the validated config.
 
+    Only the user's sparse configuration data is written back: existing keys in
+    the file are preserved as-is and defaults are never materialized into it.
+
     Args:
         key: Dotted config key, such as ``cache.enabled``.
         value: New raw value for the key.
@@ -216,12 +260,15 @@ def set_config_value(
         cwd=cwd,
         home_config_dir=home_config_dir,
     )
-    current_config = _load_file_config_for_write(target_path)
-    data = default_config_data(current_config)
-    _set_nested_value(data=data, dotted_key=key, value=value)
-    _sync_symlink_settings(data=data, key=key, value=value)
-    updated_config = validate_config_data(data=data, file_path=target_path)
-    _write_config_file(config=updated_config, config_path=target_path)
+    user_data: dict[str, object] = (
+        _load_dynaconf_data(config_path=target_path, load_env=False)
+        if target_path.is_file()
+        else {}
+    )
+    _set_nested_value(data=user_data, dotted_key=key, value=value)
+    _sync_symlink_settings(data=user_data, key=key, value=value)
+    updated_config = validate_config_data(data=user_data, file_path=target_path)
+    _write_config_file(config=user_data, config_path=target_path)
     return updated_config
 
 
@@ -336,7 +383,7 @@ def _load_dynaconf_data(
         env_data, explicit_env_keys = (
             _load_env_data(dict(os.environ)) if load_env else ({}, frozenset())
         )
-    except Exception as exc:
+    except _CONFIG_LOAD_ERRORS as exc:
         raise ConfigError(
             "Unable to load Winnow configuration",
             operation="load_config",
@@ -352,7 +399,7 @@ def _load_dynaconf_data(
     normalized_data = _normalize_mapping(user_data)
     _merge_mapping(normalized_data, env_data)
     _sync_symlink_env_overrides(normalized_data, explicit_env_keys)
-    return normalized_data
+    return _drop_unknown_keys(data=normalized_data, file_path=config_path)
 
 
 def _load_env_data(
@@ -466,18 +513,35 @@ def _normalize_value(value: object) -> object:
     return value
 
 
-def _load_file_config_for_write(config_path: Path) -> WinnowConfig:
-    """Load a file-backed config for mutation.
+def _drop_unknown_keys(
+    data: dict[str, object],
+    *,
+    file_path: Path | None,
+) -> dict[str, object]:
+    """Drop top-level keys that are not Winnow configuration fields.
+
+    Guards against Dynaconf internals leaking into ``as_dict()`` output across
+    Dynaconf versions and against unrelated ``WINNOW_*`` environment variables
+    breaking every load under ``extra="forbid"`` validation.
 
     Args:
-        config_path: Target file path.
+        data: Normalized configuration mapping.
+        file_path: Source file path used in the warning message.
 
     Returns:
-        Existing file config, or defaults when the file does not exist.
+        Mapping restricted to known top-level configuration keys.
     """
-    if not config_path.is_file():
-        return WinnowConfig()
-    return load_config(config_path=config_path, load_env=False)
+    known_data = {
+        key: value for key, value in data.items() if key in _KNOWN_TOP_LEVEL_KEYS
+    }
+    dropped_keys = sorted(set(data) - set(known_data))
+    if dropped_keys:
+        _LOGGER.warning(
+            "Ignoring unknown configuration keys %s from %s",
+            dropped_keys,
+            file_path if file_path is not None else "environment",
+        )
+    return known_data
 
 
 def _set_nested_value(
@@ -547,11 +611,15 @@ def _sync_symlink_settings(
         data[_FOLLOW_SYMLINKS_KEY] = policy is SymlinkPolicy.FOLLOW
 
 
-def _write_config_file(config: WinnowConfig, config_path: Path) -> None:
-    """Write a validated configuration model as YAML.
+def _write_config_file(
+    config: WinnowConfig | Mapping[str, object],
+    config_path: Path,
+) -> None:
+    """Write validated configuration content as YAML.
 
     Args:
-        config: Configuration to persist.
+        config: Configuration model, or a sparse user-data mapping that has
+            already been validated.
         config_path: Destination path.
 
     Raises:

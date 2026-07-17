@@ -326,3 +326,118 @@ def test_set_config_value_updates_follow_flag_with_symlink_policy(
     assert_that(error_config.follow_symlinks).is_false()
     assert_that(error_reload.symlink_policy).is_equal_to(SymlinkPolicy.ERROR)
     assert_that(error_reload.follow_symlinks).is_false()
+
+
+def test_load_config_falls_back_to_user_config_dir(tmp_path: Path) -> None:
+    """Verify the user config directory is used when no CWD file exists."""
+    user_dir = tmp_path / "home"
+    user_dir.mkdir()
+    (user_dir / CONFIG_FILE_NAME).write_text(
+        "dry_run: false\nworkers: 3\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(cwd=tmp_path, home_config_dir=user_dir)
+
+    assert_that(config.dry_run).is_false()
+    assert_that(config.workers).is_equal_to(3)
+
+
+def test_load_config_wraps_malformed_yaml(tmp_path: Path) -> None:
+    """Verify unparseable YAML raises a ConfigError with load context."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        load_config(config_path=config_path)
+
+    assert_that(str(error.value)).contains("load_config")
+
+
+def test_load_config_rejects_missing_explicit_path(tmp_path: Path) -> None:
+    """Verify an explicit nonexistent config path raises a ConfigError."""
+    with pytest.raises(ConfigError) as error:
+        load_config(config_path=tmp_path / "missing.yaml")
+
+    assert_that(str(error.value)).contains("load_config")
+
+
+def test_load_config_ignores_unknown_top_level_keys(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify unknown top-level keys are dropped with a warning, not fatal."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("unknown_key: 1\nworkers: 3\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="winnow.config.loader"):
+        config = load_config(config_path=config_path, load_env=False)
+
+    assert_that(config.workers).is_equal_to(3)
+    assert_that(caplog.text).contains("unknown_key")
+
+
+def test_generate_default_config_respects_overwrite_flag(tmp_path: Path) -> None:
+    """Verify overwrite is required to replace an existing config file."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    generate_default_config(config_path=config_path)
+
+    with pytest.raises(ConfigError) as error:
+        generate_default_config(config_path=config_path)
+
+    regenerated = generate_default_config(config_path=config_path, overwrite=True)
+
+    assert_that(str(error.value)).contains("generate_config")
+    assert_that(regenerated).is_equal_to(config_path)
+
+
+def test_set_config_value_preserves_sparse_user_file(tmp_path: Path) -> None:
+    """Verify setting a key keeps the user's file sparse."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n", encoding="utf-8")
+
+    updated_config = set_config_value(
+        "cache.enabled",
+        False,
+        config_path=config_path,
+    )
+    file_text = config_path.read_text(encoding="utf-8")
+
+    assert_that(updated_config.workers).is_equal_to(2)
+    assert_that(updated_config.cache.enabled).is_false()
+    assert_that(file_text).contains("workers")
+    assert_that(file_text).contains("cache")
+    assert_that(file_text).does_not_contain("hash_algorithm")
+    assert_that(file_text).does_not_contain("min_similarity")
+
+
+def test_set_config_value_rejects_empty_key(tmp_path: Path) -> None:
+    """Verify an empty dotted key raises a ConfigError."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("", True, config_path=config_path)
+
+    assert_that(str(error.value)).contains("set_config")
+
+
+def test_set_config_value_rejects_scalar_traversal(tmp_path: Path) -> None:
+    """Verify traversing through a scalar segment raises a ConfigError."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers.nested", 1, config_path=config_path)
+
+    assert_that(str(error.value)).contains("set_config")
+
+
+def test_set_config_value_rejects_invalid_value(tmp_path: Path) -> None:
+    """Verify an invalid value fails validation without writing the file."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("min_similarity", 2.0, config_path=config_path)
+
+    assert_that(str(error.value)).contains("validate_config")
+    assert_that(config_path.exists()).is_false()
