@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from assertpy import assert_that
 
@@ -111,3 +113,22 @@ def test_sanitize_filename_rejects_non_positive_max_length() -> None:
 def test_sanitize_filename_trims_trailing_dot_after_truncation() -> None:
     """Truncation removes any trailing dot exposed by the cut."""
     assert_that(sanitize_filename("ab.cdef", max_length=3)).is_equal_to("ab")
+
+
+def test_sanitize_filename_truncates_multibyte_names_to_byte_limit() -> None:
+    """A multibyte name is bounded by encoded bytes, not character count."""
+    raw = "é" * 200
+
+    result = sanitize_filename(raw)
+
+    assert_that(len(os.fsencode(result))).is_less_than_or_equal_to(DEFAULT_MAX_LENGTH)
+    assert_that(len(result)).is_less_than(len(raw))
+    assert_that(result).contains("é")
+
+
+def test_sanitize_filename_does_not_split_multibyte_character_at_limit() -> None:
+    """Byte truncation never splits a multibyte character."""
+    result = sanitize_filename("😀😀", max_length=5)
+
+    assert_that(result).is_equal_to("😀")
+    assert_that(len(os.fsencode(result))).is_less_than_or_equal_to(5)

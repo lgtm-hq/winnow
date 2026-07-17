@@ -97,6 +97,15 @@ class PathValidator:
     ) -> Path:
         """Validate a candidate path and return its resolved location.
 
+        Validation resolves and inspects the path as it exists at call time.
+        It is not a guarantee about the path's state during a subsequent
+        filesystem operation: an attacker able to modify the tree could
+        replace a validated component with a symlink between this call and a
+        later ``open``. Callers that act on the returned path must perform the
+        operation atomically relative to a trusted directory (for example with
+        ``O_NOFOLLOW`` / ``openat``) rather than treating this result as a
+        standalone safety guarantee.
+
         Args:
             path: Candidate path to validate. May be absolute or relative to
                 the validator's base directory, and need not yet exist.
@@ -178,8 +187,8 @@ class PathValidator:
         if self._symlink_policy is SymlinkPolicy.FOLLOW:
             return
 
-        symlink = self._first_symlink(absolute)
-        if symlink is None:
+        symlinks = self._untrusted_symlinks(absolute)
+        if not symlinks:
             return
 
         if self._symlink_policy is SymlinkPolicy.REJECT:
@@ -187,61 +196,82 @@ class PathValidator:
                 "symlink traversal is not permitted",
                 operation=operation,
                 file_path=original,
-                details={"symlink": str(symlink)},
+                details={"symlinks": [str(symlink) for symlink in symlinks]},
             )
 
-        logger.warning(
-            "Traversing symlink during {operation}: {symlink}",
-            operation=operation,
-            symlink=str(symlink),
-        )
+        for symlink in symlinks:
+            logger.warning(
+                "Traversing symlink during {operation}: {symlink}",
+                operation=operation,
+                symlink=str(symlink),
+            )
 
-    def _first_symlink(self, absolute: Path) -> Path | None:
-        """Return the first untrusted symlink below the containing root.
+    def _untrusted_symlinks(self, absolute: Path) -> list[Path]:
+        """Return every untrusted symlink component of ``absolute``.
 
-        The walk starts at the candidate and moves upward, stopping at the
-        ancestor that maps to an allowed root so that symlinks in trusted
-        parent directories (including a symlinked root alias) are not
-        misreported. When the candidate lies outside every allowed root, no
-        symlink is reported; the containment check in
-        :meth:`validate_path` then surfaces the real "escapes the allowed
-        roots" violation instead of a misleading symlink error.
+        The candidate is scanned component by component from the filesystem
+        anchor downward *without* collapsing ``..`` segments, so a symlink is
+        detected even when a later ``..`` would resolve the path back inside a
+        root (for example ``<root>/link/../file``). Components at or above the
+        trusted root prefix -- the first prefix whose resolved form is exactly
+        a configured root, including a symlinked root alias -- are exempt, so a
+        legitimate alias for the root itself is never reported. Aliases that
+        resolve *beneath* a root (for example an external link targeting a
+        root subdirectory) do not establish a boundary and are therefore
+        reported.
+
+        When the fully resolved candidate lies outside every allowed root, no
+        symlink is reported; the containment check in :meth:`validate_path`
+        then surfaces the real "escapes the allowed roots" violation instead
+        of a misleading symlink error.
 
         Args:
             absolute: Absolute, unresolved candidate path.
 
         Returns:
-            The first symlink found below the containing root, or None when
-            there is none or the candidate is outside all roots.
+            The untrusted symlink components in order from the anchor
+            downward, or an empty list when there are none or the candidate
+            resolves outside all roots.
         """
-        boundary = self._root_boundary(absolute)
-        if boundary is None:
-            return None
-        for ancestor in (absolute, *absolute.parents):
-            if ancestor == boundary:
-                break
-            if ancestor.is_symlink():
-                return ancestor
-        return None
+        if self._containing_root(absolute.resolve()) is None:
+            return []
 
-    def _root_boundary(self, absolute: Path) -> Path | None:
-        """Return the ancestor of ``absolute`` that maps to an allowed root.
+        prefixes = self._ancestor_prefixes(absolute)
+        boundary_index = self._trusted_root_index(prefixes)
+        start = 0 if boundary_index is None else boundary_index + 1
+        return [prefix for prefix in prefixes[start:] if prefix.is_symlink()]
 
-        Ancestors are examined from the candidate upward and resolved so that
-        a root reached through a symlinked alias (for example, ``/linked``
-        pointing at a resolved root ``/real``) is still recognized. This marks
-        the boundary between the trusted root and the untrusted components the
-        caller supplied beneath it.
+    @staticmethod
+    def _ancestor_prefixes(absolute: Path) -> list[Path]:
+        """Return cumulative path prefixes from the anchor down to ``absolute``.
 
         Args:
-            absolute: Absolute, unresolved candidate path.
+            absolute: Absolute candidate path.
 
         Returns:
-            The ancestor whose resolved form equals an allowed root, or None
-            when the candidate resolves outside every allowed root.
+            Prefixes ordered from the filesystem anchor to the full path, with
+            ``..`` segments preserved so symlink components are not hidden.
+        """
+        parts = absolute.parts
+        current = Path(parts[0])
+        prefixes = [current]
+        for part in parts[1:]:
+            current = current / part
+            prefixes.append(current)
+        return prefixes
+
+    def _trusted_root_index(self, prefixes: list[Path]) -> int | None:
+        """Return the index of the trusted root prefix, if one exists.
+
+        Args:
+            prefixes: Cumulative prefixes ordered from the anchor downward.
+
+        Returns:
+            The index of the first prefix whose resolved form is exactly a
+            configured allowed root, or None when no prefix maps to a root.
         """
         roots = set(self._allowed_roots)
-        for ancestor in (absolute, *absolute.parents):
-            if ancestor.resolve() in roots:
-                return ancestor
+        for index, prefix in enumerate(prefixes):
+            if prefix.resolve() in roots:
+                return index
         return None

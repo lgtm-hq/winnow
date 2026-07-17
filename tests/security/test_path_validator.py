@@ -135,6 +135,71 @@ def test_validate_path_rejects_symlinked_parent_under_reject_policy(
         validator.validate_path(link_dir / "photo.jpg")
 
 
+def test_validate_path_rejects_symlink_followed_by_dotdot_under_reject_policy(
+    root: Path,
+) -> None:
+    """A symlink neutralized by a later ``..`` is still rejected under REJECT."""
+    real_sub = root / "real_sub"
+    real_sub.mkdir()
+    link_dir = root / "link_dir"
+    link_dir.symlink_to(real_sub)
+    (root / "photo.jpg").touch()
+    validator = PathValidator(
+        allowed_roots=[root],
+        symlink_policy=SymlinkPolicy.REJECT,
+    )
+
+    with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
+        validator.validate_path(link_dir / ".." / "photo.jpg")
+
+
+def test_validate_path_rejects_external_alias_to_root_subdirectory(
+    root: Path,
+    tmp_path: Path,
+) -> None:
+    """An external symlink targeting a root subdirectory is rejected."""
+    subdir = root / "subdir"
+    subdir.mkdir()
+    (subdir / "photo.jpg").touch()
+    external_link = tmp_path / "outside_link"
+    external_link.symlink_to(subdir)
+    validator = PathValidator(
+        allowed_roots=[root],
+        symlink_policy=SymlinkPolicy.REJECT,
+    )
+
+    with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
+        validator.validate_path(external_link / "photo.jpg")
+
+
+def test_validate_path_warns_for_every_traversed_symlink(root: Path) -> None:
+    """Under WARN policy, each traversed symlink emits its own warning."""
+    real_dir = root / "real_dir"
+    real_dir.mkdir()
+    inner_real = real_dir / "inner_real"
+    inner_real.mkdir()
+    (inner_real / "photo.jpg").touch()
+    inner_link = real_dir / "inner_link"
+    inner_link.symlink_to(inner_real)
+    outer_link = root / "outer_link"
+    outer_link.symlink_to(real_dir)
+    validator = PathValidator(
+        allowed_roots=[root],
+        symlink_policy=SymlinkPolicy.WARN,
+    )
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING")
+
+    try:
+        result = validator.validate_path(outer_link / "inner_link" / "photo.jpg")
+    finally:
+        logger.remove(sink_id)
+
+    assert_that(result).is_equal_to((inner_real / "photo.jpg").resolve())
+    assert_that(messages).is_length(2)
+    assert_that(all("Traversing symlink" in message for message in messages)).is_true()
+
+
 def test_validate_path_accepts_path_under_symlinked_root_alias(
     tmp_path: Path,
 ) -> None:

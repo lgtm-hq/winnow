@@ -9,12 +9,14 @@ path component.
 
 from __future__ import annotations
 
+import os
 import unicodedata
 
 from winnow.exceptions import SecurityError
 
 DEFAULT_MAX_LENGTH = 255
-"""Conservative maximum filename length supported by common filesystems."""
+"""Conservative maximum filename length, in filesystem bytes, supported by
+common filesystems (for example, the 255-byte component limit of ext4)."""
 
 _PATH_SEPARATORS = frozenset({"/", "\\"})
 """Directory separators that must never appear inside a single component."""
@@ -48,14 +50,16 @@ def sanitize_filename(
     Path separators, NUL bytes, and control characters are replaced with
     ``replacement``. Leading and trailing whitespace and dots are stripped
     to avoid hidden or extension-hostile names. The result is normalized to
-    Unicode NFC form and truncated to ``max_length`` characters.
+    Unicode NFC form and truncated so its filesystem-encoded form does not
+    exceed ``max_length`` bytes, matching the byte-oriented component limits
+    enforced by common filesystems.
 
     Args:
         name: Candidate filename, which may contain unsafe characters.
         replacement: String substituted for each forbidden character. It
             must not itself contain a path separator or NUL byte.
-        max_length: Maximum length of the returned filename. Must be
-            positive.
+        max_length: Maximum length of the returned filename in filesystem
+            bytes. Must be positive.
 
     Returns:
         A sanitized filename containing no path separators or control
@@ -92,9 +96,30 @@ def sanitize_filename(
             details={"sanitized": sanitized},
         )
 
-    if len(sanitized) > max_length:
+    if len(os.fsencode(sanitized)) > max_length:
         # The first character is guaranteed non-strippable by the strip above,
         # so truncation preserves a non-empty component.
-        sanitized = sanitized[:max_length].rstrip(". ")
+        sanitized = _truncate_to_byte_length(sanitized, max_length).rstrip(". ")
 
     return sanitized
+
+
+def _truncate_to_byte_length(value: str, max_bytes: int) -> str:
+    """Return ``value`` truncated so its encoded form fits within ``max_bytes``.
+
+    Whole characters are dropped from the end so a multibyte character is
+    never split across the byte limit, which mirrors how filesystems bound a
+    path component in bytes rather than Unicode code points.
+
+    Args:
+        value: Filename component to truncate.
+        max_bytes: Maximum length, in filesystem bytes, of the result.
+
+    Returns:
+        The longest prefix of ``value`` whose filesystem-encoded form does not
+        exceed ``max_bytes`` bytes.
+    """
+    truncated = value
+    while truncated and len(os.fsencode(truncated)) > max_bytes:
+        truncated = truncated[:-1]
+    return truncated
