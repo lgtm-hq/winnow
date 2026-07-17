@@ -18,6 +18,7 @@ from winnow.fs import (
     atomic_mkdir,
     transactional_file_ops,
 )
+from winnow.fs import transaction as transaction_module
 
 
 def test_atomic_copy_overwrites_destination_and_records_backup(
@@ -168,6 +169,88 @@ def test_transaction_rolls_back_created_parent_directories(
         tmp_path / "a" / "b",
         created_directory,
     )
+
+
+def test_rollback_after_commit_preserves_committed_log_status(
+    tmp_path: Path,
+) -> None:
+    """Calling rollback after a successful commit must not rewrite log status."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("content\n", encoding="utf-8")
+
+    transaction = transactional_file_ops(backup=False)
+    with transaction as active_transaction:
+        log = active_transaction.copy(source=source, destination=destination)
+
+    assert_that(log.status).is_equal_to(OperationStatus.APPLIED)
+
+    errors = transaction.rollback()
+
+    assert_that(errors).is_empty()
+    assert_that(log.status).is_equal_to(OperationStatus.APPLIED)
+    assert_that(transaction.logs[0].status).is_equal_to(OperationStatus.APPLIED)
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("content\n")
+
+
+def test_reused_transaction_clears_prior_run_logs(
+    tmp_path: Path,
+) -> None:
+    """Re-entering a transaction instance discards logs from the prior run."""
+    first_source = tmp_path / "first.txt"
+    second_source = tmp_path / "second.txt"
+    first_destination = tmp_path / "first-destination.txt"
+    second_destination = tmp_path / "second-destination.txt"
+    first_source.write_text("first\n", encoding="utf-8")
+    second_source.write_text("second\n", encoding="utf-8")
+
+    transaction = transactional_file_ops(backup=False)
+    with transaction as active_transaction:
+        active_transaction.copy(source=first_source, destination=first_destination)
+
+    assert_that(transaction.logs).is_length(1)
+
+    with transaction as active_transaction:
+        active_transaction.copy(source=second_source, destination=second_destination)
+
+    assert_that(transaction.logs).is_length(1)
+    assert_that(transaction.logs[0].destination).is_equal_to(second_destination)
+
+
+def test_copy_cleanup_failure_is_attached_and_original_error_raised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup failure must not mask the original filesystem operation error."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("new\n", encoding="utf-8")
+
+    def fail_copy2(
+        src: str | Path,
+        dst: str | Path,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        """Raise a deterministic copy failure for monkeypatching."""
+        del src, dst, follow_symlinks
+        raise OSError("copy failed")
+
+    def fail_cleanup(path: Path) -> None:
+        """Raise a deterministic cleanup failure for monkeypatching."""
+        del path
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(shutil, "copy2", fail_copy2)
+    monkeypatch.setattr(transaction_module, "_cleanup_path", fail_cleanup)
+
+    with pytest.raises(FileSystemOperationError) as exc_info:
+        atomic_copy(source=source, destination=destination)
+
+    assert_that(exc_info.value.__cause__).is_instance_of(OSError)
+    notes = getattr(exc_info.value, "__notes__", [])
+    assert_that(notes).is_not_empty()
+    assert_that(notes[0]).contains("cleanup failed")
 
 
 def test_atomic_mkdir_existing_directory_with_exist_ok_records_log(

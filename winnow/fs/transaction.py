@@ -10,7 +10,8 @@ from types import TracebackType
 from typing import Literal, Self
 from uuid import uuid4
 
-from winnow.fs.backup import _copy_path, _path_exists, _remove_path, create_backup
+from winnow.fs._path_ops import copy_path, path_exists, remove_path
+from winnow.fs.backup import create_backup
 from winnow.fs.backup_options import BackupOptions
 from winnow.fs.errors import FileSystemOperationError, FileSystemRollbackError
 from winnow.fs.operation_log import OperationLog
@@ -55,6 +56,10 @@ class FileSystemTransaction:
         Returns:
             This transaction instance.
         """
+        self._logs.clear()
+        self._rollback_steps.clear()
+        self._commit_steps.clear()
+        self.rollback_errors = ()
         self._closed = False
         return self
 
@@ -107,9 +112,9 @@ class FileSystemTransaction:
         try:
             _validate_source(source=source, operation=FileOperation.COPY)
             _validate_destination_parent(destination)
-            _copy_path(source=source, destination=temp_path)
+            copy_path(source=source, destination=temp_path)
 
-            if _path_exists(destination):
+            if path_exists(destination):
                 backup_path = create_backup(
                     destination,
                     options=self._backup_options,
@@ -121,17 +126,21 @@ class FileSystemTransaction:
 
             temp_path.replace(destination)
         except (OSError, shutil.Error) as error:
-            _cleanup_path(temp_path)
-            if destination_tombstone is not None:
-                _restore_tombstone(
-                    tombstone=destination_tombstone,
-                    destination=destination,
-                )
-            raise _operation_error(
+            operation_error = _operation_error(
                 operation=FileOperation.COPY,
                 path=source,
                 error=error,
-            ) from error
+            )
+            cleanups: list[RollbackStep] = [lambda: _cleanup_path(temp_path)]
+            if destination_tombstone is not None:
+                cleanups.append(
+                    lambda: _restore_tombstone(
+                        tombstone=destination_tombstone,
+                        destination=destination,
+                    )
+                )
+            _run_cleanups(operation_error, cleanups)
+            raise operation_error from error
 
         log = OperationLog(
             operation=FileOperation.COPY,
@@ -222,7 +231,7 @@ class FileSystemTransaction:
         created_paths: list[Path] = []
 
         try:
-            if _path_exists(path):
+            if path_exists(path):
                 if exist_ok and path.is_dir():
                     log = OperationLog(
                         operation=FileOperation.MKDIR,
@@ -286,7 +295,7 @@ class FileSystemTransaction:
             if source_backup is not None:
                 backups.append(source_backup)
 
-            if _path_exists(destination):
+            if path_exists(destination):
                 destination_backup = create_backup(
                     destination,
                     options=self._backup_options,
@@ -302,7 +311,7 @@ class FileSystemTransaction:
             except OSError as error:
                 if error.errno != errno.EXDEV:
                     raise
-                _copy_path(source=source, destination=temp_path)
+                copy_path(source=source, destination=temp_path)
 
             temp_path.replace(destination)
 
@@ -310,19 +319,25 @@ class FileSystemTransaction:
                 source_tombstone = _temporary_path(source)
                 source.replace(source_tombstone)
         except (OSError, shutil.Error) as error:
-            _rollback_move(
-                source=source,
-                destination=destination,
-                temp_path=temp_path,
-                destination_tombstone=destination_tombstone,
-                source_tombstone=source_tombstone,
-                source_moved_to_temp=source_moved_to_temp,
-            )
-            raise _operation_error(
+            operation_error = _operation_error(
                 operation=FileOperation.MOVE,
                 path=source,
                 error=error,
-            ) from error
+            )
+            _run_cleanups(
+                operation_error,
+                [
+                    lambda: _rollback_move(
+                        source=source,
+                        destination=destination,
+                        temp_path=temp_path,
+                        destination_tombstone=destination_tombstone,
+                        source_tombstone=source_tombstone,
+                        source_moved_to_temp=source_moved_to_temp,
+                    ),
+                ],
+            )
+            raise operation_error from error
 
         log = OperationLog(
             operation=FileOperation.MOVE,
@@ -375,6 +390,8 @@ class FileSystemTransaction:
         Returns:
             Rollback errors encountered while attempting to restore prior state.
         """
+        if self._closed:
+            return self.rollback_errors
         errors: list[Exception] = []
         for step in reversed(self._rollback_steps):
             try:
@@ -521,8 +538,8 @@ def _cleanup_empty_directory(path: Path) -> None:
 
 def _cleanup_path(path: Path) -> None:
     """Remove a path when it exists."""
-    if _path_exists(path):
-        _remove_path(path)
+    if path_exists(path):
+        remove_path(path)
 
 
 def _coerce_backup_options(backup: bool | BackupOptions) -> BackupOptions:
@@ -535,8 +552,8 @@ def _coerce_backup_options(backup: bool | BackupOptions) -> BackupOptions:
 def _commit_tombstones(*tombstones: Path | None) -> None:
     """Delete staging tombstones after a successful commit."""
     for tombstone in tombstones:
-        if tombstone is not None and _path_exists(tombstone):
-            _remove_path(tombstone)
+        if tombstone is not None and path_exists(tombstone):
+            remove_path(tombstone)
 
 
 def _create_directories(
@@ -561,7 +578,7 @@ def _missing_directories(path: Path) -> list[Path]:
     """Return missing directories from highest parent to leaf."""
     missing_paths: list[Path] = []
     cursor = path
-    while not _path_exists(cursor):
+    while not path_exists(cursor):
         missing_paths.append(cursor)
         parent = cursor.parent
         if parent == cursor:
@@ -586,16 +603,37 @@ def _operation_error(
     )
 
 
+def _run_cleanups(
+    error: FileSystemOperationError,
+    cleanups: list[RollbackStep],
+) -> None:
+    """Run cleanup callables without masking the original operation error.
+
+    Each callable is executed defensively so a cleanup failure never replaces the
+    error that triggered the handler. Any cleanup failure is attached to ``error``
+    as a note for diagnostics.
+
+    Args:
+        error: Operation error to annotate with cleanup failures.
+        cleanups: Cleanup callables to execute in order.
+    """
+    for cleanup in cleanups:
+        try:
+            cleanup()
+        except (OSError, shutil.Error) as cleanup_error:
+            error.add_note(f"cleanup failed: {cleanup_error}")
+
+
 def _restore_tombstone(
     *,
     tombstone: Path,
     destination: Path,
 ) -> None:
     """Move a staged tombstone back to its destination."""
-    if not _path_exists(tombstone):
+    if not path_exists(tombstone):
         return
-    if _path_exists(destination):
-        _remove_path(destination)
+    if path_exists(destination):
+        remove_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     tombstone.replace(destination)
 
@@ -631,12 +669,12 @@ def _rollback_move(
 ) -> None:
     """Roll back a completed or partially completed move operation."""
     if source_moved_to_temp:
-        if _path_exists(destination) and not _path_exists(source):
+        if path_exists(destination) and not path_exists(source):
             destination.replace(source)
-        elif _path_exists(temp_path) and not _path_exists(source):
+        elif path_exists(temp_path) and not path_exists(source):
             temp_path.replace(source)
-        elif _path_exists(destination):
-            _remove_path(destination)
+        elif path_exists(destination):
+            remove_path(destination)
     else:
         _cleanup_path(destination)
         _cleanup_path(temp_path)
@@ -654,7 +692,7 @@ def _temporary_path(path: Path) -> Path:
     """Return a unique staging path next to a destination path."""
     while True:
         candidate = path.parent / f".{path.name}.{uuid4().hex}.tmp"
-        if not _path_exists(candidate):
+        if not path_exists(candidate):
             return candidate
 
 
@@ -670,5 +708,5 @@ def _validate_source(
     operation: FileOperation,
 ) -> None:
     """Ensure a source path exists before applying an operation."""
-    if not _path_exists(source):
+    if not path_exists(source):
         raise FileNotFoundError(f"{operation.value} source not found: {source}")
