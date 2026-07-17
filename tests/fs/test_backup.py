@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from assertpy import assert_that
 
-from winnow.fs import BackupOptions, create_backup, restore_backup
+from winnow.fs import (
+    BackupOptions,
+    FileSystemOperationError,
+    create_backup,
+    restore_backup,
+)
+from winnow.fs import backup as backup_module
 
 
 def test_create_backup_and_restore_file(tmp_path: Path) -> None:
@@ -65,4 +72,101 @@ def test_restore_backup_replaces_directory(tmp_path: Path) -> None:
 
     assert_that((source / "config.yaml").read_text(encoding="utf-8")).is_equal_to(
         "theme: dark\n",
+    )
+
+
+def test_create_backup_rejects_nested_backup_directory(tmp_path: Path) -> None:
+    """A backup directory inside the source directory is rejected."""
+    source = tmp_path / "library"
+    source.mkdir()
+    (source / "photo.jpg").write_text("data\n", encoding="utf-8")
+
+    with pytest.raises(FileSystemOperationError):
+        create_backup(
+            source,
+            options=BackupOptions(directory=source / ".winnow-backups"),
+        )
+
+
+def test_create_backup_removes_partial_backup_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed copy leaves no partially written backup in the backup directory."""
+    source = tmp_path / "settings.yaml"
+    backup_directory = tmp_path / "backups"
+    source.write_text("version: 1\n", encoding="utf-8")
+
+    def fail_copy(*, source: Path, destination: Path) -> None:
+        """Write partial staging content then raise a deterministic failure."""
+        del source
+        destination.write_text("partial\n", encoding="utf-8")
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(backup_module, "copy_path", fail_copy)
+
+    with pytest.raises(OSError, match="copy failed"):
+        create_backup(source, options=BackupOptions(directory=backup_directory))
+
+    assert_that(list(backup_directory.iterdir())).is_empty()
+
+
+def test_restore_backup_preserves_destination_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed restore preserves the existing destination contents."""
+    backup_path = tmp_path / "settings.yaml.bak"
+    destination = tmp_path / "settings.yaml"
+    backup_path.write_text("restored\n", encoding="utf-8")
+    destination.write_text("current\n", encoding="utf-8")
+
+    def fail_copy(*, source: Path, destination: Path) -> None:
+        """Raise a deterministic copy failure for monkeypatching."""
+        del source, destination
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(backup_module, "copy_path", fail_copy)
+
+    with pytest.raises(FileSystemOperationError):
+        restore_backup(backup_path=backup_path, destination=destination)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("current\n")
+    assert_that([path.name for path in tmp_path.iterdir()]).contains_only(
+        "settings.yaml.bak",
+        "settings.yaml",
+    )
+
+
+def test_restore_backup_restores_tombstone_when_promotion_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure while promoting the staged copy restores the tombstoned file."""
+    backup_path = tmp_path / "settings.yaml.bak"
+    destination = tmp_path / "settings.yaml"
+    backup_path.write_text("restored\n", encoding="utf-8")
+    destination.write_text("current\n", encoding="utf-8")
+
+    original_replace = Path.replace
+    state = {"failed": False}
+
+    def failing_replace(self: Path, target: str | Path) -> Path:
+        """Fail once while promoting the staged copy onto the destination."""
+        if Path(target).name == "settings.yaml" and not state["failed"]:
+            state["failed"] = True
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    with pytest.raises(FileSystemOperationError):
+        restore_backup(backup_path=backup_path, destination=destination)
+
+    monkeypatch.setattr(Path, "replace", original_replace)
+
+    assert_that(destination.read_text(encoding="utf-8")).is_equal_to("current\n")
+    assert_that([path.name for path in tmp_path.iterdir()]).contains_only(
+        "settings.yaml.bak",
+        "settings.yaml",
     )
