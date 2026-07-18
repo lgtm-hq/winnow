@@ -157,13 +157,13 @@ def validate(
     Raises:
         ClickException: If the configuration is invalid.
     """
-    if config_path is None and find_config_path() is None:
+    resolved = config_path if config_path is not None else find_config_path()
+    if resolved is None:
         click.echo("No configuration file found; defaults are valid.")
         return
     try:
-        validate_config(config_path=config_path)
+        validate_config(config_path=resolved)
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    resolved = config_path if config_path is not None else find_config_path()
     click.echo(f"Configuration at {resolved} is valid.")

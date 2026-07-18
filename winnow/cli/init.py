@@ -71,7 +71,8 @@ def init(
         default=1,
     )
     dry_run = click.confirm(
-        "Preview changes without modifying files (dry run)?",
+        "Enable dry-run mode? Commands will only preview changes until you "
+        "set dry_run = false",
         default=True,
     )
 

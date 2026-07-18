@@ -47,7 +47,14 @@ def run_repl(ctx: click.Context) -> None:
             continue
         if command in _EXIT_COMMANDS:
             break
-        args = ["--help"] if command in _HELP_COMMANDS else shlex.split(command)
+        if command in _HELP_COMMANDS:
+            args: list[str] = ["--help"]
+        else:
+            try:
+                args = shlex.split(command)
+            except ValueError as exc:
+                click.echo(f"Error: {exc}")
+                continue
         if not args:
             continue
         _dispatch(main=main, args=args, context_obj=context_obj)
@@ -93,4 +100,7 @@ def _dispatch(
     except click.exceptions.Abort:
         click.echo("Aborted.")
     except SystemExit:
+        # Click exits via SystemExit even in standalone_mode=False edge
+        # cases; swallowing it keeps the REPL alive. Subcommands must not
+        # call sys.exit() directly, or their exit intent is silently lost.
         pass
