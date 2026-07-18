@@ -35,11 +35,15 @@ classifiers = [
 dependencies = [
   "click>=8.3.3",
   "dynaconf[yaml]>=3.3.2",
+  "exifread>=3.0",
   "imagehash>=4.3.1",
   "loguru>=0.7.3",
-  "pillow>=10.4",
+  "mutagen>=1.47",
+  "pillow>=11.0",
+  "pillow-heif>=0.18",
   "pydantic>=2.10",
   "rich>=14.0",
+  "tinytag>=2.0",
 ]
 
 [project.optional-dependencies]

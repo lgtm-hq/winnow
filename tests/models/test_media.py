@@ -70,3 +70,22 @@ def test_media_type_serialization() -> None:
     """MediaType serializes to lowercase auto values."""
     assert_that(MediaType.VIDEO.value).is_equal_to("video")
     assert_that(MediaType.AUDIO).is_instance_of(str)
+
+
+def test_media_metadata_stream_fields() -> None:
+    """MediaMetadata stores frame rate, sample rate, and channel counts."""
+    metadata = MediaMetadata(
+        frame_rate=29.97,
+        sample_rate=44100,
+        channels=2,
+    )
+
+    assert_that(metadata.frame_rate).is_close_to(29.97, 0.01)
+    assert_that(metadata.sample_rate).is_equal_to(44100)
+    assert_that(metadata.channels).is_equal_to(2)
+
+
+def test_media_metadata_rejects_negative_stream_fields() -> None:
+    """MediaMetadata rejects negative frame rate, sample rate, and channels."""
+    with pytest.raises(ValidationError):
+        MediaMetadata(frame_rate=-1, sample_rate=-1, channels=-1)
