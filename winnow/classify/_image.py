@@ -43,6 +43,10 @@ class ColorCounts:
 def open_image(path: Path) -> Iterator[Image.Image]:
     """Open an image file for inspection.
 
+    Only the open-and-load phase is translated into a
+    :class:`~winnow.exceptions.MediaError`; exceptions raised by caller code
+    inside the ``with`` block propagate unchanged.
+
     Args:
         path: Filesystem path to the image.
 
@@ -53,15 +57,16 @@ def open_image(path: Path) -> Iterator[Image.Image]:
         MediaError: If the file cannot be read as an image.
     """
     try:
-        with Image.open(path) as image:
-            image.load()
-            yield image
+        image = Image.open(path)
+        image.load()
     except (OSError, UnidentifiedImageError) as error:
         raise MediaError(
             f"could not read image: {error}",
             operation="classify",
             file_path=path,
         ) from error
+    with image:
+        yield image
 
 
 def extract_dimensions(image: Image.Image) -> tuple[int, int]:
@@ -147,8 +152,12 @@ def count_colors(
         image=image,
         sample_max_dimension=sample_max_dimension,
     )
-    total_pixels = sample.width * sample.height
-    colors = sample.getcolors(maxcolors=max_colors)
+    try:
+        total_pixels = sample.width * sample.height
+        colors = sample.getcolors(maxcolors=max_colors)
+    finally:
+        if sample is not image:
+            sample.close()
     if colors is None:
         return ColorCounts(
             total_pixels=total_pixels,
@@ -172,7 +181,10 @@ def _prepare_color_sample(
     image: Image.Image,
     sample_max_dimension: int,
 ) -> Image.Image:
-    """Return an RGB copy of an image, down-sampled if oversized.
+    """Return an RGB view of an image, down-sampled if oversized.
+
+    The original image may be returned unchanged (when it is already a small
+    RGB image); any intermediate converted image is closed before returning.
 
     Args:
         image: Open Pillow image.
@@ -180,6 +192,8 @@ def _prepare_color_sample(
 
     Returns:
         An RGB image no larger than ``sample_max_dimension`` on its longest edge.
+        Callers own (and should close) the result only when it is not the
+        original image.
     """
     rgb_image = image if image.mode == "RGB" else image.convert("RGB")
     longest_edge = max(rgb_image.width, rgb_image.height)
@@ -191,7 +205,11 @@ def _prepare_color_sample(
         max(1, round(rgb_image.width * scale)),
         max(1, round(rgb_image.height * scale)),
     )
-    return rgb_image.resize(target_size, resample=Image.Resampling.NEAREST)
+    try:
+        return rgb_image.resize(target_size, resample=Image.Resampling.NEAREST)
+    finally:
+        if rgb_image is not image:
+            rgb_image.close()
 
 
 def _stringify_exif_value(value: object) -> str:
