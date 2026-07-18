@@ -5,67 +5,39 @@ digests. Entries are invalidated automatically when a file's modification time
 or size changes, and stale rows for deleted files can be pruned on demand.
 
 On-disk databases are opened in write-ahead-logging (WAL) mode so the shared
-default database (``~/.cache/winnow/cache.db``) tolerates concurrent readers and
-writers from parallel workers without blocking readers on a writer. In-memory
-databases keep SQLite's default in-memory journal, for which WAL is not
-applicable.
+default database (``cache.db`` under the :class:`CacheSettings` default
+directory) tolerates concurrent readers and writers from parallel workers
+without blocking readers on a writer. In-memory databases keep SQLite's
+default in-memory journal, for which WAL is not applicable. Connection and
+query plumbing lives in the private sibling module :mod:`winnow.hash._db`.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
 from winnow.exceptions import CacheError
+from winnow.hash import _db
 from winnow.hash.cache_entry import CacheEntry
 from winnow.hash.cache_key import CacheKey
 from winnow.hash.cache_stats import CacheStats
-
-_IN_MEMORY = ":memory:"
-
-# Keep parameter counts comfortably below SQLite's compiled variable limit
-# (``SQLITE_MAX_VARIABLE_NUMBER``, historically 999) so batched IN clauses stay
-# valid regardless of the linked SQLite build.
-_MAX_SQL_VARIABLES = 900
-
-_StoredRow = tuple[str, str, float, int]
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS hash_cache (
-    path TEXT NOT NULL,
-    algorithm TEXT NOT NULL,
-    mtime REAL NOT NULL,
-    size INTEGER NOT NULL,
-    hash TEXT NOT NULL,
-    PRIMARY KEY (path, algorithm)
-)
-"""
+from winnow.models.config import CacheSettings
 
 
 def _default_db_path() -> Path:
     """Return the default on-disk location for the cache database.
 
+    The location is derived from the :class:`CacheSettings` default cache
+    directory so the cache-directory default is defined exactly once.
+
     Returns:
-        Path to ``cache.db`` under the user's XDG cache directory.
+        Path to ``cache.db`` under the default cache directory.
     """
-    return Path.home() / ".cache" / "winnow" / "cache.db"
-
-
-def _chunked(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:
-    """Yield successive slices of ``items`` no longer than ``size``.
-
-    Args:
-        items: Sequence to split into batches.
-        size: Maximum length of each yielded slice.
-
-    Yields:
-        Consecutive, non-overlapping slices covering ``items``.
-    """
-    for start in range(0, len(items), size):
-        yield items[start : start + size]
+    return CacheSettings().directory / "cache.db"
 
 
 class HashCache:
@@ -75,69 +47,28 @@ class HashCache:
     in-memory database. Hard failures surface as :class:`CacheError`.
 
     Args:
-        db_path: Location of the SQLite database. Defaults to
-            ``~/.cache/winnow/cache.db``. Pass ``":memory:"`` for a transient
-            in-memory database.
+        db_path: Location of the SQLite database. Defaults to ``cache.db``
+            under the :class:`CacheSettings` default cache directory. Pass
+            ``":memory:"`` for a transient in-memory database.
     """
 
     def __init__(self, db_path: Path | str | None = None) -> None:
         """Open the cache database, creating its schema if necessary."""
-        self._in_memory = db_path == _IN_MEMORY
+        self._in_memory = db_path == _db.IN_MEMORY
         if db_path is None:
             self._db_path: Path = _default_db_path()
         else:
             self._db_path = Path(db_path)
         self._hits = 0
         self._misses = 0
-        self._connection = self._connect()
-        self._initialize_schema()
-
-    def _connect(self) -> sqlite3.Connection:
-        """Open a SQLite connection, creating parent directories as needed.
-
-        On-disk databases are switched to WAL journaling so concurrent workers
-        sharing the default database do not block one another; in-memory
-        databases retain SQLite's default journal, where WAL does not apply.
-
-        Returns:
-            An open SQLite connection.
-
-        Raises:
-            CacheError: If the database or its parent directory is unavailable.
-        """
-        target = _IN_MEMORY if self._in_memory else str(self._db_path)
-        connection: sqlite3.Connection | None = None
-        try:
-            if not self._in_memory:
-                self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(target)
-            if not self._in_memory:
-                connection.execute("PRAGMA journal_mode=WAL")
-            return connection
-        except (OSError, sqlite3.Error) as exc:
-            if connection is not None:
-                connection.close()
-            raise CacheError(
-                "Unable to open hash cache database",
-                operation="cache.connect",
-                file_path=self._db_path,
-            ) from exc
-
-    def _initialize_schema(self) -> None:
-        """Create the cache table when it does not already exist.
-
-        Raises:
-            CacheError: If the schema cannot be created.
-        """
-        try:
-            with self._connection:
-                self._connection.execute(_SCHEMA)
-        except sqlite3.Error as exc:
-            raise CacheError(
-                "Unable to initialize hash cache schema",
-                operation="cache.initialize",
-                file_path=self._db_path,
-            ) from exc
+        self._connection = _db.connect(
+            db_path=self._db_path,
+            in_memory=self._in_memory,
+        )
+        _db.initialize_schema(
+            connection=self._connection,
+            db_path=self._db_path,
+        )
 
     def get(self, key: CacheKey) -> str | None:
         """Look up the digest stored for a key, if the entry is still valid.
@@ -154,7 +85,7 @@ class HashCache:
         Raises:
             CacheError: If the lookup query fails.
         """
-        digest = self._lookup(key)
+        digest = _db.lookup_digest(connection=self._connection, key=key)
         if digest is None:
             self._misses += 1
         else:
@@ -183,10 +114,13 @@ class HashCache:
         if not key_list:
             return {}
         paths = {str(key.path) for key in key_list}
-        stored = self._fetch_rows_for_paths(paths)
+        stored = _db.fetch_rows_for_paths(
+            connection=self._connection,
+            paths=paths,
+        )
         results: dict[CacheKey, str] = {}
         for key in key_list:
-            row: _StoredRow = (
+            row: _db.StoredRow = (
                 str(key.path),
                 str(key.algorithm),
                 key.mtime,
@@ -199,77 +133,6 @@ class HashCache:
                 self._hits += 1
                 results[key] = digest
         return results
-
-    def _fetch_rows_for_paths(
-        self,
-        paths: set[str],
-    ) -> dict[_StoredRow, str]:
-        """Fetch every stored row whose path is in ``paths``.
-
-        Args:
-            paths: Distinct path strings to fetch rows for.
-
-        Returns:
-            A mapping of each stored ``(path, algorithm, mtime, size)`` identity
-            to its digest.
-
-        Raises:
-            CacheError: If a batch lookup query fails.
-        """
-        stored: dict[_StoredRow, str] = {}
-        ordered = sorted(paths)
-        try:
-            for chunk in _chunked(ordered, _MAX_SQL_VARIABLES):
-                placeholders = ", ".join("?" for _ in chunk)
-                query = (
-                    "SELECT path, algorithm, mtime, size, hash "
-                    "FROM hash_cache "
-                    f"WHERE path IN ({placeholders})"
-                )
-                cursor = self._connection.execute(query, tuple(chunk))
-                for path, algorithm, mtime, size, digest in cursor.fetchall():
-                    stored[(path, algorithm, mtime, size)] = digest
-        except sqlite3.Error as exc:
-            raise CacheError(
-                "Hash cache batch lookup failed",
-                operation="cache.get_many",
-            ) from exc
-        return stored
-
-    def _lookup(self, key: CacheKey) -> str | None:
-        """Return the stored digest for a key without touching counters.
-
-        Args:
-            key: Cache key to resolve.
-
-        Returns:
-            The stored digest, or ``None`` when no valid entry exists.
-
-        Raises:
-            CacheError: If the lookup query fails.
-        """
-        try:
-            cursor = self._connection.execute(
-                "SELECT hash FROM hash_cache "
-                "WHERE path = ? AND algorithm = ? AND mtime = ? AND size = ?",
-                (
-                    str(key.path),
-                    str(key.algorithm),
-                    key.mtime,
-                    key.size,
-                ),
-            )
-            row = cursor.fetchone()
-        except sqlite3.Error as exc:
-            raise CacheError(
-                "Hash cache lookup failed",
-                operation="cache.get",
-                file_path=key.path,
-            ) from exc
-        if row is None:
-            return None
-        digest: str = row[0]
-        return digest
 
     def set(self, key: CacheKey, digest: str) -> None:
         """Store or replace the digest for a key.
@@ -342,7 +205,7 @@ class HashCache:
                 return 0
             deleted = 0
             with self._connection:
-                for chunk in _chunked(missing, _MAX_SQL_VARIABLES):
+                for chunk in _db.chunked(missing, _db.MAX_SQL_VARIABLES):
                     placeholders = ", ".join("?" for _ in chunk)
                     query = (
                         "DELETE FROM hash_cache "

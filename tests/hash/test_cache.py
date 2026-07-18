@@ -10,8 +10,8 @@ import pytest
 from assertpy import assert_that
 
 from winnow.exceptions import CacheError
-from winnow.hash import CacheEntry, CacheKey, CacheStats, HashCache
-from winnow.hash import cache as cache_module
+from winnow.hash import _db, CacheEntry, CacheKey, CacheStats, HashCache
+from winnow.models.config import CacheSettings
 from winnow.models.enums import HashAlgorithm
 
 
@@ -38,10 +38,19 @@ def cache(tmp_path: Path) -> HashCache:
     return HashCache(db_path=tmp_path / "cache.db")
 
 
-def test_default_db_path_uses_user_cache_dir() -> None:
-    """The default database path lives under the user's cache directory."""
-    expected = Path.home() / ".cache" / "winnow" / "cache.db"
-    assert_that(cache_module._default_db_path()).is_equal_to(expected)
+def test_default_db_path_under_cache_settings_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-arg cache places its database under the CacheSettings default."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    expected = CacheSettings().directory / "cache.db"
+
+    with HashCache():
+        pass
+
+    assert_that(str(expected)).starts_with(str(tmp_path))
+    assert_that(expected.is_file()).is_true()
 
 
 def test_init_creates_parent_directories(tmp_path: Path) -> None:
@@ -452,7 +461,7 @@ def test_get_many_batches_across_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Batched reads span multiple IN-clause chunks and stay correct."""
-    monkeypatch.setattr(cache_module, "_MAX_SQL_VARIABLES", 2)
+    monkeypatch.setattr(_db, "MAX_SQL_VARIABLES", 2)
     keys = []
     for index in range(5):
         media = tmp_path / f"photo_{index}.jpg"
@@ -474,7 +483,7 @@ def test_prune_stale_batches_across_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pruning deletes across multiple IN-clause chunks in one transaction."""
-    monkeypatch.setattr(cache_module, "_MAX_SQL_VARIABLES", 2)
+    monkeypatch.setattr(_db, "MAX_SQL_VARIABLES", 2)
     for index in range(5):
         media = tmp_path / f"photo_{index}.jpg"
         _write_media(media)
