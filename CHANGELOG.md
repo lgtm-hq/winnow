@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.12.0] - 2026-07-18
+
+### Added
+
+- **hash**: SQLite content-addressable perceptual-hash cache (#142) (86cff41)
+
 ## [0.11.0] - 2026-07-18
 
 ### Added
