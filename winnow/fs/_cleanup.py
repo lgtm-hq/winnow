@@ -35,6 +35,52 @@ def cleanup_path(
         remove(path)
 
 
+def cleanup_backups(
+    backups: Sequence[Path],
+    *,
+    cleanup: RemoveStep = cleanup_path,
+) -> None:
+    """Remove persistent backups orphaned by a failed operation.
+
+    Args:
+        backups: Backup paths created before the operation failed.
+        cleanup: Removal callable applied to each backup path. Callers may
+            pass their own module's binding so removal stays patchable per
+            caller.
+
+    Raises:
+        FileSystemOperationError: When any backup cannot be removed. Every
+            backup is attempted before the aggregate error is raised.
+    """
+    errors: list[Exception] = []
+    for backup in backups:
+        try:
+            cleanup(backup)
+        except (OSError, shutil.Error) as cleanup_error:
+            errors.append(cleanup_error)
+    if not errors:
+        return
+    aggregate_error = FileSystemOperationError(
+        "failed to clean up filesystem backups",
+        operation="fs.backup.cleanup",
+        details={"errors": [str(error) for error in errors]},
+    )
+    for secondary_error in errors[1:]:
+        aggregate_error.add_note(f"backup cleanup failed: {secondary_error}")
+    raise aggregate_error from errors[0]
+
+
+def commit_tombstones(*tombstones: Path | None) -> None:
+    """Delete staging tombstones after a successful commit.
+
+    Args:
+        *tombstones: Tombstone paths to discard; ``None`` entries are skipped.
+    """
+    for tombstone in tombstones:
+        if tombstone is not None and path_exists(tombstone):
+            remove_path(tombstone)
+
+
 def missing_directories(path: Path) -> list[Path]:
     """Return missing directories from highest parent to leaf.
 
