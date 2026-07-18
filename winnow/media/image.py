@@ -132,7 +132,7 @@ def read_exif(path: Path) -> dict[str, str]:
     try:
         with path.open("rb") as handle:
             tags = exifread.process_file(handle, details=False)
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - exifread may raise struct.error etc.
         logger.debug("EXIF read failed for {}: {}", path, exc)
         return {}
 

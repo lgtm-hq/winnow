@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -166,3 +167,17 @@ def test_bit_depth_for_one_bit_mode(tmp_path: Path) -> None:
     metadata = extract_image_metadata(bilevel)
 
     assert_that(metadata.bit_depth).is_equal_to(1)
+
+
+def test_read_exif_swallows_struct_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed EXIF that raises struct.error degrades to an empty mapping."""
+    path = tmp_path / "broken.jpg"
+    path.write_bytes(b"not-an-image")
+
+    def boom(*_args: object, **_kwargs: object) -> dict[str, str]:
+        raise struct.error("unpack requires a buffer")
+
+    monkeypatch.setattr("winnow.media.image.exifread.process_file", boom)
+    assert_that(read_exif(path)).is_equal_to({})
