@@ -35,7 +35,9 @@ classifiers = [
 dependencies = [
   "click>=8.3.3",
   "dynaconf[yaml]>=3.3.2",
+  "imagehash>=4.3.1",
   "loguru>=0.7.3",
+  "pillow>=10.4",
   "pydantic>=2.10",
   "rich>=14.0",
 ]
@@ -86,6 +88,14 @@ skip_covered = false
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# numpy (pulled in transitively by imagehash) ships PEP 695 ``type`` aliases in
+# its stubs, which mypy rejects when type-checking against Python 3.11. Skip
+# following into numpy so the syntax of its stubs does not gate our own code.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.lintro]
 line_length = 88
