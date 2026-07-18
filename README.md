@@ -59,8 +59,8 @@ docker pull ghcr.io/lgtm-hq/winnow:latest
 docker run --rm ghcr.io/lgtm-hq/winnow:latest --version
 ```
 
-Images are published to `ghcr.io/lgtm-hq/winnow` on merges to `main` and on
-version tags. Platforms: `linux/amd64` and `linux/arm64`.
+Images are published to `ghcr.io/lgtm-hq/winnow` on merges to `main` and on version
+tags. Platforms: `linux/amd64` and `linux/arm64`.
 
 ## Usage
 

@@ -46,11 +46,10 @@ jobs:
       tag-latest: true
       platforms: linux/amd64,linux/arm64
       runner-map: '{"linux/arm64":"ubuntu-24.04-arm"}'
-      smoke-test: winnow --version
+      smoke-test: --version
       validate-on-pr: true
       scan: true
       scan-exit-code: '0'
-      cache-registry-ref: ghcr.io/lgtm-hq/winnow:cache
       provenance: true
       sbom: true
       cosign-sign: true
