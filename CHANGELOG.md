@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.13.0] - 2026-07-18
+
+### Added
+
+- **report**: SQLite v2 report schema with FTS5 (#149) (9fae6ce)
+
 ## [0.12.0] - 2026-07-18
 
 ### Added
