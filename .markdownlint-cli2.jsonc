@@ -1,4 +1,5 @@
 {
+  "ignores": [".agent-prompts/**", ".agent-skills/**"],
   "config": {
     "MD013": {
       "line_length": 88,

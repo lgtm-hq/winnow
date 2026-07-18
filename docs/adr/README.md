@@ -72,9 +72,10 @@ because...
 
 ## Index of ADRs
 
-| ADR                                | Title                                 | Status   | Date       |
-| ---------------------------------- | ------------------------------------- | -------- | ---------- |
-| [0001](0001-api-first-platform.md) | API-First Platform, CLI-First Phasing | Accepted | 2026-06-30 |
+| ADR                                | Title                                           | Status   | Date       |
+| ---------------------------------- | ----------------------------------------------- | -------- | ---------- |
+| [0001](0001-api-first-platform.md) | API-First Platform, CLI-First Phasing           | Accepted | 2026-06-30 |
+| [0002](0002-native-hashing.md)     | Native Hashing — Rust Batch Hasher vs imagehash | Accepted | 2026-07-18 |
 
 ## Template
 
