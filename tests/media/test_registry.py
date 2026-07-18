@@ -301,3 +301,31 @@ def test_sniff_skips_matches_without_mime_type(
     result = detect_media_type(target)
 
     assert_that(result).is_equal_to(MediaType.IMAGE)
+
+
+def test_content_sniffing_outranks_builtin_raw_default(tmp_path: Path) -> None:
+    """Built-in RAW defaults are name fallbacks, not user overrides."""
+    misnamed_video = tmp_path / "clip.nef"
+    misnamed_video.write_bytes(MP4_BYTES)
+
+    assert_that(detect_media_type(misnamed_video)).is_equal_to(MediaType.VIDEO)
+
+
+def test_user_override_outranks_content_for_raw_extension(tmp_path: Path) -> None:
+    """An explicit user registration beats content sniffing."""
+    registry = FormatRegistry()
+    registry.register(extension="nef", media_type=MediaType.IMAGE)
+    misnamed_video = tmp_path / "clip.nef"
+    misnamed_video.write_bytes(MP4_BYTES)
+
+    result = detect_media_type(misnamed_video, registry=registry)
+
+    assert_that(result).is_equal_to(MediaType.IMAGE)
+
+
+def test_raw_extension_still_resolves_by_name(tmp_path: Path) -> None:
+    """RAW extensions with unrecognized content resolve as images by name."""
+    raw_file = tmp_path / "shot.nef"
+    raw_file.write_bytes(b"\x00\x01\x02\x03")
+
+    assert_that(detect_media_type(raw_file)).is_equal_to(MediaType.IMAGE)

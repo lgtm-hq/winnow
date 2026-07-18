@@ -54,7 +54,7 @@ RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
 """RAW camera extensions missing from the stdlib ``mimetypes`` table."""
 
 DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(
-    {extension: MediaType.IMAGE for extension in RAW_IMAGE_MIME_TYPES},
+    dict.fromkeys(RAW_IMAGE_MIME_TYPES, MediaType.IMAGE),
 )
 """RAW-format supplement seeded into default registries.
 
@@ -98,7 +98,7 @@ class FormatRegistry:
             extension is not registered.
     """
 
-    __slots__ = ("_extension_map", "_lock", "use_mime_fallback")
+    __slots__ = ("_extension_map", "_lock", "_override_keys", "use_mime_fallback")
 
     def __init__(
         self,
@@ -108,11 +108,12 @@ class FormatRegistry:
         use_mime_fallback: bool = True,
     ) -> None:
         self._extension_map: dict[str, MediaType] = {}
+        self._override_keys: set[str] = set()
         self._lock = Lock()
         self.use_mime_fallback = use_mime_fallback
 
         if include_defaults:
-            self.register_many(DEFAULT_FORMATS)
+            self.register_many(DEFAULT_FORMATS, as_override=False)
         if formats is not None:
             self.register_many(formats)
 
@@ -183,15 +184,21 @@ class FormatRegistry:
         coerced_media_type = _coerce_media_type(media_type)
         with self._lock:
             self._extension_map[normalized_extension] = coerced_media_type
+            self._override_keys.add(normalized_extension)
 
     def register_many(
         self,
         formats: Mapping[str, MediaType | str],
+        *,
+        as_override: bool = True,
     ) -> None:
         """Register multiple extension mappings.
 
         Args:
             formats: Mapping of extensions to media types.
+            as_override: Whether the mappings count as user overrides that
+                take precedence over content sniffing. Built-in default
+                seeding passes False so defaults act only as name fallbacks.
 
         Raises:
             ValueError: If any extension or media type is invalid.
@@ -207,13 +214,16 @@ class FormatRegistry:
 
         with self._lock:
             self._extension_map.update(normalized_formats)
+            if as_override:
+                self._override_keys.update(normalized_formats)
 
     def lookup_override(self, extension: str) -> MediaType | None:
         """Look up an explicitly registered extension mapping.
 
-        Unlike :meth:`lookup`, this never consults the MIME table; it only
-        answers from mappings registered on this instance (defaults, config,
-        or :meth:`register` calls).
+        Unlike :meth:`lookup`, this never consults the MIME table or the
+        built-in defaults; it only answers from user-supplied mappings
+        (constructor ``formats``, config, or :meth:`register` calls), which
+        are the only entries allowed to outrank content sniffing.
 
         Args:
             extension: File extension, with or without a leading dot. File names
@@ -228,6 +238,8 @@ class FormatRegistry:
             return None
 
         with self._lock:
+            if normalized_extension not in self._override_keys:
+                return None
             return self._extension_map.get(normalized_extension)
 
     def lookup(self, extension: str) -> MediaType | None:
@@ -245,7 +257,8 @@ class FormatRegistry:
         if not normalized_extension:
             return None
 
-        media_type = self.lookup_override(normalized_extension)
+        with self._lock:
+            media_type = self._extension_map.get(normalized_extension)
         if media_type is not None:
             return media_type
         if not self.use_mime_fallback:
