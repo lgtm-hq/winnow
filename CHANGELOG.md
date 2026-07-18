@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.17.0] - 2026-07-18
+
+### Added
+
+- **dedup**: duplicate finder and quality comparator (#154) (749e241)
+
 ## [0.16.0] - 2026-07-18
 
 ### Added
