@@ -69,6 +69,7 @@ class DuplicateGroupRecord:
         group_number: Stable group ordinal within the run.
         media_type: Media type shared by the group members.
         file_count: Number of files assigned to the group.
+        best_file_id: Media file selected as the best copy, if any.
         target_path: Path selected as the retained copy, if any.
     """
 
@@ -77,6 +78,7 @@ class DuplicateGroupRecord:
     group_number: int
     media_type: str
     file_count: int
+    best_file_id: int | None
     target_path: str | None
 
     @classmethod
@@ -95,6 +97,7 @@ class DuplicateGroupRecord:
             group_number=row["group_number"],
             media_type=row["media_type"],
             file_count=row["file_count"],
+            best_file_id=row["best_file_id"],
             target_path=row["target_path"],
         )
 
@@ -113,6 +116,8 @@ class MediaFileRecord:
         size_bytes: File size in bytes.
         content_hash: Content hash used for exact-duplicate detection, if any.
         creation_date: ISO-8601 creation timestamp of the file, if known.
+        quality_score: Computed quality score of the file, if any.
+        metadata: Searchable metadata text (EXIF summary, tags), if any.
     """
 
     id: int
@@ -124,6 +129,8 @@ class MediaFileRecord:
     size_bytes: int
     content_hash: str | None
     creation_date: str | None
+    quality_score: float | None
+    metadata: str | None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Self:
@@ -145,6 +152,8 @@ class MediaFileRecord:
             size_bytes=row["size_bytes"],
             content_hash=row["content_hash"],
             creation_date=row["creation_date"],
+            quality_score=row["quality_score"],
+            metadata=row["metadata"],
         )
 
 
