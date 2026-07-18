@@ -16,6 +16,10 @@ from mutagen import MutagenError
 from tinytag import TinyTag, TinyTagException
 
 from winnow.exceptions import MediaError
+from winnow.media._coerce import (
+    coerce_non_negative_float,
+    coerce_non_negative_int,
+)
 from winnow.models.media import MediaMetadata
 
 _MUTAGEN_CODECS: Final[dict[str, str]] = {
@@ -115,10 +119,10 @@ def _metadata_from_mutagen(*, path: Path) -> MediaMetadata | None:
 
     info = audio.info
     return MediaMetadata(
-        duration_seconds=_non_negative_float(getattr(info, "length", None)),
-        bitrate=_non_negative_int(getattr(info, "bitrate", None)),
-        sample_rate=_non_negative_int(getattr(info, "sample_rate", None)),
-        channels=_non_negative_int(getattr(info, "channels", None)),
+        duration_seconds=coerce_non_negative_float(getattr(info, "length", None)),
+        bitrate=coerce_non_negative_int(getattr(info, "bitrate", None)),
+        sample_rate=coerce_non_negative_int(getattr(info, "sample_rate", None)),
+        channels=coerce_non_negative_int(getattr(info, "channels", None)),
         codec=_MUTAGEN_CODECS.get(type(audio).__name__),
     )
 
@@ -138,13 +142,13 @@ def _metadata_from_tinytag(*, path: Path) -> MediaMetadata | None:
         logger.debug("tinytag could not read {}: {}", path, exc)
         return None
 
-    kbps = _non_negative_float(tag.bitrate)
+    kbps = coerce_non_negative_float(tag.bitrate)
     bitrate = int(kbps * 1000) if kbps is not None else None
     return MediaMetadata(
-        duration_seconds=_non_negative_float(tag.duration),
+        duration_seconds=coerce_non_negative_float(tag.duration),
         bitrate=bitrate,
-        sample_rate=_non_negative_int(tag.samplerate),
-        channels=_non_negative_int(tag.channels),
+        sample_rate=coerce_non_negative_int(tag.samplerate),
+        channels=coerce_non_negative_int(tag.channels),
     )
 
 
@@ -216,39 +220,3 @@ def _tags_from_tinytag(*, path: Path) -> dict[str, str]:
         "track": tag.track,
     }
     return {key: str(value) for key, value in candidates.items() if value}
-
-
-def _non_negative_int(value: object) -> int | None:
-    """Coerce a value into a non-negative integer.
-
-    Args:
-        value: Raw backend field value.
-
-    Returns:
-        Parsed integer, or ``None`` when missing or invalid.
-    """
-    if value is None:
-        return None
-    try:
-        parsed = int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _non_negative_float(value: object) -> float | None:
-    """Coerce a value into a non-negative float.
-
-    Args:
-        value: Raw backend field value.
-
-    Returns:
-        Parsed float, or ``None`` when missing or invalid.
-    """
-    if value is None:
-        return None
-    try:
-        parsed = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None

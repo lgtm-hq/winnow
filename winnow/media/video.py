@@ -18,6 +18,10 @@ from typing import Final
 from loguru import logger
 
 from winnow.exceptions import MediaError
+from winnow.media._coerce import (
+    coerce_non_negative_float,
+    coerce_non_negative_int,
+)
 from winnow.models.media import MediaMetadata
 
 _FFPROBE: Final[str] = "ffprobe"
@@ -258,13 +262,18 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
     )
     container: dict[str, object] = data.get("format", {})
 
-    duration = _parse_float(video_stream.get("duration") or container.get("duration"))
-    bitrate = _parse_int(video_stream.get("bit_rate") or container.get("bit_rate"))
+    duration = coerce_non_negative_float(
+        video_stream.get("duration") or container.get("duration")
+    )
+    bitrate = coerce_non_negative_int(
+        video_stream.get("bit_rate") or container.get("bit_rate"),
+        via_float=True,
+    )
     codec = video_stream.get("codec_name")
 
     return MediaMetadata(
-        width=_parse_int(video_stream.get("width")),
-        height=_parse_int(video_stream.get("height")),
+        width=coerce_non_negative_int(video_stream.get("width"), via_float=True),
+        height=coerce_non_negative_int(video_stream.get("height"), via_float=True),
         duration_seconds=duration,
         codec=codec if isinstance(codec, str) else None,
         bitrate=bitrate,
@@ -290,39 +299,3 @@ def _parse_frame_rate(value: object) -> float | None:
     if fraction <= 0:
         return None
     return float(fraction)
-
-
-def _parse_int(value: object) -> int | None:
-    """Parse a value into a non-negative integer.
-
-    Args:
-        value: Raw ffprobe field value.
-
-    Returns:
-        Parsed integer, or ``None`` when it is missing or invalid.
-    """
-    if value is None:
-        return None
-    try:
-        parsed = int(float(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _parse_float(value: object) -> float | None:
-    """Parse a value into a non-negative float.
-
-    Args:
-        value: Raw ffprobe field value.
-
-    Returns:
-        Parsed float, or ``None`` when it is missing or invalid.
-    """
-    if value is None:
-        return None
-    try:
-        parsed = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None

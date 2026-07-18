@@ -182,28 +182,3 @@ def test_mutagen_tags_handles_unreadable(tmp_path: Path) -> None:
     tags = audio_module._tags_from_mutagen(path=garbage)
 
     assert_that(tags).is_empty()
-
-
-@pytest.mark.parametrize(
-    "value",
-    [None, "not-a-number", object()],
-    ids=["none", "string", "object"],
-)
-def test_non_negative_int_rejects_invalid(value: object) -> None:
-    """Non-numeric or missing values coerce to None for integers."""
-    assert_that(audio_module._non_negative_int(value)).is_none()
-
-
-@pytest.mark.parametrize(
-    "value",
-    [None, "not-a-number", object()],
-    ids=["none", "string", "object"],
-)
-def test_non_negative_float_rejects_invalid(value: object) -> None:
-    """Non-numeric or missing values coerce to None for floats."""
-    assert_that(audio_module._non_negative_float(value)).is_none()
-
-
-def test_non_negative_int_rejects_negative() -> None:
-    """Negative integers are rejected as None."""
-    assert_that(audio_module._non_negative_int(-5)).is_none()

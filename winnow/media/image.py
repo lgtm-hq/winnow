@@ -213,6 +213,10 @@ def _metadata_from_exif(path: Path) -> MediaMetadata:
 def _format_from_suffix(path: Path) -> str | None:
     """Derive an uppercase format label from a file suffix.
 
+    TODO(#155): route this EXIF-fallback format inference through the
+    content-sniffing detection layer once it lands, instead of trusting
+    the file suffix.
+
     Keeps the EXIF fallback consistent with Pillow, which reports uppercase
     format names such as ``"JPEG"`` or ``"TIFF"``.
 
