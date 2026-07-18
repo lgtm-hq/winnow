@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 
 def copy_path(
@@ -40,6 +41,21 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
         return
     path.unlink()
+
+
+def temporary_path(path: Path) -> Path:
+    """Return a unique staging path next to a destination path.
+
+    Args:
+        path: Destination path the staging path should sit beside.
+
+    Returns:
+        Hidden sibling path that does not already exist.
+    """
+    while True:
+        candidate = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+        if not path_exists(candidate):
+            return candidate
 
 
 def sync_path(path: Path) -> None:
