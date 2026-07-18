@@ -17,7 +17,7 @@ from winnow.report.records import MediaFileRecord
 class MediaStore(ConnectionManager):
     """CRUD and search helpers for the ``media_files`` table."""
 
-    def add_media_file(
+    def add_media_file(  # noqa: PLR0913 -- keyword-only params mirror table columns
         self,
         *,
         run_id: int,

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
 from winnow.exceptions import CacheError
-from winnow.hash import _db, CacheEntry, CacheKey, CacheStats, HashCache
+from winnow.hash import CacheEntry, CacheKey, CacheStats, HashCache, _db
 from winnow.models.config import CacheSettings
 from winnow.models.enums import HashAlgorithm
 
