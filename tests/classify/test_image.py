@@ -8,24 +8,9 @@ import pytest
 from assertpy import assert_that
 
 from tests.classify.conftest import ImageFactory
-from winnow.classify import ColorCounts, is_pillow_available
+from winnow.classify import ColorCounts
 from winnow.classify import _image as image_module
 from winnow.exceptions import MediaError
-
-
-def test_is_pillow_available_in_test_environment() -> None:
-    """Pillow is installed for the dev/test dependency group."""
-    assert_that(is_pillow_available()).is_true()
-
-
-def test_require_pillow_raises_when_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """require_pillow surfaces a clear MediaError when Pillow is missing."""
-    monkeypatch.setattr(image_module, "_PILLOW_AVAILABLE", False)
-
-    with pytest.raises(MediaError, match="Pillow is required"):
-        image_module.require_pillow()
 
 
 def test_open_image_raises_media_error_on_non_image(tmp_path: Path) -> None:

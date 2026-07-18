@@ -214,7 +214,7 @@ def detect_photo_or_graphic(
         A :class:`PhotoGraphicClassification` describing the decision.
 
     Raises:
-        MediaError: If Pillow is unavailable or the file cannot be read.
+        MediaError: If the file cannot be read as an image.
     """
     active_config = config if config is not None else PhotoGraphicConfig()
 

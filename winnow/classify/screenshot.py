@@ -204,7 +204,7 @@ def detect_screenshot(
         A :class:`ScreenshotClassification` describing the decision.
 
     Raises:
-        MediaError: If Pillow is unavailable or the file cannot be read.
+        MediaError: If the file cannot be read as an image.
     """
     with open_image(path) as image:
         dimensions = extract_dimensions(image)

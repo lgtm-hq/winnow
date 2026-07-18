@@ -2,12 +2,8 @@
 
 The classifiers in :mod:`winnow.classify` keep their decision logic in pure,
 standard-library functions that operate on already-extracted signals. This module
-provides the optional Pillow bridge that reads those signals (dimensions, EXIF
-tags, alpha channel, and color histograms) from image files on disk.
-
-Pillow is an optional dependency (install ``winnow-media[image]``). Importing this
-module never fails when Pillow is absent; the Pillow-dependent helpers raise a
-clear :class:`~winnow.exceptions.MediaError` instead.
+provides the Pillow bridge that reads those signals (dimensions, EXIF tags, alpha
+channel, and color histograms) from image files on disk.
 """
 
 from __future__ import annotations
@@ -17,19 +13,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import ExifTags, Image, UnidentifiedImageError
+
 from winnow.exceptions import MediaError
-
-try:
-    from PIL import ExifTags, Image, UnidentifiedImageError
-
-    _PILLOW_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised only without Pillow installed
-    _PILLOW_AVAILABLE = False
-
-PILLOW_INSTALL_HINT = (
-    "Pillow is required for image-based classification; install it with "
-    "`pip install winnow-media[image]`."
-)
 
 _ALPHA_MODES = frozenset({"RGBA", "LA", "PA", "RGBa", "La"})
 
@@ -53,25 +39,6 @@ class ColorCounts:
     exceeds_max: bool
 
 
-def is_pillow_available() -> bool:
-    """Return whether Pillow can be imported in this environment.
-
-    Returns:
-        ``True`` when Pillow is installed, ``False`` otherwise.
-    """
-    return _PILLOW_AVAILABLE
-
-
-def require_pillow() -> None:
-    """Ensure Pillow is importable before using image-based helpers.
-
-    Raises:
-        MediaError: If Pillow is not installed.
-    """
-    if not _PILLOW_AVAILABLE:
-        raise MediaError(PILLOW_INSTALL_HINT, operation="classify")
-
-
 @contextmanager
 def open_image(path: Path) -> Iterator[Image.Image]:
     """Open an image file for inspection.
@@ -83,10 +50,8 @@ def open_image(path: Path) -> Iterator[Image.Image]:
         A loaded Pillow image.
 
     Raises:
-        MediaError: If Pillow is unavailable or the file cannot be read as an
-            image.
+        MediaError: If the file cannot be read as an image.
     """
-    require_pillow()
     try:
         with Image.open(path) as image:
             image.load()
