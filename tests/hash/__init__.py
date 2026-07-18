@@ -1,1 +1,1 @@
-"""Tests for winnow perceptual hashing."""
+"""Tests for the winnow hash domain."""
