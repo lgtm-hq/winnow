@@ -6,6 +6,8 @@ import click
 
 from winnow import __version__
 from winnow.cli.commands import doctor_command, help_command
+from winnow.cli.config import config as config_command
+from winnow.cli.init import init as init_command
 from winnow.cli.standards import no_color_option
 
 __all__ = ["main"]
@@ -19,12 +21,20 @@ def main(ctx: click.Context, *, no_color: bool) -> None:
     """Winnow your media library."""
     context_obj = ctx.ensure_object(dict)
     context_obj["no_color"] = no_color
-    if ctx.invoked_subcommand is None:
+    if ctx.invoked_subcommand is not None:
+        return
+    from winnow.cli.repl import run_repl, stdin_is_interactive
+
+    if stdin_is_interactive() and not context_obj.get("_in_repl"):
+        run_repl(ctx)
+    else:
         click.echo(f"winnow {__version__} — use --help for commands.")
 
 
+main.add_command(config_command)
 main.add_command(doctor_command)
 main.add_command(help_command)
+main.add_command(init_command)
 
 
 if __name__ == "__main__":  # pragma: no cover
