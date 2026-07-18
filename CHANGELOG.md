@@ -21,6 +21,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.8.0] - 2026-07-18
+
+### Added
+
+- **cli**: Rich console, help command, and doctor diagnostics (#143) (68f7bb2)
+
+### Changed
+
+- **release**: Docker build, publish, and sign to GHCR (#141) (0ecdad9)
+
 ## [0.7.0] - 2026-07-17
 
 ### Added
