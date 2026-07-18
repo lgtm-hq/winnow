@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from winnow import __version__
+from winnow.cli.clean import clean
 from winnow.cli.commands import doctor_command, help_command
 from winnow.cli.config import config as config_command
 from winnow.cli.init import init as init_command
@@ -31,6 +32,7 @@ def main(ctx: click.Context, *, no_color: bool) -> None:
         click.echo(f"winnow {__version__} — use --help for commands.")
 
 
+main.add_command(clean)
 main.add_command(config_command)
 main.add_command(doctor_command)
 main.add_command(help_command)
