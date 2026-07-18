@@ -27,6 +27,9 @@ class MediaMetadata(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     codec: str | None = None
     bitrate: int | None = Field(default=None, ge=0)
+    frame_rate: float | None = Field(default=None, ge=0)
+    sample_rate: int | None = Field(default=None, ge=0)
+    channels: int | None = Field(default=None, ge=0)
     image_format: str | None = None
     color_mode: str | None = None
     bit_depth: int | None = Field(default=None, ge=0)
