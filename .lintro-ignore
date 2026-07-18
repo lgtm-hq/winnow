@@ -10,6 +10,9 @@ env
 .claude
 # Sparse lgtm-ci tooling checkout for reusable workflow scripts (not project source)
 .lgtm-ci-tooling
+# Agent lane instructions and skills (not project source)
+.agent-prompts
+.agent-skills
 
 __pycache__
 .lintro/*

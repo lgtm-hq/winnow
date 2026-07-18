@@ -52,6 +52,16 @@ make setup    # uv sync --dev
 uv run winnow --help
 ```
 
+### Docker
+
+```bash
+docker pull ghcr.io/lgtm-hq/winnow:latest
+docker run --rm ghcr.io/lgtm-hq/winnow:latest --version
+```
+
+Images are published to `ghcr.io/lgtm-hq/winnow` on merges to `main` and on version
+tags. Platforms: `linux/amd64` and `linux/arm64`.
+
 ## Usage
 
 Only the commands below work in the current release. There are no media-processing

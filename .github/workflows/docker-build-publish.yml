@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: MIT
+# For license details, see the repository root LICENSE file.
+---
+name: Build - Docker Image & Registry
+# Builds and publishes Docker images to GHCR via lgtm-ci reusable-docker.
+# PR: validate-only build (no push). main/tag: push, scan, provenance, SBOM.
+
+'on':
+  push:
+    branches: [main]
+    tags:
+      - '*.*.*'
+      - v*.*.*
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docker:
+    name: 🐳 Docker Image
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-docker.yml@66cad82ead0e5d119928c895c7d7da9c837989e5 # v0.52.3
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      security-events: write
+    with:
+      image-name: lgtm-hq/winnow
+      version: >-
+        ${{ startsWith(github.ref, 'refs/tags/')
+        && github.ref_name || '' }}
+      push: >-
+        ${{ github.event_name != 'pull_request'
+        && (github.ref == 'refs/heads/main'
+        || startsWith(github.ref, 'refs/tags/')) }}
+      tag-latest: true
+      platforms: linux/amd64,linux/arm64
+      runner-map: '{"linux/arm64":"ubuntu-24.04-arm"}'
+      smoke-test: --version
+      validate-on-pr: true
+      scan: true
+      # Advisory-only: debian slim base images routinely carry OS CVEs that
+      # are not actionable for this CLI image. Failures would block every
+      # publish; SARIF still uploads for visibility.
+      scan-exit-code: '0'
+      cache-registry-ref: ghcr.io/lgtm-hq/winnow:cache
+      provenance: true
+      sbom: true
+      cosign-sign: true
+      tooling-ref: '66cad82ead0e5d119928c895c7d7da9c837989e5' # v0.52.3
+      egress-policy: block
+      egress-preset: docker
+      allowed-endpoints-mode: replace
+      # Full list (replace mode): docker preset baseline + pypi/astral for uv
+      # build + sigstore for cosign + trivy hosts (get.trivy.dev installer;
+      # ghcr.io/mirror.gcr.io/public.ecr.aws for vulnerability DB).
+      allowed-endpoints: >
+        github.com:443
+        api.github.com:443
+        codeload.github.com:443
+        objects.githubusercontent.com:443
+        raw.githubusercontent.com:443
+        release-assets.githubusercontent.com:443
+        github-releases.githubusercontent.com:443
+        pipelines.actions.githubusercontent.com:443
+        ghcr.io:443
+        pkg-containers.githubusercontent.com:443
+        docker.io:443
+        registry-1.docker.io:443
+        auth.docker.io:443
+        production.cloudflare.docker.com:443
+        production.cloudfront.docker.com:443
+        pypi.org:443
+        files.pythonhosted.org:443
+        token.actions.githubusercontent.com:443
+        fulcio.sigstore.dev:443
+        rekor.sigstore.dev:443
+        tuf-repo-cdn.sigstore.dev:443
+        timestamp.sigstore.dev:443
+        oauth2.sigstore.dev:443
+        get.trivy.dev:443
+        mirror.gcr.io:443
+        public.ecr.aws:443

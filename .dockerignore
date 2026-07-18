@@ -1,0 +1,43 @@
+# Version control
+.git/
+.gitattributes
+
+# Virtual environments and build artifacts
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Development tooling and caches
+.agent-prompts/
+.agent-skills/
+.lintro/
+.lintro-cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Test sources
+tests/
+
+# Documentation
+docs/
+
+# CI configuration
+.github/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Secrets and local config
+.env
+.secrets
+.env.*
