@@ -1,83 +1,81 @@
-"""Extensible media format registry.
+"""Extensible media format registry and layered media-type detection.
 
-The registry maps file extensions to :class:`winnow.models.media.MediaType`.
-Unknown extensions return ``None`` unless the optional MIME fallback can infer an
-image, video, or audio type from the standard library ``mimetypes`` table.
+Media types are resolved through three layers, most authoritative first:
+
+1. User overrides registered on a :class:`FormatRegistry`.
+2. Content sniffing of magic bytes via ``puremagic``.
+3. Name-based inference through the standard library ``mimetypes`` table,
+   seeded once at import with RAW camera formats the table lacks.
+
+The registry itself only hand-maintains the RAW supplement; every mainstream
+extension is answered by the MIME table or by sniffing file content.
 """
 
 from __future__ import annotations
 
 import mimetypes
 from collections.abc import Mapping
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from threading import Lock
 from types import MappingProxyType
 from typing import Self
 
+import puremagic
+
 from winnow.models.media import MediaType
 
-IMAGE_FORMATS: Mapping[str, MediaType] = MappingProxyType(
+RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
     {
-        "3fr": MediaType.IMAGE,
-        "ari": MediaType.IMAGE,
-        "arw": MediaType.IMAGE,
-        "bmp": MediaType.IMAGE,
-        "cr2": MediaType.IMAGE,
-        "cr3": MediaType.IMAGE,
-        "dcr": MediaType.IMAGE,
-        "dng": MediaType.IMAGE,
-        "erf": MediaType.IMAGE,
-        "gif": MediaType.IMAGE,
-        "heic": MediaType.IMAGE,
-        "heif": MediaType.IMAGE,
-        "jpeg": MediaType.IMAGE,
-        "jpg": MediaType.IMAGE,
-        "k25": MediaType.IMAGE,
-        "kdc": MediaType.IMAGE,
-        "mrw": MediaType.IMAGE,
-        "nef": MediaType.IMAGE,
-        "nrw": MediaType.IMAGE,
-        "orf": MediaType.IMAGE,
-        "pef": MediaType.IMAGE,
-        "png": MediaType.IMAGE,
-        "raf": MediaType.IMAGE,
-        "raw": MediaType.IMAGE,
-        "rw2": MediaType.IMAGE,
-        "rwl": MediaType.IMAGE,
-        "sr2": MediaType.IMAGE,
-        "srf": MediaType.IMAGE,
-        "srw": MediaType.IMAGE,
-        "tif": MediaType.IMAGE,
-        "tiff": MediaType.IMAGE,
-        "webp": MediaType.IMAGE,
-        "x3f": MediaType.IMAGE,
+        "3fr": "image/x-hasselblad-3fr",
+        "ari": "image/x-arriflex-ari",
+        "arw": "image/x-sony-arw",
+        "cr2": "image/x-canon-cr2",
+        "cr3": "image/x-canon-cr3",
+        "dcr": "image/x-kodak-dcr",
+        "dng": "image/x-adobe-dng",
+        "erf": "image/x-epson-erf",
+        "k25": "image/x-kodak-k25",
+        "kdc": "image/x-kodak-kdc",
+        "mrw": "image/x-minolta-mrw",
+        "nef": "image/x-nikon-nef",
+        "nrw": "image/x-nikon-nrw",
+        "orf": "image/x-olympus-orf",
+        "pef": "image/x-pentax-pef",
+        "raf": "image/x-fuji-raf",
+        "raw": "image/x-panasonic-raw",
+        "rw2": "image/x-panasonic-rw2",
+        "rwl": "image/x-leica-rwl",
+        "sr2": "image/x-sony-sr2",
+        "srf": "image/x-sony-srf",
+        "srw": "image/x-samsung-srw",
+        "x3f": "image/x-sigma-x3f",
     },
 )
-VIDEO_FORMATS: Mapping[str, MediaType] = MappingProxyType(
-    {
-        "avi": MediaType.VIDEO,
-        "mkv": MediaType.VIDEO,
-        "mov": MediaType.VIDEO,
-        "mp4": MediaType.VIDEO,
-        "webm": MediaType.VIDEO,
-    },
-)
-AUDIO_FORMATS: Mapping[str, MediaType] = MappingProxyType(
-    {
-        "aac": MediaType.AUDIO,
-        "flac": MediaType.AUDIO,
-        "mp3": MediaType.AUDIO,
-        "ogg": MediaType.AUDIO,
-        "wav": MediaType.AUDIO,
-    },
-)
+"""RAW camera extensions missing from the stdlib ``mimetypes`` table."""
+
 DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(
-    {
-        **IMAGE_FORMATS,
-        **VIDEO_FORMATS,
-        **AUDIO_FORMATS,
-    },
+    dict.fromkeys(RAW_IMAGE_MIME_TYPES, MediaType.IMAGE),
 )
+"""RAW-format supplement seeded into default registries.
+
+Mainstream formats (JPEG, PNG, MP4, MP3, ...) are intentionally absent; they
+resolve through content sniffing or the stdlib ``mimetypes`` table instead of a
+hand-maintained list.
+"""
+
+
+def _seed_raw_mime_types() -> None:
+    """Register RAW image MIME types with the stdlib ``mimetypes`` table.
+
+    Runs once at import so ``mimetypes.guess_type`` recognizes RAW camera
+    extensions (and corrects misleading platform entries such as ``.dcr``)
+    process-wide.
+    """
+    for extension, mime_type in RAW_IMAGE_MIME_TYPES.items():
+        mimetypes.add_type(mime_type, f".{extension}")
+
+
+_seed_raw_mime_types()
 
 _MIME_PREFIX_TYPES: Mapping[str, MediaType] = MappingProxyType(
     {
@@ -100,7 +98,7 @@ class FormatRegistry:
             extension is not registered.
     """
 
-    __slots__ = ("_extension_map", "_lock", "use_mime_fallback")
+    __slots__ = ("_extension_map", "_lock", "_override_keys", "use_mime_fallback")
 
     def __init__(
         self,
@@ -110,11 +108,12 @@ class FormatRegistry:
         use_mime_fallback: bool = True,
     ) -> None:
         self._extension_map: dict[str, MediaType] = {}
+        self._override_keys: set[str] = set()
         self._lock = Lock()
         self.use_mime_fallback = use_mime_fallback
 
         if include_defaults:
-            self.register_many(DEFAULT_FORMATS)
+            self.register_many(DEFAULT_FORMATS, as_override=False)
         if formats is not None:
             self.register_many(formats)
 
@@ -185,15 +184,21 @@ class FormatRegistry:
         coerced_media_type = _coerce_media_type(media_type)
         with self._lock:
             self._extension_map[normalized_extension] = coerced_media_type
+            self._override_keys.add(normalized_extension)
 
     def register_many(
         self,
         formats: Mapping[str, MediaType | str],
+        *,
+        as_override: bool = True,
     ) -> None:
         """Register multiple extension mappings.
 
         Args:
             formats: Mapping of extensions to media types.
+            as_override: Whether the mappings count as user overrides that
+                take precedence over content sniffing. Built-in default
+                seeding passes False so defaults act only as name fallbacks.
 
         Raises:
             ValueError: If any extension or media type is invalid.
@@ -209,6 +214,33 @@ class FormatRegistry:
 
         with self._lock:
             self._extension_map.update(normalized_formats)
+            if as_override:
+                self._override_keys.update(normalized_formats)
+
+    def lookup_override(self, extension: str) -> MediaType | None:
+        """Look up an explicitly registered extension mapping.
+
+        Unlike :meth:`lookup`, this never consults the MIME table or the
+        built-in defaults; it only answers from user-supplied mappings
+        (constructor ``formats``, config, or :meth:`register` calls), which
+        are the only entries allowed to outrank content sniffing.
+
+        Args:
+            extension: File extension, with or without a leading dot. File names
+                and paths are also accepted; only the final suffix is used.
+
+        Returns:
+            Registered media type, or ``None`` when the extension has no
+            explicit registration.
+        """
+        normalized_extension = normalize_extension(extension)
+        if not normalized_extension:
+            return None
+
+        with self._lock:
+            if normalized_extension not in self._override_keys:
+                return None
+            return self._extension_map.get(normalized_extension)
 
     def lookup(self, extension: str) -> MediaType | None:
         """Look up a media type by extension.
@@ -267,6 +299,67 @@ def media_type_for_extension(
     """
     active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
     return active_registry.lookup(extension)
+
+
+def detect_media_type(
+    path: Path,
+    *,
+    registry: FormatRegistry | None = None,
+) -> MediaType | None:
+    """Detect a file's media type using layered detection.
+
+    Layers are consulted most-authoritative first:
+
+    1. Explicit registry overrides for the file's extension.
+    2. Magic-byte content sniffing via ``puremagic``.
+    3. Name-based inference through the ``mimetypes`` table, which covers
+       unreadable or absent files.
+
+    Args:
+        path: File to classify. The file does not need to exist; detection then
+            falls back to name-based inference.
+        registry: Optional registry supplying overrides and the name-based
+            fallback. Defaults to Winnow's shared default registry.
+
+    Returns:
+        Detected media type, or ``None`` when no layer can classify the file.
+    """
+    active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
+    override = active_registry.lookup_override(path.suffix)
+    if override is not None:
+        return override
+
+    sniffed = _sniff_media_type(path)
+    if sniffed is not None:
+        return sniffed
+
+    return active_registry.lookup(path.suffix)
+
+
+def _sniff_media_type(path: Path) -> MediaType | None:
+    """Sniff a file's media type from its magic bytes.
+
+    Args:
+        path: File whose content should be inspected.
+
+    Returns:
+        Media type of the strongest image, video, or audio signature match, or
+        ``None`` when the file is unreadable or its content is unrecognized.
+    """
+    try:
+        matches = puremagic.magic_file(str(path))
+    except (puremagic.PureError, OSError, ValueError):
+        return None
+
+    for match in matches:
+        mime_type = match.mime_type
+        if not mime_type:
+            continue
+        mime_prefix, _, _ = mime_type.partition("/")
+        media_type = _MIME_PREFIX_TYPES.get(mime_prefix)
+        if media_type is not None:
+            return media_type
+    return None
 
 
 def normalize_extension(extension: str) -> str:
@@ -397,13 +490,12 @@ Registrations on this instance are visible to every caller that relies on the
 default; use :func:`create_default_format_registry` for an isolated registry."""
 
 __all__ = [
-    "AUDIO_FORMATS",
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_FORMATS",
     "FormatRegistry",
-    "IMAGE_FORMATS",
-    "VIDEO_FORMATS",
+    "RAW_IMAGE_MIME_TYPES",
     "create_default_format_registry",
+    "detect_media_type",
     "media_type_for_extension",
     "normalize_extension",
 ]

@@ -41,6 +41,7 @@ dependencies = [
   "mutagen>=1.47",
   "pillow>=11.0",
   "pillow-heif>=0.18",
+  "puremagic>=1.30",
   "pydantic>=2.10",
   "rich>=14.0",
   "tinytag>=2.0",

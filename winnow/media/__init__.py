@@ -11,13 +11,12 @@ from winnow.media.image import (
     read_exif,
 )
 from winnow.media.registry import (
-    AUDIO_FORMATS,
     DEFAULT_FORMAT_REGISTRY,
     DEFAULT_FORMATS,
-    IMAGE_FORMATS,
-    VIDEO_FORMATS,
+    RAW_IMAGE_MIME_TYPES,
     FormatRegistry,
     create_default_format_registry,
+    detect_media_type,
     media_type_for_extension,
     normalize_extension,
 )
@@ -29,14 +28,13 @@ from winnow.media.video import (
 )
 
 __all__ = [
-    "AUDIO_FORMATS",
     "DEFAULT_FORMATS",
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
-    "IMAGE_FORMATS",
-    "VIDEO_FORMATS",
+    "RAW_IMAGE_MIME_TYPES",
     "FormatRegistry",
     "create_default_format_registry",
+    "detect_media_type",
     "extract_audio_metadata",
     "extract_frame",
     "extract_image_metadata",
