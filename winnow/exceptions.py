@@ -126,6 +126,10 @@ class DuplicateError(WinnowError):
     """Raised when duplicate detection or resolution fails."""
 
 
+class ReportError(WinnowError):
+    """Raised when report database schema or persistence operations fail."""
+
+
 __all__ = [
     "CacheError",
     "ConfigError",
@@ -134,6 +138,7 @@ __all__ = [
     "HashError",
     "MediaError",
     "PipelineError",
+    "ReportError",
     "SecurityError",
     "WinnowError",
 ]
