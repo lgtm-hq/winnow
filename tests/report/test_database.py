@@ -21,10 +21,13 @@ def test_connect_initializes_schema_version(report_db: ReportDatabase) -> None:
 
 
 def test_connect_is_idempotent(report_db: ReportDatabase) -> None:
-    """Calling connect twice keeps a single connection and one version row."""
+    """Calling connect twice keeps the same connection and existing data."""
+    run_id = report_db.create_run(root_path="/library")
+
     same = report_db.connect()
 
     assert_that(same).is_same_as(report_db)
+    assert_that(report_db.get_run(run_id)).is_not_none()
     assert_that(report_db.schema_version()).is_equal_to(SCHEMA_VERSION)
 
 
@@ -82,10 +85,28 @@ def test_unsupported_schema_version_raises(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
 
+    database = ReportDatabase(db_path)
     with pytest.raises(ReportError) as exc_info:
-        ReportDatabase(db_path).connect()
+        database.connect()
 
     assert_that(exc_info.value.context.details).contains_key("found")
+    assert_that(database.is_connected).is_false()
+
+
+def test_schema_version_rejects_duplicate_rows(tmp_path: Path) -> None:
+    """The schema_version primary key rejects a re-inserted version."""
+    db_path = tmp_path / "report.db"
+    ReportDatabase(db_path).connect().close()
+
+    connection = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO schema_version (version) VALUES (?);",
+                (SCHEMA_VERSION,),
+            )
+    finally:
+        connection.close()
 
 
 def test_create_and_get_run(report_db: ReportDatabase) -> None:
@@ -121,7 +142,7 @@ def test_list_runs_orders_by_start(report_db: ReportDatabase) -> None:
 
 
 def test_update_run_status(report_db: ReportDatabase, seeded_run: int) -> None:
-    """Updating status persists the new value and reports success."""
+    """Updating to a terminal status also records the completion time."""
     updated = report_db.update_run_status(
         seeded_run,
         status=RunStatus.FAILED,
@@ -133,6 +154,64 @@ def test_update_run_status(report_db: ReportDatabase, seeded_run: int) -> None:
     if run is None:
         pytest.fail("expected run to exist")
     assert_that(run.status).is_equal_to(RunStatus.FAILED.value)
+    assert_that(run.completed_at).is_not_none()
+
+
+def test_update_run_status_to_running_clears_completion(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """Moving a run back to a nonterminal status clears completed_at."""
+    report_db.complete_run(seeded_run)
+
+    report_db.update_run_status(seeded_run, status=RunStatus.RUNNING)
+
+    run = report_db.get_run(seeded_run)
+    assert_that(run).is_not_none()
+    if run is None:
+        pytest.fail("expected run to exist")
+    assert_that(run.status).is_equal_to(RunStatus.RUNNING.value)
+    assert_that(run.completed_at).is_none()
+
+
+def test_update_run_status_rejects_unknown_status(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """An unknown status string is rejected before touching the database."""
+    with pytest.raises(ReportError) as exc_info:
+        report_db.update_run_status(seeded_run, status="paused")
+
+    assert_that(exc_info.value.context.details).contains_entry(
+        {"status": "paused"},
+    )
+
+
+def test_complete_run_rejects_nonterminal_status(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """Completing a run with a nonterminal status raises a ReportError."""
+    with pytest.raises(ReportError) as exc_info:
+        report_db.complete_run(seeded_run, status=RunStatus.RUNNING)
+
+    assert_that(exc_info.value.context.operation).is_equal_to("complete_run")
+
+    run = report_db.get_run(seeded_run)
+    assert_that(run).is_not_none()
+    if run is None:
+        pytest.fail("expected run to exist")
+    assert_that(run.completed_at).is_none()
+
+
+def test_create_run_rejects_invalid_status_at_storage(
+    report_db: ReportDatabase,
+) -> None:
+    """The CHECK constraint rejects status strings outside the enum."""
+    with pytest.raises(ReportError) as exc_info:
+        report_db.create_run(root_path="/library", status="bogus")
+
+    assert_that(exc_info.value.context.operation).is_equal_to("write")
 
 
 def test_update_missing_run_returns_false(report_db: ReportDatabase) -> None:
@@ -378,16 +457,91 @@ def test_deleting_group_nulls_media_file_group(
         group_id=group_id,
     )
 
-    report_db._write(
-        "DELETE FROM duplicate_groups WHERE id = ?;",
-        (group_id,),
-    )
+    deleted = report_db.delete_duplicate_group(group_id)
     record = report_db.get_media_file(file_id)
 
+    assert_that(deleted).is_true()
+    assert_that(report_db.get_duplicate_group(group_id)).is_none()
     assert_that(record).is_not_none()
     if record is None:
         pytest.fail("expected media file to exist")
     assert_that(record.group_id).is_none()
+
+
+def test_delete_missing_duplicate_group_returns_false(
+    report_db: ReportDatabase,
+) -> None:
+    """Deleting a nonexistent duplicate group reports no rows removed."""
+    assert_that(report_db.delete_duplicate_group(404)).is_false()
+
+
+def test_set_group_best_file(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """A group records the media file selected as its best copy."""
+    group_id = report_db.add_duplicate_group(
+        run_id=seeded_run,
+        group_number=1,
+        media_type="image",
+    )
+    file_id = report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/best.jpg",
+        media_type="image",
+        group_id=group_id,
+    )
+
+    updated = report_db.set_group_best_file(group_id, file_id=file_id)
+
+    group = report_db.get_duplicate_group(group_id)
+    assert_that(updated).is_true()
+    assert_that(group).is_not_none()
+    if group is None:
+        pytest.fail("expected group to exist")
+    assert_that(group.best_file_id).is_equal_to(file_id)
+
+
+def test_set_group_best_file_rejects_other_run_file(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """The composite foreign key rejects a best file from another run."""
+    group_id = report_db.add_duplicate_group(
+        run_id=seeded_run,
+        group_number=1,
+        media_type="image",
+    )
+    other_run = report_db.create_run(root_path="/other")
+    other_file = report_db.add_media_file(
+        run_id=other_run,
+        path="/other/best.jpg",
+        media_type="image",
+    )
+
+    with pytest.raises(ReportError):
+        report_db.set_group_best_file(group_id, file_id=other_file)
+
+
+def test_assign_media_file_group_rejects_other_run_group(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """The composite foreign key rejects a group from another run."""
+    other_run = report_db.create_run(root_path="/other")
+    other_group = report_db.add_duplicate_group(
+        run_id=other_run,
+        group_number=1,
+        media_type="image",
+    )
+    file_id = report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/dup.jpg",
+        media_type="image",
+    )
+
+    with pytest.raises(ReportError):
+        report_db.assign_media_file_group(file_id, group_id=other_group)
 
 
 def test_search_media_files_by_filename(
@@ -415,6 +569,78 @@ def test_search_media_files_by_filename(
     assert_that([record.filename for record in by_extension]).is_equal_to(
         ["vacation_beach.jpg"],
     )
+
+
+def test_media_file_persists_quality_and_metadata(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """Quality score and metadata text round-trip through storage."""
+    file_id = report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/sharp.jpg",
+        media_type="image",
+        quality_score=0.92,
+        metadata="Canon EOS R5 f/1.8 Paris",
+    )
+
+    record = report_db.get_media_file(file_id)
+
+    assert_that(record).is_not_none()
+    if record is None:
+        pytest.fail("expected media file to exist")
+    assert_that(record.quality_score).is_close_to(0.92, 1e-9)
+    assert_that(record.metadata).is_equal_to("Canon EOS R5 f/1.8 Paris")
+
+
+def test_search_media_files_by_metadata(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """Full-text search matches metadata text, not just paths."""
+    report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/IMG_0001.jpg",
+        media_type="image",
+        metadata="Canon EOS R5 Paris",
+    )
+    report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/IMG_0002.jpg",
+        media_type="image",
+        metadata="Sony A7 Tokyo",
+    )
+
+    matches = report_db.search_media_files("paris")
+
+    assert_that([record.filename for record in matches]).is_equal_to(
+        ["IMG_0001.jpg"],
+    )
+
+
+def test_search_media_files_after_metadata_update(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """The FTS update trigger reindexes rows when metadata changes."""
+    file_id = report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/photos/IMG_0003.jpg",
+        media_type="image",
+        metadata="untagged",
+    )
+
+    updated = report_db.update_media_file_metadata(
+        file_id,
+        metadata="sunset lisbon",
+    )
+
+    assert_that(updated).is_true()
+
+    assert_that(report_db.search_media_files("untagged")).is_empty()
+    assert_that(
+        [record.id for record in report_db.search_media_files("lisbon")],
+    ).is_equal_to([file_id])
 
 
 def test_search_media_files_scoped_to_run(
@@ -525,6 +751,40 @@ def test_add_and_list_operations(
         "/library/keep/a.jpg",
     )
     assert_that(operations[1].media_file_id).is_none()
+
+
+def test_add_operation_rejects_other_run_media_file(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """The composite foreign key rejects a media file from another run."""
+    other_run = report_db.create_run(root_path="/other")
+    other_file = report_db.add_media_file(
+        run_id=other_run,
+        path="/other/a.jpg",
+        media_type="image",
+    )
+
+    with pytest.raises(ReportError):
+        report_db.add_operation(
+            run_id=seeded_run,
+            operation=FileOperation.MOVE,
+            status=OperationStatus.APPLIED,
+            media_file_id=other_file,
+        )
+
+
+def test_add_operation_rejects_invalid_status(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """The CHECK constraint rejects operation statuses outside the enum."""
+    with pytest.raises(ReportError):
+        report_db.add_operation(
+            run_id=seeded_run,
+            operation=FileOperation.MOVE,
+            status="pending",
+        )
 
 
 def test_delete_run_cascades(
