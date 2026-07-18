@@ -7,6 +7,7 @@ media discovery or the format processors from other epics.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from assertpy import assert_that
@@ -206,7 +207,7 @@ def test_hashing_non_image_raises() -> None:
     hasher = ImageHasher()
 
     with pytest.raises(HashError, match="must be a PIL.Image.Image"):
-        hasher.hash("not-an-image")  # type: ignore[arg-type]
+        hasher.hash(cast("Image.Image", "not-an-image"))
 
 
 def test_hash_file_missing_path_raises(tmp_path: Path) -> None:
@@ -231,8 +232,8 @@ def test_hash_file_non_image_raises(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "value",
     [
+        "phash",
         "phash:8",
-        "phash:8:aa:bb",
         "phash:notanint:aabb",
     ],
 )
@@ -240,6 +241,25 @@ def test_deserialize_rejects_malformed_values(value: str) -> None:
     """Malformed serialized strings raise a domain error."""
     with pytest.raises(HashError, match="malformed serialized perceptual hash"):
         PerceptualHash.deserialize(value)
+
+
+def test_deserialize_preserves_digest_with_maxsplit() -> None:
+    """Parsing splits on the first two separators only, keeping the digest."""
+    restored = PerceptualHash.deserialize("phash:8:aabbccddeeff0011")
+
+    assert_that(restored.digest).is_equal_to("aabbccddeeff0011")
+
+
+def test_deserialize_rejects_tiny_hash_size() -> None:
+    """A serialized hash size below two is rejected like the constructor."""
+    with pytest.raises(HashError, match="at least 2"):
+        PerceptualHash.deserialize("phash:1:00")
+
+
+def test_deserialize_rejects_whash_non_power_of_two_size() -> None:
+    """A serialized wHash with a non-power-of-two size is rejected."""
+    with pytest.raises(HashError, match="power-of-two"):
+        PerceptualHash.deserialize("whash:6:aabbccddeeff0011")
 
 
 def test_deserialize_rejects_unknown_algorithm() -> None:

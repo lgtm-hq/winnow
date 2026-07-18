@@ -66,6 +66,47 @@ def _is_power_of_two(value: int) -> bool:
     return value > 0 and (value & (value - 1)) == 0
 
 
+def _validate_hash_parameters(
+    *,
+    algorithm: HashAlgorithm,
+    hash_size: int,
+    operation: str,
+) -> None:
+    """Validate a perceptual hash algorithm and size combination.
+
+    Args:
+        algorithm: Algorithm to validate.
+        hash_size: Edge length to validate.
+        operation: Operation name recorded on any raised error.
+
+    Raises:
+        HashError: If ``algorithm`` is not a perceptual hash algorithm,
+            ``hash_size`` is below two, or wHash is requested with a
+            non-power-of-two ``hash_size``.
+    """
+    if algorithm not in PERCEPTUAL_ALGORITHMS:
+        raise HashError(
+            "algorithm is not a perceptual hash algorithm",
+            operation=operation,
+            details={
+                "algorithm": str(algorithm),
+                "supported": sorted(member.value for member in PERCEPTUAL_ALGORITHMS),
+            },
+        )
+    if hash_size < 2:
+        raise HashError(
+            "hash_size must be at least 2",
+            operation=operation,
+            details={"hash_size": hash_size},
+        )
+    if algorithm is HashAlgorithm.WHASH and not _is_power_of_two(hash_size):
+        raise HashError(
+            "whash requires a power-of-two hash_size",
+            operation=operation,
+            details={"hash_size": hash_size},
+        )
+
+
 def _decode_hash(digest: str) -> imagehash.ImageHash:
     """Decode a hexadecimal digest into an :class:`imagehash.ImageHash`.
 
@@ -203,7 +244,7 @@ class PerceptualHash:
             HashError: If ``value`` is malformed or names an unsupported
                 algorithm.
         """
-        parts = value.split(":")
+        parts = value.split(":", _SERIALIZED_FIELD_COUNT - 1)
         if len(parts) != _SERIALIZED_FIELD_COUNT:
             raise HashError(
                 "malformed serialized perceptual hash",
@@ -219,12 +260,6 @@ class PerceptualHash:
                 operation="deserialize",
                 details={"algorithm": algorithm_value},
             ) from error
-        if algorithm not in PERCEPTUAL_ALGORITHMS:
-            raise HashError(
-                "algorithm is not a perceptual hash algorithm",
-                operation="deserialize",
-                details={"algorithm": algorithm_value},
-            )
         try:
             hash_size = int(hash_size_value)
         except ValueError as error:
@@ -233,6 +268,11 @@ class PerceptualHash:
                 operation="deserialize",
                 details={"value": value},
             ) from error
+        _validate_hash_parameters(
+            algorithm=algorithm,
+            hash_size=hash_size,
+            operation="deserialize",
+        )
         return cls(algorithm=algorithm, hash_size=hash_size, digest=digest)
 
 
@@ -256,31 +296,11 @@ class ImageHasher:
 
     def __post_init__(self) -> None:
         """Validate the configured algorithm and hash size."""
-        if self.algorithm not in PERCEPTUAL_ALGORITHMS:
-            raise HashError(
-                "algorithm is not a perceptual hash algorithm",
-                operation="configure_hasher",
-                details={
-                    "algorithm": str(self.algorithm),
-                    "supported": sorted(
-                        algorithm.value for algorithm in PERCEPTUAL_ALGORITHMS
-                    ),
-                },
-            )
-        if self.hash_size < 2:
-            raise HashError(
-                "hash_size must be at least 2",
-                operation="configure_hasher",
-                details={"hash_size": self.hash_size},
-            )
-        if self.algorithm is HashAlgorithm.WHASH and not _is_power_of_two(
-            self.hash_size,
-        ):
-            raise HashError(
-                "whash requires a power-of-two hash_size",
-                operation="configure_hasher",
-                details={"hash_size": self.hash_size},
-            )
+        _validate_hash_parameters(
+            algorithm=self.algorithm,
+            hash_size=self.hash_size,
+            operation="configure_hasher",
+        )
 
     def hash(self, image: Image.Image) -> PerceptualHash:
         """Compute the perceptual hash of an in-memory image.
