@@ -8,11 +8,9 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
-from winnow.dedup import quality
 from winnow.dedup.quality import (
     QualityComparator,
     QualityWeights,
-    laplacian_sharpness,
 )
 from winnow.exceptions import DuplicateError
 from winnow.models.duplicates import DuplicateGroup
@@ -246,46 +244,3 @@ def test_invalid_weights_are_rejected(
     """Weight validation happens on construction of ``QualityWeights``."""
     with pytest.raises(DuplicateError, match=match):
         QualityWeights(**kwargs)
-
-
-def test_laplacian_sharpness_returns_none_without_pillow(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Sharpness degrades to ``None`` when Pillow cannot be imported."""
-    monkeypatch.setattr(quality, "_import_pillow", lambda: None)
-
-    assert_that(laplacian_sharpness(Path("/whatever.jpg"))).is_none()
-
-
-def test_laplacian_sharpness_returns_none_for_unreadable_file(tmp_path: Path) -> None:
-    """A non-image file yields ``None`` rather than raising."""
-    not_an_image = tmp_path / "note.txt"
-    not_an_image.write_text("not an image", encoding="utf-8")
-
-    assert_that(laplacian_sharpness(not_an_image)).is_none()
-
-
-def test_laplacian_sharpness_ranks_detailed_images_above_flat_ones(
-    tmp_path: Path,
-) -> None:
-    """A high-frequency image measures sharper than a uniform one."""
-    pillow = pytest.importorskip("PIL.Image")
-
-    flat = tmp_path / "flat.png"
-    pillow.new("RGB", (64, 64), color=(128, 128, 128)).save(flat)
-
-    detailed = tmp_path / "detailed.png"
-    checker = pillow.new("RGB", (64, 64))
-    pixels = checker.load()
-    for row in range(64):
-        for column in range(64):
-            shade = 255 if (row + column) % 2 == 0 else 0
-            pixels[column, row] = (shade, shade, shade)
-    checker.save(detailed)
-
-    flat_sharpness = laplacian_sharpness(flat)
-    detailed_sharpness = laplacian_sharpness(detailed)
-
-    assert_that(flat_sharpness).is_equal_to(0.0)
-    assert_that(detailed_sharpness).is_not_none()
-    assert_that(detailed_sharpness).is_greater_than(flat_sharpness)

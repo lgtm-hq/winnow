@@ -19,8 +19,8 @@ from winnow.dedup.quality import (
     QualityWeights,
     RankedMedia,
     SharpnessProvider,
-    laplacian_sharpness,
 )
+from winnow.dedup.sharpness import laplacian_sharpness
 
 __all__ = [
     "DEFAULT_HASH_DISTANCE_THRESHOLD",

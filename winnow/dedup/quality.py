@@ -8,10 +8,10 @@ Dimensions are min-max normalized across the compared set before the configurabl
 weights are applied, so no single large-magnitude dimension (typically file size)
 dominates the composite score.
 
-Sharpness is measured as the variance of a Laplacian-filtered grayscale image and
-depends on the optional `Pillow <https://python-pillow.org/>`_ package. When Pillow
-is unavailable, or a file cannot be opened as an image, the sharpness dimension
-degrades to ``0.0`` rather than raising.
+Sharpness is measured as the variance of a Laplacian-filtered grayscale image via
+the Pillow-backed :func:`~winnow.dedup.sharpness.laplacian_sharpness` provider.
+When a file cannot be opened as an image, the sharpness dimension degrades to
+``0.0`` rather than raising.
 """
 
 from __future__ import annotations
@@ -19,16 +19,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
+from winnow.dedup.sharpness import laplacian_sharpness
 from winnow.exceptions import DuplicateError
 from winnow.models.duplicates import DuplicateGroup, QualityScore
 from winnow.models.media import MediaFile, MediaMetadata, MediaType
 
 if TYPE_CHECKING:
     from typing import Self
-
-_LAPLACIAN_KERNEL: tuple[int, ...] = (0, 1, 0, 1, -4, 1, 0, 1, 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,72 +325,6 @@ class QualityComparator:
             Configured quality comparator.
         """
         return cls(weights=weights)
-
-
-def laplacian_sharpness(path: Path) -> float | None:
-    """Measure image sharpness as the variance of a Laplacian filter.
-
-    Soft-depends on Pillow: returns ``None`` when Pillow is not installed or the
-    file cannot be opened and processed as an image.
-
-    Args:
-        path: Filesystem path to an image file.
-
-    Returns:
-        Variance of the Laplacian-filtered grayscale image, or ``None`` when it
-        cannot be measured.
-    """
-    pillow = _import_pillow()
-    if pillow is None:
-        return None
-    image_module, filter_module, stat_module = pillow
-    try:
-        with image_module.open(path) as image:
-            grayscale = image.convert("L")
-        kernel = filter_module.Kernel(
-            size=(3, 3),
-            kernel=_LAPLACIAN_KERNEL,
-            scale=1,
-        )
-        edges = grayscale.filter(kernel)
-        edges = _crop_unfiltered_border(edges)
-        return float(stat_module.Stat(edges).var[0])
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def _crop_unfiltered_border(edges: Any) -> Any:
-    """Drop the one-pixel border a 3x3 kernel leaves unprocessed.
-
-    Pillow copies the outermost pixels through unchanged, so their original
-    intensities would otherwise skew the variance. The border is removed only
-    when the image is large enough to leave an interior region.
-
-    Args:
-        edges: Laplacian-filtered image.
-
-    Returns:
-        The interior of the filtered image, or the original image when it is too
-        small to crop.
-    """
-    width, height = edges.size
-    if width <= 2 or height <= 2:
-        return edges
-    return edges.crop((1, 1, width - 1, height - 1))
-
-
-def _import_pillow() -> tuple[Any, Any, Any] | None:
-    """Import the Pillow modules used for sharpness measurement.
-
-    Returns:
-        Tuple of ``(Image, ImageFilter, ImageStat)`` modules, or ``None`` when
-        Pillow is not installed.
-    """
-    try:
-        from PIL import Image, ImageFilter, ImageStat
-    except ImportError:
-        return None
-    return Image, ImageFilter, ImageStat
 
 
 def _dimension_maxima(metrics: list[_Metrics]) -> _Metrics:
