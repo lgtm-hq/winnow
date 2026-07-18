@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from winnow import __version__
+from winnow.cli.commands import doctor_command, help_command
 from winnow.cli.standards import no_color_option
 
 __all__ = ["main"]
@@ -20,6 +21,10 @@ def main(ctx: click.Context, *, no_color: bool) -> None:
     context_obj["no_color"] = no_color
     if ctx.invoked_subcommand is None:
         click.echo(f"winnow {__version__} — use --help for commands.")
+
+
+main.add_command(doctor_command)
+main.add_command(help_command)
 
 
 if __name__ == "__main__":  # pragma: no cover
