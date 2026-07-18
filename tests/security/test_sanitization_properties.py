@@ -10,6 +10,7 @@ a safe ``stem.ext`` round-trips its extension unchanged.
 
 from __future__ import annotations
 
+import pytest
 from assertpy import assert_that
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -41,8 +42,12 @@ def test_prop_sanitization_is_idempotent(name: str) -> None:
         first = sanitize_filename(name)
     except SecurityError:
         return
-    second = sanitize_filename(first)
-    assert_that(second).is_equal_to(first)
+    try:
+        second = sanitize_filename(first)
+    except SecurityError as exc:
+        pytest.fail(f"idempotence broken: second sanitize raised: {exc}")
+    else:
+        assert_that(second).is_equal_to(first)
 
 
 @given(name=st.text())

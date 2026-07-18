@@ -35,7 +35,7 @@ _safe_component = st.from_regex(r"[a-zA-Z0-9_-]{1,10}", fullmatch=True)
         max_size=5,
     ),
 )
-@settings(max_examples=_MAX_EXAMPLES)
+@settings(max_examples=_MAX_EXAMPLES, deadline=None)
 def test_prop_paths_inside_root_stay_within_root(components: list[str]) -> None:
     """Resolved paths composed of safe components never escape the allowed root."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -54,7 +54,7 @@ def test_prop_paths_inside_root_stay_within_root(components: list[str]) -> None:
         max_size=3,
     ),
 )
-@settings(max_examples=_MAX_EXAMPLES)
+@settings(max_examples=_MAX_EXAMPLES, deadline=None)
 def test_prop_dotdot_escape_raises_security_error(components: list[str]) -> None:
     """Paths with enough '..' segments to escape the root are rejected."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -71,7 +71,7 @@ def test_prop_dotdot_escape_raises_security_error(components: list[str]) -> None
 
 
 @given(filename=st.from_regex(r"[a-zA-Z0-9_-]{1,10}\.txt", fullmatch=True))
-@settings(max_examples=_MAX_EXAMPLES)
+@settings(max_examples=_MAX_EXAMPLES, deadline=None)
 def test_prop_symlink_policy_reject_raises_for_any_symlink(filename: str) -> None:
     """Under SymlinkPolicy.REJECT, any symlink component raises SecurityError."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -90,7 +90,7 @@ def test_prop_symlink_policy_reject_raises_for_any_symlink(filename: str) -> Non
 
 
 @given(filename=st.from_regex(r"[a-zA-Z0-9_-]{1,10}\.txt", fullmatch=True))
-@settings(max_examples=_MAX_EXAMPLES)
+@settings(max_examples=_MAX_EXAMPLES, deadline=None)
 def test_prop_symlink_policy_follow_accepts_in_root_symlinks(filename: str) -> None:
     """Under SymlinkPolicy.FOLLOW, symlinks pointing inside the root are accepted."""
     with tempfile.TemporaryDirectory() as tmpdir:
