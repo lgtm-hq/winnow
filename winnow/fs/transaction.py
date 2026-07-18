@@ -1,43 +1,47 @@
-"""Transactional atomic filesystem operations."""
+"""Transactional atomic filesystem operations.
+
+Each operation's forward and rollback logic lives in its own internal module
+(:mod:`winnow.fs._copy`, :mod:`winnow.fs._move`, :mod:`winnow.fs._delete`,
+:mod:`winnow.fs._mkdir`). This module keeps the thin
+:class:`FileSystemTransaction` orchestrator, the public ``atomic_*`` wrappers,
+and the patchable helper bindings the operation modules resolve at call time,
+so failure-injection tests keep a single stable patch point.
+"""
 
 from __future__ import annotations
 
-import errno
 import logging
 import shutil
-from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self
 
-from winnow.fs import _cleanup
-from winnow.fs._path_ops import (
-    copy_path,
-    path_exists,
-    remove_path,
-    sync_directory,
-    sync_path,
+from winnow.fs import _cleanup, _path_ops
+from winnow.fs._operation import (
+    AppliedOperation,
+    CommitStep,
+    RollbackStep,
 )
-from winnow.fs._path_ops import (
-    temporary_path as _temporary_path,
-)
-from winnow.fs.backup import create_backup
-from winnow.fs.backup_options import BackupOptions
+from winnow.fs.backup_options import BackupOptions, coerce_backup_options
 from winnow.fs.errors import FileSystemOperationError, FileSystemRollbackError
 from winnow.fs.operation_log import OperationLog
-from winnow.fs.operations import FileOperation, OperationStatus
+from winnow.fs.operations import OperationStatus
 
 _LOGGER = logging.getLogger(__name__)
 
-RollbackStep = Callable[[], None]
-CommitStep = Callable[[], None]
-
-# Shared cleanup helpers bound as module-level definitions so this entry point
-# keeps its own independently patchable bindings for failure injection.
+# Shared filesystem helpers bound as module-level definitions so this entry
+# point keeps independently patchable bindings for failure injection. The
+# per-operation modules resolve these names through this module at call time.
+copy_path = _path_ops.copy_path
 _cleanup_path = _cleanup.cleanup_path
+_commit_tombstones = _cleanup.commit_tombstones
 _missing_directories = _cleanup.missing_directories
 _restore_tombstone = _cleanup.restore_tombstone
 _run_cleanups = _cleanup.run_cleanups
+
+# Imported after the bindings above so the operation modules can safely bind
+# this partially initialized module during the import cycle.
+from winnow.fs import _copy, _delete, _mkdir, _move  # noqa: E402
 
 
 class FileSystemTransaction:
@@ -57,7 +61,7 @@ class FileSystemTransaction:
         *,
         backup: bool | BackupOptions = True,
     ) -> None:
-        self._backup_options = _coerce_backup_options(backup)
+        self._backup_options = coerce_backup_options(backup)
         self._rollback_steps: list[RollbackStep] = []
         self._commit_steps: list[CommitStep] = []
         self._logs: list[OperationLog] = []
@@ -142,75 +146,13 @@ class FileSystemTransaction:
             FileSystemOperationError: When the copy cannot be applied.
         """
         self._require_active()
-        source = Path(source)
-        destination = Path(destination)
-        temp_path = _temporary_path(destination)
-        destination_tombstone: Path | None = None
-        destination_renamed = False
-        backups: list[Path] = []
-
-        try:
-            _validate_source(source=source, operation=FileOperation.COPY)
-            _validate_destination_parent(destination)
-            _reject_recursive_directory_copy(
-                source=source,
-                destination=destination,
-                operation=FileOperation.COPY,
-            )
-            copy_path(source=source, destination=temp_path)
-            sync_path(temp_path)
-
-            if path_exists(destination):
-                backup_path = create_backup(
-                    destination,
-                    options=self._backup_options,
-                )
-                if backup_path is not None:
-                    backups.append(backup_path)
-                destination_tombstone, destination_renamed = (
-                    _stage_destination_for_replace(destination)
-                )
-
-            temp_path.replace(destination)
-            sync_directory(destination.parent)
-        except (OSError, shutil.Error) as error:
-            operation_error = _operation_error(
-                operation=FileOperation.COPY,
-                path=source,
-                error=error,
-            )
-            cleanups: list[RollbackStep] = [lambda: _cleanup_path(temp_path)]
-            if destination_tombstone is not None:
-                tombstone = destination_tombstone
-                if destination_renamed:
-                    cleanups.append(
-                        lambda: _restore_tombstone(
-                            tombstone=tombstone,
-                            destination=destination,
-                        )
-                    )
-                else:
-                    cleanups.append(lambda: _cleanup_path(tombstone))
-            cleanups.append(lambda: _cleanup_backups(backups))
-            _run_cleanups(operation_error, cleanups)
-            raise operation_error from error
-
-        log = OperationLog(
-            operation=FileOperation.COPY,
-            source=source,
-            destination=destination,
-            backups=tuple(backups),
-            created_paths=(destination,),
-        )
-        self._record(
-            log=log,
-            rollback=lambda: _rollback_copy(
-                destination=destination,
-                destination_tombstone=destination_tombstone,
+        return self._record(
+            _copy.apply_copy(
+                source=Path(source),
+                destination=Path(destination),
+                backup_options=self._backup_options,
             ),
-            commit=lambda: _commit_tombstones(destination_tombstone),
         )
-        return log
 
     def delete(
         self,
@@ -228,45 +170,12 @@ class FileSystemTransaction:
             FileSystemOperationError: When the path cannot be deleted.
         """
         self._require_active()
-        path = Path(path)
-        tombstone = _temporary_path(path)
-        backups: list[Path] = []
-
-        try:
-            _validate_source(source=path, operation=FileOperation.DELETE)
-            backup_path = create_backup(path, options=self._backup_options)
-            if backup_path is not None:
-                backups.append(backup_path)
-            path.replace(tombstone)
-        except (OSError, shutil.Error) as error:
-            operation_error = _operation_error(
-                operation=FileOperation.DELETE,
-                path=path,
-                error=error,
-            )
-            _run_cleanups(
-                operation_error,
-                [
-                    lambda: _cleanup_path(tombstone),
-                    lambda: _cleanup_backups(backups),
-                ],
-            )
-            raise operation_error from error
-
-        log = OperationLog(
-            operation=FileOperation.DELETE,
-            source=path,
-            backups=tuple(backups),
-        )
-        self._record(
-            log=log,
-            rollback=lambda: _restore_tombstone(
-                tombstone=tombstone,
-                destination=path,
+        return self._record(
+            _delete.apply_delete(
+                path=Path(path),
+                backup_options=self._backup_options,
             ),
-            commit=lambda: _commit_tombstones(tombstone),
         )
-        return log
 
     def mkdir(
         self,
@@ -289,43 +198,13 @@ class FileSystemTransaction:
             FileSystemOperationError: When the directory cannot be created.
         """
         self._require_active()
-        path = Path(path)
-        created_paths: list[Path] = []
-
-        try:
-            if path_exists(path):
-                if exist_ok and path.is_dir():
-                    log = OperationLog(
-                        operation=FileOperation.MKDIR,
-                        destination=path,
-                    )
-                    self._record(log=log, rollback=lambda: None, commit=lambda: None)
-                    return log
-                raise FileExistsError(path)
-            created_paths = _create_directories(path=path, parents=parents)
-        except OSError as error:
-            operation_error = _operation_error(
-                operation=FileOperation.MKDIR,
-                path=path,
-                error=error,
-            )
-            _run_cleanups(
-                operation_error,
-                [lambda: _rollback_mkdir(created_paths)],
-            )
-            raise operation_error from error
-
-        log = OperationLog(
-            operation=FileOperation.MKDIR,
-            destination=path,
-            created_paths=tuple(created_paths),
+        return self._record(
+            _mkdir.apply_mkdir(
+                path=Path(path),
+                parents=parents,
+                exist_ok=exist_ok,
+            ),
         )
-        self._record(
-            log=log,
-            rollback=lambda: _rollback_mkdir(created_paths),
-            commit=lambda: None,
-        )
-        return log
 
     def move(
         self,
@@ -349,104 +228,13 @@ class FileSystemTransaction:
             FileSystemOperationError: When the move cannot be applied.
         """
         self._require_active()
-        source = Path(source)
-        destination = Path(destination)
-        temp_path = _temporary_path(destination)
-        destination_tombstone: Path | None = None
-        destination_renamed = False
-        destination_replaced = False
-        source_tombstone: Path | None = None
-        source_moved_to_temp = False
-        backups: list[Path] = []
-
-        try:
-            _validate_source(source=source, operation=FileOperation.MOVE)
-            _validate_destination_parent(destination)
-
-            if path_exists(destination):
-                destination_backup = create_backup(
-                    destination,
-                    options=self._backup_options,
-                )
-                if destination_backup is not None:
-                    backups.append(destination_backup)
-                destination_tombstone, destination_renamed = (
-                    _stage_destination_for_replace(destination)
-                )
-
-            try:
-                source.replace(temp_path)
-                source_moved_to_temp = True
-            except OSError as error:
-                if error.errno != errno.EXDEV:
-                    raise
-                _reject_recursive_directory_copy(
-                    source=source,
-                    destination=destination,
-                    operation=FileOperation.MOVE,
-                )
-                copy_path(source=source, destination=temp_path)
-                sync_path(temp_path)
-
-            temp_path.replace(destination)
-            destination_replaced = True
-            sync_directory(destination.parent)
-
-            if not source_moved_to_temp:
-                source_tombstone = _temporary_path(source)
-                source.replace(source_tombstone)
-
-            if source.parent != destination.parent:
-                sync_directory(source.parent)
-        except (OSError, shutil.Error) as error:
-            operation_error = _operation_error(
-                operation=FileOperation.MOVE,
-                path=source,
-                error=error,
-            )
-            _run_cleanups(
-                operation_error,
-                [
-                    lambda: _rollback_move(
-                        source=source,
-                        destination=destination,
-                        temp_path=temp_path,
-                        destination_tombstone=destination_tombstone,
-                        source_tombstone=source_tombstone,
-                        source_moved_to_temp=source_moved_to_temp,
-                        destination_renamed=destination_renamed,
-                        destination_replaced=destination_replaced,
-                    ),
-                    lambda: _cleanup_backups(backups),
-                ],
-            )
-            raise operation_error from error
-
-        log = OperationLog(
-            operation=FileOperation.MOVE,
-            source=source,
-            destination=destination,
-            backups=tuple(backups),
-            created_paths=(destination,),
-        )
-        self._record(
-            log=log,
-            rollback=lambda: _rollback_move(
-                source=source,
-                destination=destination,
-                temp_path=temp_path,
-                destination_tombstone=destination_tombstone,
-                source_tombstone=source_tombstone,
-                source_moved_to_temp=source_moved_to_temp,
-                destination_renamed=destination_renamed,
-                destination_replaced=destination_replaced,
-            ),
-            commit=lambda: _commit_tombstones(
-                destination_tombstone,
-                source_tombstone,
+        return self._record(
+            _move.apply_move(
+                source=Path(source),
+                destination=Path(destination),
+                backup_options=self._backup_options,
             ),
         )
-        return log
 
     def commit(self) -> None:
         """Commit applied operations and clean up staging paths.
@@ -518,17 +306,19 @@ class FileSystemTransaction:
                 details={"errors": [str(error) for error in errors]},
             ) from errors[0]
 
-    def _record(
-        self,
-        *,
-        log: OperationLog,
-        rollback: RollbackStep,
-        commit: CommitStep,
-    ) -> None:
-        """Record a completed operation and its lifecycle hooks."""
-        self._logs.append(log)
-        self._rollback_steps.append(rollback)
-        self._commit_steps.append(commit)
+    def _record(self, applied: AppliedOperation) -> OperationLog:
+        """Record an applied operation's lifecycle hooks and return its log.
+
+        Args:
+            applied: Applied operation with its lifecycle hooks.
+
+        Returns:
+            Structured log entry for the applied operation.
+        """
+        self._logs.append(applied.log)
+        self._rollback_steps.append(applied.rollback)
+        self._commit_steps.append(applied.commit)
+        return applied.log
 
     def _require_active(self) -> None:
         """Ensure the transaction is active before mutating the filesystem.
@@ -639,214 +429,14 @@ def transactional_file_ops(
     return FileSystemTransaction(backup=backup)
 
 
-def _cleanup_empty_directory(path: Path) -> None:
-    """Remove an empty directory, ignoring paths already removed."""
-    try:
-        path.rmdir()
-    except FileNotFoundError:
-        return
-
-
 def _cleanup_backups(backups: list[Path]) -> None:
-    """Remove persistent backups orphaned by a failed operation."""
-    errors: list[Exception] = []
-    for backup in backups:
-        try:
-            _cleanup_path(backup)
-        except (OSError, shutil.Error) as cleanup_error:
-            errors.append(cleanup_error)
-    if not errors:
-        return
-    aggregate_error = FileSystemOperationError(
-        "failed to clean up filesystem backups",
-        operation="fs.backup.cleanup",
-        details={"errors": [str(error) for error in errors]},
-    )
-    for secondary_error in errors[1:]:
-        aggregate_error.add_note(f"backup cleanup failed: {secondary_error}")
-    raise aggregate_error from errors[0]
-
-
-def _coerce_backup_options(backup: bool | BackupOptions) -> BackupOptions:
-    """Normalize backup configuration input."""
-    if isinstance(backup, BackupOptions):
-        return backup
-    return BackupOptions(enabled=backup)
-
-
-def _commit_tombstones(*tombstones: Path | None) -> None:
-    """Delete staging tombstones after a successful commit."""
-    for tombstone in tombstones:
-        if tombstone is not None and path_exists(tombstone):
-            remove_path(tombstone)
-
-
-def _create_directories(
-    *,
-    path: Path,
-    parents: bool,
-) -> list[Path]:
-    """Create a directory path and return directories created."""
-    if not parents:
-        path.mkdir()
-        return [path]
-
-    missing_paths = _missing_directories(path)
-    created_paths: list[Path] = []
-    for missing_path in missing_paths:
-        missing_path.mkdir()
-        created_paths.append(missing_path)
-    return created_paths
-
-
-def _operation_error(
-    *,
-    operation: FileOperation,
-    path: Path,
-    error: OSError | shutil.Error,
-) -> FileSystemOperationError:
-    """Build a structured filesystem operation error."""
-    return FileSystemOperationError(
-        f"failed to apply filesystem {operation.value}",
-        operation=f"fs.{operation.value}",
-        file_path=path,
-        details={"error": str(error)},
-    )
-
-
-def _rollback_copy(
-    *,
-    destination: Path,
-    destination_tombstone: Path | None,
-) -> None:
-    """Roll back a completed copy operation."""
-    _cleanup_path(destination)
-    if destination_tombstone is not None:
-        _restore_tombstone(
-            tombstone=destination_tombstone,
-            destination=destination,
-        )
-
-
-def _rollback_mkdir(created_paths: list[Path]) -> None:
-    """Roll back directories created by a mkdir operation."""
-    for created_path in reversed(created_paths):
-        _cleanup_empty_directory(created_path)
-
-
-def _rollback_move(
-    *,
-    source: Path,
-    destination: Path,
-    temp_path: Path,
-    destination_tombstone: Path | None,
-    source_tombstone: Path | None,
-    source_moved_to_temp: bool,
-    destination_renamed: bool,
-    destination_replaced: bool,
-) -> None:
-    """Roll back a completed or partially completed move operation."""
-    if source_moved_to_temp:
-        if (
-            destination_replaced
-            and path_exists(destination)
-            and not path_exists(source)
-        ):
-            destination.replace(source)
-        elif path_exists(temp_path) and not path_exists(source):
-            temp_path.replace(source)
-        # When the source exists again despite the move, leave the moved data
-        # in place rather than discarding it.
-    else:
-        if destination_replaced:
-            _cleanup_path(destination)
-        _cleanup_path(temp_path)
-        if source_tombstone is not None:
-            _restore_tombstone(tombstone=source_tombstone, destination=source)
-
-    if destination_tombstone is None:
-        return
-    if destination_renamed or destination_replaced:
-        _restore_tombstone(
-            tombstone=destination_tombstone,
-            destination=destination,
-        )
-    else:
-        # The destination was preserved in place (copy staging) and never
-        # replaced, so only the staged copy needs to be discarded.
-        _cleanup_path(destination_tombstone)
-
-
-def _stage_destination_for_replace(destination: Path) -> tuple[Path, bool]:
-    """Stage an existing destination so it can be replaced atomically.
-
-    Regular files and symlinks are preserved by copying them aside, so the
-    destination itself never disappears before ``Path.replace`` atomically
-    overwrites it. Real directories cannot be replaced atomically, so they are
-    renamed aside instead, which briefly removes the destination.
+    """Remove persistent backups orphaned by a failed operation.
 
     Args:
-        destination: Existing destination path about to be replaced.
-
-    Returns:
-        Tombstone path and whether the destination was renamed rather than
-        copied.
-    """
-    tombstone = _temporary_path(destination)
-    if destination.is_dir() and not destination.is_symlink():
-        destination.replace(tombstone)
-        return tombstone, True
-    try:
-        copy_path(source=destination, destination=tombstone)
-    except (OSError, shutil.Error) as error:
-        try:
-            _cleanup_path(tombstone)
-        except (OSError, shutil.Error) as cleanup_error:
-            error.add_note(f"cleanup failed: {cleanup_error}")
-        raise
-    return tombstone, False
-
-
-def _reject_recursive_directory_copy(
-    *,
-    source: Path,
-    destination: Path,
-    operation: FileOperation,
-) -> None:
-    """Reject copying a real directory into a destination inside its own tree.
-
-    Staging happens next to the destination, so a destination that resolves
-    beneath the source would create the temporary copy within the source and
-    recurse into it, consuming disk without bound. Symlinked and non-directory
-    sources cannot recurse and are left untouched.
+        backups: Backup paths created before the operation failed.
 
     Raises:
-        OSError: With ``errno.EINVAL`` when the destination resolves inside the
-            source directory tree.
+        FileSystemOperationError: When any backup cannot be removed. Every
+            backup is attempted before the aggregate error is raised.
     """
-    if not source.is_dir() or source.is_symlink():
-        return
-    resolved_source = source.resolve()
-    resolved_destination = destination.resolve()
-    if resolved_source in resolved_destination.parents:
-        raise OSError(
-            errno.EINVAL,
-            f"cannot {operation.value} directory into its own subtree: "
-            f"{source} -> {destination}",
-        )
-
-
-def _validate_destination_parent(destination: Path) -> None:
-    """Ensure a destination parent directory exists."""
-    if not destination.parent.is_dir():
-        raise FileNotFoundError(destination.parent)
-
-
-def _validate_source(
-    *,
-    source: Path,
-    operation: FileOperation,
-) -> None:
-    """Ensure a source path exists before applying an operation."""
-    if not path_exists(source):
-        raise FileNotFoundError(f"{operation.value} source not found: {source}")
+    _cleanup.cleanup_backups(backups, cleanup=_cleanup_path)

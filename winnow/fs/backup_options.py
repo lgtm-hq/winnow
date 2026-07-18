@@ -20,3 +20,17 @@ class BackupOptions:
     enabled: bool = True
     directory: Path | None = None
     suffix: str = ".bak"
+
+
+def coerce_backup_options(backup: bool | BackupOptions) -> BackupOptions:
+    """Normalize backup configuration input.
+
+    Args:
+        backup: Backup flag or full backup options.
+
+    Returns:
+        Normalized backup options.
+    """
+    if isinstance(backup, BackupOptions):
+        return backup
+    return BackupOptions(enabled=backup)
