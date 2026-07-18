@@ -33,7 +33,9 @@ def _is_excluded(
 
     Patterns are matched against both the directory name and its path
     relative to ``root`` (using forward slashes), so ``".git"`` and
-    ``"cache/*"`` both work as expected.
+    ``"cache/*"`` both work as expected. The directory's ancestors below
+    ``root`` are checked too, so everything inside an excluded subtree is
+    preserved even though ``os.walk(topdown=False)`` visits it first.
 
     Args:
         directory: Directory being considered for removal.
@@ -45,11 +47,17 @@ def _is_excluded(
     """
     if not patterns:
         return False
-    relative = directory.relative_to(root).as_posix()
-    name = directory.name
-    return any(
-        fnmatch(name, pattern) or fnmatch(relative, pattern) for pattern in patterns
-    )
+    candidates = [directory, *directory.parents]
+    for candidate in candidates:
+        if candidate == root:
+            break
+        relative = candidate.relative_to(root).as_posix()
+        name = candidate.name
+        if any(
+            fnmatch(name, pattern) or fnmatch(relative, pattern) for pattern in patterns
+        ):
+            return True
+    return False
 
 
 def find_empty_directories(

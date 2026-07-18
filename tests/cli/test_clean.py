@@ -162,3 +162,12 @@ def test_clean_rejects_missing_directory(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["clean", str(tmp_path / "missing")])
 
     assert_that(result.exit_code).is_not_equal_to(0)
+
+
+def test_find_empty_directories_preserves_excluded_subtree(tmp_path: Path) -> None:
+    """Directories nested inside an excluded subtree are preserved."""
+    (tmp_path / ".git" / "refs" / "tags").mkdir(parents=True)
+
+    result = find_empty_directories(tmp_path, exclude_patterns=[".git"])
+
+    assert_that(result).is_empty()
