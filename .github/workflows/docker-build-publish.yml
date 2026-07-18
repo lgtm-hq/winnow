@@ -49,6 +49,9 @@ jobs:
       smoke-test: --version
       validate-on-pr: true
       scan: true
+      # Advisory-only: debian slim base images routinely carry OS CVEs that
+      # are not actionable for this CLI image. Failures would block every
+      # publish; SARIF still uploads for visibility.
       scan-exit-code: '0'
       cache-registry-ref: ghcr.io/lgtm-hq/winnow:cache
       provenance: true
