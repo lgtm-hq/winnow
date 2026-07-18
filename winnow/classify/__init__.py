@@ -23,9 +23,9 @@ from winnow.classify.photo_graphic import (
     detect_photo_or_graphic,
 )
 from winnow.classify.screenshot import (
-    COMMON_SCREEN_RESOLUTIONS,
+    DEFAULT_DISPLAY_ASPECT_RATIOS,
+    DEFAULT_SCREENSHOT_SOFTWARE_MARKERS,
     SCREENSHOT_FILENAME_PATTERNS,
-    SCREENSHOT_SOFTWARE_MARKERS,
     ScreenshotClassification,
     ScreenshotConfig,
     ScreenshotSignals,
@@ -34,10 +34,10 @@ from winnow.classify.screenshot import (
 )
 
 __all__ = [
-    "COMMON_SCREEN_RESOLUTIONS",
     "DEFAULT_CAMERA_EXIF_TAGS",
+    "DEFAULT_DISPLAY_ASPECT_RATIOS",
+    "DEFAULT_SCREENSHOT_SOFTWARE_MARKERS",
     "SCREENSHOT_FILENAME_PATTERNS",
-    "SCREENSHOT_SOFTWARE_MARKERS",
     "ColorCounts",
     "ImageContentType",
     "PhotoGraphicClassification",

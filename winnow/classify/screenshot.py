@@ -3,8 +3,9 @@
 Screenshots rarely carry camera EXIF metadata but frequently expose other tells:
 a screen-capture tool recorded in the EXIF ``Software`` tag, a recognizable
 filename pattern (for example ``Screenshot_20240101-120000.png`` or
-``Screen Shot 2024-01-01 at 12.00.00.png``), and pixel dimensions that match a
-common display or device resolution.
+``Screen Shot 2024-01-01 at 12.00.00.png``), and pixel dimensions that look like
+a display panel: screen-sized, with an aspect ratio matching a common desktop,
+phone, or ultrawide panel.
 
 Detection is a weighted score. Each fired signal contributes its configured
 weight; the image is flagged as a screenshot when the summed confidence reaches
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 
 from winnow.classify._image import extract_dimensions, extract_exif, open_image
@@ -32,7 +34,7 @@ SCREENSHOT_FILENAME_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 """Regular expressions matched against candidate file names."""
 
-SCREENSHOT_SOFTWARE_MARKERS: frozenset[str] = frozenset(
+DEFAULT_SCREENSHOT_SOFTWARE_MARKERS: frozenset[str] = frozenset(
     {
         "screenshot",
         "screen shot",
@@ -48,42 +50,32 @@ SCREENSHOT_SOFTWARE_MARKERS: frozenset[str] = frozenset(
         "shutter",
     },
 )
-"""Case-insensitive substrings that indicate a screen-capture tool."""
+"""Default case-insensitive substrings that indicate a screen-capture tool.
 
-COMMON_SCREEN_RESOLUTIONS: frozenset[tuple[int, int]] = frozenset(
+Override or extend via :attr:`ScreenshotConfig.software_markers`, for example
+``ScreenshotConfig(software_markers=DEFAULT_SCREENSHOT_SOFTWARE_MARKERS | {"mytool"})``.
+"""
+
+DEFAULT_DISPLAY_ASPECT_RATIOS: frozenset[Fraction] = frozenset(
     {
-        (1024, 768),
-        (1280, 720),
-        (1280, 800),
-        (1280, 1024),
-        (1366, 768),
-        (1440, 900),
-        (1536, 864),
-        (1600, 900),
-        (1680, 1050),
-        (1920, 1080),
-        (1920, 1200),
-        (2048, 1152),
-        (2560, 1080),
-        (2560, 1440),
-        (2560, 1600),
-        (2880, 1800),
-        (3440, 1440),
-        (3840, 2160),
-        (750, 1334),
-        (828, 1792),
-        (1080, 1920),
-        (1125, 2436),
-        (1170, 2532),
-        (1179, 2556),
-        (1242, 2688),
-        (1290, 2796),
-        (1080, 2340),
-        (1440, 2560),
-        (1440, 3040),
+        Fraction(5, 4),
+        Fraction(4, 3),
+        Fraction(3, 2),
+        Fraction(16, 10),
+        Fraction(16, 9),
+        Fraction(19, 9),
+        Fraction(13, 6),
+        Fraction(20, 9),
+        Fraction(43, 18),
+        Fraction(64, 27),
     },
 )
-"""Common desktop and mobile screen resolutions (either orientation)."""
+"""Default display panel aspect ratios (landscape-normalized).
+
+Covers classic desktop panels (5:4, 4:3, 3:2, 16:10, 16:9), tall phone panels
+(19:9, 19.5:9 as 13:6, 20:9), and ultrawides (43:18 and 64:27, the panel ratios
+marketed as 21:9). Override or extend via :attr:`ScreenshotConfig.aspect_ratios`.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,18 +86,41 @@ class ScreenshotConfig:
         filename_weight: Confidence added when the file name matches a known
             screenshot pattern.
         software_weight: Confidence added when EXIF software names a capture tool.
-        dimension_weight: Confidence added when the dimensions match a common
-            screen resolution.
+        dimension_weight: Confidence added when the dimensions look like a screen
+            resolution. Kept deliberately below ``threshold``: many photos share
+            display aspect ratios, so dimensions only corroborate other signals.
         threshold: Minimum summed confidence, in ``[0.0, 1.0]``, required to flag
             an image as a screenshot. Lower values increase sensitivity.
-        extra_resolutions: Additional ``(width, height)`` resolutions to treat as
-            screen sizes, in either orientation.
+        software_markers: Case-insensitive substrings that mark an EXIF
+            ``Software`` value as a screen-capture tool. Defaults to
+            :data:`DEFAULT_SCREENSHOT_SOFTWARE_MARKERS`; extend with
+            ``DEFAULT_SCREENSHOT_SOFTWARE_MARKERS | {"mytool"}``.
+        aspect_ratios: Landscape-normalized display aspect ratios that make
+            dimensions look screen-like. Defaults to
+            :data:`DEFAULT_DISPLAY_ASPECT_RATIOS`.
+        aspect_ratio_tolerance: Maximum relative deviation from a known aspect
+            ratio for dimensions to count as a match. The default covers panels
+            that only approximate their marketed ratio (for example 1366x768).
+        min_screen_edge: Minimum shorter-edge length, in pixels, for dimensions
+            to be considered a screen resolution. Filters out thumbnails and
+            other small images that happen to share a display ratio.
+        extra_resolutions: Exact ``(width, height)`` resolutions to treat as
+            screen sizes, in either orientation, regardless of aspect ratio or
+            size checks.
     """
 
     filename_weight: float = 0.6
     software_weight: float = 0.8
     dimension_weight: float = 0.3
     threshold: float = 0.5
+    software_markers: frozenset[str] = field(
+        default_factory=lambda: DEFAULT_SCREENSHOT_SOFTWARE_MARKERS,
+    )
+    aspect_ratios: frozenset[Fraction] = field(
+        default_factory=lambda: DEFAULT_DISPLAY_ASPECT_RATIOS,
+    )
+    aspect_ratio_tolerance: float = 0.01
+    min_screen_edge: int = 720
     extra_resolutions: frozenset[tuple[int, int]] = field(default_factory=frozenset)
 
 
@@ -162,7 +177,10 @@ def classify_screenshot(
 
     signals = ScreenshotSignals(
         filename_match=_matches_filename(filename),
-        software_match=_matches_software(software),
+        software_match=_matches_software(
+            software=software,
+            config=active_config,
+        ),
         dimension_match=_matches_resolution(
             dimensions=dimensions,
             config=active_config,
@@ -234,19 +252,24 @@ def _matches_filename(filename: str | None) -> bool:
     return any(pattern.search(name) for pattern in SCREENSHOT_FILENAME_PATTERNS)
 
 
-def _matches_software(software: str | None) -> bool:
+def _matches_software(
+    *,
+    software: str | None,
+    config: ScreenshotConfig,
+) -> bool:
     """Return whether EXIF software indicates a screen-capture tool.
 
     Args:
         software: EXIF ``Software`` value.
+        config: Detection config providing the capture-tool markers.
 
     Returns:
-        ``True`` when the value contains a known capture-tool marker.
+        ``True`` when the value contains a configured capture-tool marker.
     """
     if not software:
         return False
     normalized = software.casefold()
-    return any(marker in normalized for marker in SCREENSHOT_SOFTWARE_MARKERS)
+    return any(marker in normalized for marker in config.software_markers)
 
 
 def _matches_resolution(
@@ -254,20 +277,38 @@ def _matches_resolution(
     dimensions: tuple[int, int] | None,
     config: ScreenshotConfig,
 ) -> bool:
-    """Return whether dimensions match a common screen resolution.
+    """Return whether dimensions look like a screen resolution.
 
-    Both orientations are considered.
+    Dimensions match when they equal a configured extra resolution in either
+    orientation, or when the image is at least ``min_screen_edge`` pixels on its
+    shorter edge and its landscape-normalized aspect ratio falls within
+    ``aspect_ratio_tolerance`` of a configured display aspect ratio.
 
     Args:
         dimensions: ``(width, height)`` pixel dimensions.
-        config: Detection config providing any extra resolutions.
+        config: Detection config providing aspect ratios, tolerance, minimum
+            edge, and any extra exact resolutions.
 
     Returns:
-        ``True`` when the dimensions match a known screen size.
+        ``True`` when the dimensions look like a screen size.
     """
     if dimensions is None:
         return False
     width, height = dimensions
+    if width <= 0 or height <= 0:
+        return False
+
     swapped = (height, width)
-    known = COMMON_SCREEN_RESOLUTIONS | config.extra_resolutions
-    return dimensions in known or swapped in known
+    if dimensions in config.extra_resolutions or swapped in config.extra_resolutions:
+        return True
+
+    long_edge, short_edge = max(width, height), min(width, height)
+    if short_edge < config.min_screen_edge:
+        return False
+
+    ratio = long_edge / short_edge
+    return any(
+        abs(ratio - float(known_ratio))
+        <= float(known_ratio) * config.aspect_ratio_tolerance
+        for known_ratio in config.aspect_ratios
+    )

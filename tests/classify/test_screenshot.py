@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import pytest
 from assertpy import assert_that
 
@@ -76,8 +78,25 @@ def test_classify_ignores_camera_software() -> None:
     assert_that(result.is_screenshot).is_false()
 
 
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (1920, 1080),
+        (1366, 768),
+        (3440, 1440),
+        (1179, 2556),
+        (1080, 2340),
+    ],
+)
+def test_screen_like_dimensions_match(width: int, height: int) -> None:
+    """Screen-sized images with display aspect ratios register the signal."""
+    result = classify_screenshot(dimensions=(width, height))
+
+    assert_that(result.signals.dimension_match).is_true()
+
+
 def test_dimension_alone_is_below_default_threshold() -> None:
-    """A common resolution alone is too weak to flag a screenshot by default."""
+    """A screen-like resolution alone is too weak to flag a screenshot."""
     result = classify_screenshot(dimensions=(1920, 1080))
 
     assert_that(result.signals.dimension_match).is_true()
@@ -85,10 +104,32 @@ def test_dimension_alone_is_below_default_threshold() -> None:
 
 
 def test_dimension_matches_portrait_orientation() -> None:
-    """Screen resolutions match regardless of orientation."""
+    """Screen aspect ratios match regardless of orientation."""
     result = classify_screenshot(dimensions=(1080, 1920))
 
     assert_that(result.signals.dimension_match).is_true()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [
+        (1000, 1000),
+        (2000, 700),
+        (5000, 1000),
+    ],
+)
+def test_non_display_aspect_ratios_do_not_match(width: int, height: int) -> None:
+    """Screen-sized images without a display aspect ratio stay unmatched."""
+    result = classify_screenshot(dimensions=(width, height))
+
+    assert_that(result.signals.dimension_match).is_false()
+
+
+def test_small_images_do_not_match_even_with_display_ratio() -> None:
+    """Thumbnails sharing a display ratio fall below the minimum screen edge."""
+    result = classify_screenshot(dimensions=(640, 360))
+
+    assert_that(result.signals.dimension_match).is_false()
 
 
 def test_filename_and_dimension_combine_to_flag_screenshot() -> None:
@@ -123,12 +164,34 @@ def test_lower_threshold_increases_sensitivity() -> None:
 
 
 def test_extra_resolutions_are_configurable() -> None:
-    """Custom resolutions register as screen sizes."""
+    """Exact custom resolutions match in either orientation, bypassing checks."""
     config = ScreenshotConfig(extra_resolutions=frozenset({(800, 600)}))
 
     result = classify_screenshot(dimensions=(600, 800), config=config)
 
     assert_that(result.signals.dimension_match).is_true()
+
+
+def test_software_markers_are_configurable() -> None:
+    """Custom software markers replace the default capture-tool set."""
+    config = ScreenshotConfig(software_markers=frozenset({"mycapture"}))
+
+    custom = classify_screenshot(software="MyCapture 2.0", config=config)
+    default_tool = classify_screenshot(software="Flameshot", config=config)
+
+    assert_that(custom.signals.software_match).is_true()
+    assert_that(default_tool.signals.software_match).is_false()
+
+
+def test_aspect_ratios_are_configurable() -> None:
+    """Custom aspect ratios replace the default display-ratio set."""
+    config = ScreenshotConfig(aspect_ratios=frozenset({Fraction(2, 1)}))
+
+    tall = classify_screenshot(dimensions=(1440, 2880), config=config)
+    standard = classify_screenshot(dimensions=(1920, 1080), config=config)
+
+    assert_that(tall.signals.dimension_match).is_true()
+    assert_that(standard.signals.dimension_match).is_false()
 
 
 def test_empty_inputs_yield_no_signals() -> None:
