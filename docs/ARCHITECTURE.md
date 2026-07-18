@@ -262,6 +262,18 @@ flowchart LR
 4. Expose via CLI and/or API only after the service API is stable and tested.
 5. Record architectural shifts in a new ADR under `docs/adr/`.
 
+### Size and responsibility
+
+- One responsibility per module. If a module needs section comments to navigate, split
+  it.
+- Soft ceiling of ~400 lines per module. Docstring-heavy safety-critical modules may
+  justify slightly more; argue the exception in review.
+- Keep functions within the enforced complexity budgets: mccabe `C901` at most 10, plus
+  the `PLR0911`/`PLR0912`/`PLR0913`/`PLR0915` limits enforced by ruff. Decompose by
+  default; a targeted `noqa` is acceptable only where decomposition would hurt clarity
+  and the inline comment states the justification.
+- Tests assert behavior. Do not mirror source data tables into test expectations.
+
 ## Related documentation
 
 - [ADR index](adr/README.md)
