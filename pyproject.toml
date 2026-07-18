@@ -57,6 +57,7 @@ Issues = "https://github.com/lgtm-hq/winnow/issues"
 [dependency-groups]
 dev = [
   "assertpy>=1.1",
+  "hypothesis>=6.0",
   "lintro==0.61.0",
   "mypy>=1.14",
   "pytest>=8.0",
