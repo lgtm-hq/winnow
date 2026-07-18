@@ -329,7 +329,8 @@ def doctor_command(ctx: click.Context) -> None:
         ctx: Active Click context carrying root option state.
 
     Raises:
-        SystemExit: With a non-zero code when any hard check fails.
+        click.exceptions.Exit: With a non-zero code when any hard check fails;
+            raised by :meth:`click.Context.exit`.
     """
     console = console_from_context(ctx)
     results = run_checks()

@@ -12,6 +12,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from winnow.cli.console import console_from_context, print_error
 
@@ -27,7 +28,7 @@ def _render_overview(console: Console, group: click.Group, ctx: click.Context) -
         ctx: Context used to resolve subcommand metadata.
     """
     summary = group.help or group.short_help or "Winnow your media library."
-    console.print(Panel(summary.strip(), title="winnow", title_align="left"))
+    console.print(Panel(Text(summary.strip()), title="winnow", title_align="left"))
 
     table = Table(title="Commands")
     table.add_column("Command", no_wrap=True, style="bold cyan")
@@ -36,7 +37,7 @@ def _render_overview(console: Console, group: click.Group, ctx: click.Context) -
         command = group.get_command(ctx, name)
         if command is None or command.hidden:
             continue
-        table.add_row(name, command.get_short_help_str() or "")
+        table.add_row(name, Text(command.get_short_help_str() or ""))
     console.print(table)
     console.print(
         "Run 'winnow help <command>' or 'winnow <command> --help' for details.",
@@ -58,7 +59,8 @@ def _render_command_help(
         command_name: Name of the command to describe.
 
     Raises:
-        SystemExit: With a non-zero code when the command is unknown.
+        click.exceptions.Exit: With a non-zero code when the command is unknown;
+            raised by :meth:`click.Context.exit`.
     """
     command = group.get_command(ctx, command_name)
     if command is None:
@@ -68,10 +70,11 @@ def _render_command_help(
             suggestion="Run 'winnow help' to list available commands.",
         )
         ctx.exit(2)
+        return
     command_ctx = click.Context(command, info_name=command_name, parent=ctx.find_root())
     console.print(
         Panel(
-            command.get_help(command_ctx),
+            Text(command.get_help(command_ctx)),
             title=f"winnow {command_name}",
             title_align="left",
         ),
