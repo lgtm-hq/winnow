@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from assertpy import assert_that
@@ -89,6 +90,25 @@ def test_extract_audio_metadata_unsupported_raises(
 
     with pytest.raises(MediaError):
         extract_audio_metadata(fixtures_dir / "sample.wav")
+
+
+def test_read_audio_tags_normalizes_year_and_lowercases_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mutagen keys are lowercased and the date field is aliased to year."""
+    fake = SimpleNamespace(tags={"TITLE": ["Song"], "date": ["2024"]})
+    monkeypatch.setattr(
+        "winnow.media.audio.mutagen_open",
+        lambda path, easy=False: fake,
+    )
+
+    tags = read_audio_tags(Path("does-not-matter.mp3"))
+
+    assert_that(tags).contains_key("year")
+    assert_that(tags["year"]).is_equal_to("2024")
+    assert_that(tags).contains_key("title")
+    assert_that(tags).does_not_contain_key("date")
+    assert_that(tags).does_not_contain_key("TITLE")
 
 
 def test_read_audio_tags_falls_back_to_tinytag(

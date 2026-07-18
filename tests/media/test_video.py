@@ -220,6 +220,24 @@ def test_extract_frame_writes_destination(
     assert_that(destination.is_file()).is_true()
 
 
+def test_extract_frame_rejects_negative_timestamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative timestamp raises MediaError before invoking ffmpeg."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    _use_binaries(monkeypatch)
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ffmpeg should not be invoked")
+
+    monkeypatch.setattr(_RUN_TARGET, _fail)
+
+    with pytest.raises(MediaError):
+        extract_frame(video, tmp_path / "frame.png", timestamp_seconds=-1.0)
+
+
 def test_extract_frame_requires_ffmpeg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

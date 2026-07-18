@@ -148,6 +148,14 @@ def test_extract_image_metadata_raw_falls_back_to_exif(
 
     assert_that(metadata.width).is_equal_to(6000)
     assert_that(metadata.height).is_equal_to(4000)
+    assert_that(metadata.image_format).is_equal_to("DNG")
+
+
+def test_unknown_mode_bit_depth_is_none() -> None:
+    """An unrecognized Pillow mode yields no bit depth."""
+    from winnow.media.image import _mode_bit_depth
+
+    assert_that(_mode_bit_depth("BOGUS")).is_none()
 
 
 def test_bit_depth_for_one_bit_mode(tmp_path: Path) -> None:

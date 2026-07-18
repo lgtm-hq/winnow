@@ -123,14 +123,22 @@ def extract_frame(
         The destination path that was written.
 
     Raises:
-        MediaError: If ffmpeg is unavailable, the source is missing, or the
-            extraction fails.
+        MediaError: If ffmpeg is unavailable, the source is missing, the
+            timestamp is negative, or the extraction fails.
     """
     if not path.is_file():
         raise MediaError(
             "video file does not exist",
             operation="extract_frame",
             file_path=path,
+        )
+
+    if timestamp_seconds < 0:
+        raise MediaError(
+            "timestamp_seconds must be non-negative",
+            operation="extract_frame",
+            file_path=path,
+            details={"timestamp_seconds": timestamp_seconds},
         )
 
     binary = shutil.which(_FFMPEG)

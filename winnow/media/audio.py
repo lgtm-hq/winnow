@@ -30,6 +30,11 @@ _MUTAGEN_CODECS: Final[dict[str, str]] = {
     "AAC": "aac",
 }
 
+_TAG_KEY_ALIASES: Final[dict[str, str]] = {
+    "date": "year",
+    "tracknumber": "track",
+}
+
 
 def extract_audio_metadata(path: Path) -> MediaMetadata:
     """Extract technical metadata from an audio file.
@@ -74,7 +79,9 @@ def read_audio_tags(path: Path) -> dict[str, str]:
 
     mutagen is queried in "easy" mode so tag keys are normalized (``title``,
     ``artist``, ``album``, …) across formats. tinytag is used as a fallback.
-    Failures degrade to an empty mapping.
+    Both backends emit the same lowercase key names for shared fields (for
+    example, the release year is always ``year``). Failures degrade to an empty
+    mapping.
 
     Args:
         path: Filesystem path to the audio file.
@@ -144,6 +151,9 @@ def _metadata_from_tinytag(*, path: Path) -> MediaMetadata | None:
 def _tags_from_mutagen(*, path: Path) -> dict[str, str]:
     """Read normalized tags via mutagen easy mode.
 
+    Keys are lowercased and aliased to canonical names (for example ``date`` to
+    ``year``) so they match the tinytag fallback.
+
     Args:
         path: Filesystem path to the audio file.
 
@@ -161,10 +171,24 @@ def _tags_from_mutagen(*, path: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in audio.tags.items():
         if isinstance(value, list):
-            result[key] = ", ".join(str(item) for item in value)
+            joined = ", ".join(str(item) for item in value)
         else:
-            result[key] = str(value)
+            joined = str(value)
+        result[_normalize_tag_key(key)] = joined
     return result
+
+
+def _normalize_tag_key(key: str) -> str:
+    """Normalize a raw tag key to a canonical lowercase name.
+
+    Args:
+        key: Raw tag key from a backend.
+
+    Returns:
+        Lowercase key with known aliases mapped to their canonical form.
+    """
+    lowered = key.lower()
+    return _TAG_KEY_ALIASES.get(lowered, lowered)
 
 
 def _tags_from_tinytag(*, path: Path) -> dict[str, str]:

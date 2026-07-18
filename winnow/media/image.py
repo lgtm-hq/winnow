@@ -13,7 +13,7 @@ from typing import Final
 
 import exifread
 from loguru import logger
-from PIL import Image, ImageMode, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 
 from winnow.exceptions import MediaError
 from winnow.models.media import MediaMetadata
@@ -37,6 +37,29 @@ _EXIF_HEIGHT_TAGS: Final[tuple[str, ...]] = (
     "EXIF ExifImageLength",
     "Image ImageLength",
 )
+
+_MODE_BIT_DEPTH: Final[dict[str, int]] = {
+    "1": 1,
+    "L": 8,
+    "LA": 8,
+    "La": 8,
+    "P": 8,
+    "PA": 8,
+    "RGB": 8,
+    "RGBX": 8,
+    "RGBA": 8,
+    "RGBa": 8,
+    "CMYK": 8,
+    "YCbCr": 8,
+    "LAB": 8,
+    "HSV": 8,
+    "I;16": 16,
+    "I;16L": 16,
+    "I;16B": 16,
+    "I;16N": 16,
+    "I": 32,
+    "F": 32,
+}
 
 
 def heif_supported() -> bool:
@@ -181,8 +204,25 @@ def _metadata_from_exif(path: Path) -> MediaMetadata:
             file_path=path,
         )
     return MediaMetadata(
-        width=width, height=height, image_format=path.suffix.lstrip(".")
+        width=width,
+        height=height,
+        image_format=_format_from_suffix(path),
     )
+
+
+def _format_from_suffix(path: Path) -> str | None:
+    """Derive an uppercase format label from a file suffix.
+
+    Keeps the EXIF fallback consistent with Pillow, which reports uppercase
+    format names such as ``"JPEG"`` or ``"TIFF"``.
+
+    Args:
+        path: Filesystem path whose suffix identifies the format.
+
+    Returns:
+        Uppercase format label, or ``None`` when the path has no suffix.
+    """
+    return path.suffix.lstrip(".").upper() or None
 
 
 def _first_int_tag(*, tags: dict[str, str], names: tuple[str, ...]) -> int | None:
@@ -209,19 +249,16 @@ def _first_int_tag(*, tags: dict[str, str], names: tuple[str, ...]) -> int | Non
 def _mode_bit_depth(mode: str) -> int | None:
     """Compute the bit depth per channel for a Pillow image mode.
 
+    Uses a static mapping of documented Pillow modes rather than the
+    non-public ``PIL.ImageMode`` internals.
+
     Args:
         mode: Pillow image mode string (for example ``"RGB"`` or ``"I;16"``).
 
     Returns:
-        Bits per channel, or ``None`` when the mode cannot be interpreted.
+        Bits per channel, or ``None`` when the mode is not recognized.
     """
-    if mode == "1":
-        return 1
-    try:
-        typestr = ImageMode.getmode(mode).typestr
-        return int(typestr[-1]) * 8
-    except (KeyError, ValueError, IndexError):
-        return None
+    return _MODE_BIT_DEPTH.get(mode)
 
 
 def _mode_has_alpha(*, image: Image.Image) -> bool:
