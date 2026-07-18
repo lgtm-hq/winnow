@@ -21,6 +21,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.18.0] - 2026-07-18
+
+### Added
+
+- **media**: detect media types via content sniffing with MIME and override fallbacks
+  (#171) (f47c78e)
+
+### Changed
+
+- **fs**: deduplicate shared cleanup and tombstone helpers (#172) (91bac95)
+- **config**: split loader into path, reader, env, and writer modules (#170) (fda75d7)
+
 ## [0.17.0] - 2026-07-18
 
 ### Added
