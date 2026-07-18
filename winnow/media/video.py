@@ -149,7 +149,15 @@ def extract_frame(
             file_path=path,
         )
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MediaError(
+            "failed to create destination directory for frame extraction",
+            operation="extract_frame",
+            file_path=destination,
+            details={"error": str(exc)},
+        ) from exc
     argv = [
         binary,
         "-y",

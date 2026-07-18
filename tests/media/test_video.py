@@ -306,3 +306,24 @@ def test_extract_video_metadata_real_ffprobe(fixtures_dir: Path) -> None:
     assert_that(metadata.height).is_equal_to(48)
     assert_that(metadata.codec).is_equal_to("h264")
     assert_that(metadata.frame_rate).is_equal_to(10.0)
+
+
+def test_extract_frame_wraps_mkdir_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mkdir failures become MediaError, not raw OSError."""
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    destination = tmp_path / "nested" / "frame.png"
+    monkeypatch.setattr(_WHICH_TARGET, lambda _: "/usr/bin/ffmpeg")
+
+    original_mkdir = Path.mkdir
+
+    def boom(self: Path, *args: object, **kwargs: object) -> None:
+        if self == destination.parent:
+            raise OSError("permission denied")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    with pytest.raises(MediaError, match="destination directory"):
+        extract_frame(video, destination, timestamp_seconds=0.0)
