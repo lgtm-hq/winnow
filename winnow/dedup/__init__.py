@@ -14,13 +14,25 @@ from winnow.dedup.finder import (
     find_duplicates,
 )
 from winnow.dedup.hashing import HashFormat, hamming_distance, parse_hash
+from winnow.dedup.quality import (
+    QualityComparator,
+    QualityWeights,
+    RankedMedia,
+    SharpnessProvider,
+    laplacian_sharpness,
+)
 
 __all__ = [
     "DEFAULT_HASH_DISTANCE_THRESHOLD",
     "DuplicateFinder",
     "HashFormat",
     "HashedFile",
+    "QualityComparator",
+    "QualityWeights",
+    "RankedMedia",
+    "SharpnessProvider",
     "find_duplicates",
     "hamming_distance",
+    "laplacian_sharpness",
     "parse_hash",
 ]
