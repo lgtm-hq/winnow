@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.14.0] - 2026-07-18
+
+### Added
+
+- **media**: image, video, and audio processors (#144) (00c60de)
+
 ## [0.13.0] - 2026-07-18
 
 ### Added
