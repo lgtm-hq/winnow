@@ -9,14 +9,17 @@ from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self
-from uuid import uuid4
 
+from winnow.fs import _cleanup
 from winnow.fs._path_ops import (
     copy_path,
     path_exists,
     remove_path,
     sync_directory,
     sync_path,
+)
+from winnow.fs._path_ops import (
+    temporary_path as _temporary_path,
 )
 from winnow.fs.backup import create_backup
 from winnow.fs.backup_options import BackupOptions
@@ -28,6 +31,13 @@ _LOGGER = logging.getLogger(__name__)
 
 RollbackStep = Callable[[], None]
 CommitStep = Callable[[], None]
+
+# Shared cleanup helpers bound as module-level definitions so this entry point
+# keeps its own independently patchable bindings for failure injection.
+_cleanup_path = _cleanup.cleanup_path
+_missing_directories = _cleanup.missing_directories
+_restore_tombstone = _cleanup.restore_tombstone
+_run_cleanups = _cleanup.run_cleanups
 
 
 class FileSystemTransaction:
@@ -657,12 +667,6 @@ def _cleanup_backups(backups: list[Path]) -> None:
     raise aggregate_error from errors[0]
 
 
-def _cleanup_path(path: Path) -> None:
-    """Remove a path when it exists."""
-    if path_exists(path):
-        remove_path(path)
-
-
 def _coerce_backup_options(backup: bool | BackupOptions) -> BackupOptions:
     """Normalize backup configuration input."""
     if isinstance(backup, BackupOptions):
@@ -695,20 +699,6 @@ def _create_directories(
     return created_paths
 
 
-def _missing_directories(path: Path) -> list[Path]:
-    """Return missing directories from highest parent to leaf."""
-    missing_paths: list[Path] = []
-    cursor = path
-    while not path_exists(cursor):
-        missing_paths.append(cursor)
-        parent = cursor.parent
-        if parent == cursor:
-            break
-        cursor = parent
-    missing_paths.reverse()
-    return missing_paths
-
-
 def _operation_error(
     *,
     operation: FileOperation,
@@ -722,43 +712,6 @@ def _operation_error(
         file_path=path,
         details={"error": str(error)},
     )
-
-
-def _run_cleanups(
-    error: FileSystemOperationError,
-    cleanups: list[RollbackStep],
-) -> None:
-    """Run cleanup callables without masking the original operation error.
-
-    Each callable is executed defensively so a cleanup failure never replaces the
-    error that triggered the handler. Any cleanup failure is attached to ``error``
-    as a note for diagnostics.
-
-    Args:
-        error: Operation error to annotate with cleanup failures.
-        cleanups: Cleanup callables to execute in order.
-    """
-    for cleanup in cleanups:
-        try:
-            cleanup()
-        except (OSError, shutil.Error, FileSystemOperationError) as cleanup_error:
-            error.add_note(f"cleanup failed: {cleanup_error}")
-            for note in getattr(cleanup_error, "__notes__", ()):
-                error.add_note(f"cleanup detail: {note}")
-
-
-def _restore_tombstone(
-    *,
-    tombstone: Path,
-    destination: Path,
-) -> None:
-    """Move a staged tombstone back to its destination."""
-    if not path_exists(tombstone):
-        return
-    if path_exists(destination):
-        remove_path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tombstone.replace(destination)
 
 
 def _rollback_copy(
@@ -852,14 +805,6 @@ def _stage_destination_for_replace(destination: Path) -> tuple[Path, bool]:
             error.add_note(f"cleanup failed: {cleanup_error}")
         raise
     return tombstone, False
-
-
-def _temporary_path(path: Path) -> Path:
-    """Return a unique staging path next to a destination path."""
-    while True:
-        candidate = path.parent / f".{path.name}.{uuid4().hex}.tmp"
-        if not path_exists(candidate):
-            return candidate
 
 
 def _reject_recursive_directory_copy(
