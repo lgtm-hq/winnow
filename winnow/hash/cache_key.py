@@ -16,6 +16,8 @@ class CacheKey:
 
     A cache entry is valid only while the file at ``path`` retains the recorded
     ``mtime`` and ``size``; any change to either invalidates the entry.
+    :meth:`from_file` stores an absolute, resolved path so cache identity is
+    stable regardless of the working directory in effect at lookup time.
 
     Args:
         path: Filesystem path of the hashed media file.
@@ -37,6 +39,11 @@ class CacheKey:
     ) -> Self:
         """Build a cache key by reading file metadata from disk.
 
+        The path is resolved to an absolute, symlink-free form so the resulting
+        key is independent of the current working directory. This keeps
+        :meth:`HashCache.prune_stale` accurate even when the process changes
+        directories between caching and pruning.
+
         Args:
             path: Filesystem path of the media file to key on.
             algorithm: Hash algorithm the digest was produced with.
@@ -47,7 +54,7 @@ class CacheKey:
         Raises:
             CacheError: If the file metadata cannot be read.
         """
-        resolved = Path(path)
+        resolved = Path(path).resolve()
         try:
             stat = resolved.stat()
         except OSError as exc:

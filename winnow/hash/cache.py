@@ -3,12 +3,18 @@
 The cache maps ``(path, mtime, size, algorithm)`` keys to perceptual hash
 digests. Entries are invalidated automatically when a file's modification time
 or size changes, and stale rows for deleted files can be pruned on demand.
+
+On-disk databases are opened in write-ahead-logging (WAL) mode so the shared
+default database (``~/.cache/winnow/cache.db``) tolerates concurrent readers and
+writers from parallel workers without blocking readers on a writer. In-memory
+databases keep SQLite's default in-memory journal, for which WAL is not
+applicable.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -19,6 +25,13 @@ from winnow.hash.cache_key import CacheKey
 from winnow.hash.cache_stats import CacheStats
 
 _IN_MEMORY = ":memory:"
+
+# Keep parameter counts comfortably below SQLite's compiled variable limit
+# (``SQLITE_MAX_VARIABLE_NUMBER``, historically 999) so batched IN clauses stay
+# valid regardless of the linked SQLite build.
+_MAX_SQL_VARIABLES = 900
+
+_StoredRow = tuple[str, str, float, int]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hash_cache (
@@ -39,6 +52,20 @@ def _default_db_path() -> Path:
         Path to ``cache.db`` under the user's XDG cache directory.
     """
     return Path.home() / ".cache" / "winnow" / "cache.db"
+
+
+def _chunked(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:
+    """Yield successive slices of ``items`` no longer than ``size``.
+
+    Args:
+        items: Sequence to split into batches.
+        size: Maximum length of each yielded slice.
+
+    Yields:
+        Consecutive, non-overlapping slices covering ``items``.
+    """
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 class HashCache:
@@ -68,6 +95,10 @@ class HashCache:
     def _connect(self) -> sqlite3.Connection:
         """Open a SQLite connection, creating parent directories as needed.
 
+        On-disk databases are switched to WAL journaling so concurrent workers
+        sharing the default database do not block one another; in-memory
+        databases retain SQLite's default journal, where WAL does not apply.
+
         Returns:
             An open SQLite connection.
 
@@ -78,7 +109,10 @@ class HashCache:
         try:
             if not self._in_memory:
                 self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            return sqlite3.connect(target)
+            connection = sqlite3.connect(target)
+            if not self._in_memory:
+                connection.execute("PRAGMA journal_mode=WAL")
+            return connection
         except (OSError, sqlite3.Error) as exc:
             raise CacheError(
                 "Unable to open hash cache database",
@@ -127,6 +161,11 @@ class HashCache:
     def get_many(self, keys: Iterable[CacheKey]) -> dict[CacheKey, str]:
         """Look up digests for several keys, recording hits and misses.
 
+        Rows are fetched with batched ``SELECT ... WHERE path IN (...)`` queries
+        (one per chunk of paths) rather than one query per key, then matched in
+        memory on the full ``(path, algorithm, mtime, size)`` identity so
+        invalidation semantics stay identical to :meth:`get`.
+
         Args:
             keys: Cache keys to resolve.
 
@@ -137,15 +176,62 @@ class HashCache:
         Raises:
             CacheError: If any lookup query fails.
         """
+        key_list = list(keys)
+        if not key_list:
+            return {}
+        paths = {str(key.path) for key in key_list}
+        stored = self._fetch_rows_for_paths(paths)
         results: dict[CacheKey, str] = {}
-        for key in keys:
-            digest = self._lookup(key)
+        for key in key_list:
+            row: _StoredRow = (
+                str(key.path),
+                str(key.algorithm),
+                key.mtime,
+                key.size,
+            )
+            digest = stored.get(row)
             if digest is None:
                 self._misses += 1
             else:
                 self._hits += 1
                 results[key] = digest
         return results
+
+    def _fetch_rows_for_paths(
+        self,
+        paths: set[str],
+    ) -> dict[_StoredRow, str]:
+        """Fetch every stored row whose path is in ``paths``.
+
+        Args:
+            paths: Distinct path strings to fetch rows for.
+
+        Returns:
+            A mapping of each stored ``(path, algorithm, mtime, size)`` identity
+            to its digest.
+
+        Raises:
+            CacheError: If a batch lookup query fails.
+        """
+        stored: dict[_StoredRow, str] = {}
+        ordered = sorted(paths)
+        try:
+            for chunk in _chunked(ordered, _MAX_SQL_VARIABLES):
+                placeholders = ", ".join("?" for _ in chunk)
+                query = (
+                    "SELECT path, algorithm, mtime, size, hash "
+                    "FROM hash_cache "
+                    f"WHERE path IN ({placeholders})"
+                )
+                cursor = self._connection.execute(query, tuple(chunk))
+                for path, algorithm, mtime, size, digest in cursor.fetchall():
+                    stored[(path, algorithm, mtime, size)] = digest
+        except sqlite3.Error as exc:
+            raise CacheError(
+                "Hash cache batch lookup failed",
+                operation="cache.get_many",
+            ) from exc
+        return stored
 
     def _lookup(self, key: CacheKey) -> str | None:
         """Return the stored digest for a key without touching counters.
@@ -251,13 +337,15 @@ class HashCache:
             missing = [path for path in paths if not Path(path).exists()]
             if not missing:
                 return 0
+            deleted = 0
             with self._connection:
-                deleted = 0
-                for path in missing:
-                    result = self._connection.execute(
-                        "DELETE FROM hash_cache WHERE path = ?",
-                        (path,),
+                for chunk in _chunked(missing, _MAX_SQL_VARIABLES):
+                    placeholders = ", ".join("?" for _ in chunk)
+                    query = (
+                        "DELETE FROM hash_cache "
+                        f"WHERE path IN ({placeholders})"
                     )
+                    result = self._connection.execute(query, tuple(chunk))
                     deleted += result.rowcount
             return deleted
         except sqlite3.Error as exc:

@@ -392,3 +392,125 @@ def test_set_many_failure_raises_cache_error(cache: HashCache) -> None:
 
     with pytest.raises(CacheError):
         cache.set_many(entries=[CacheEntry(key=key, digest="digest")])
+
+
+def test_from_file_stores_absolute_resolved_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key built from a relative path is stored as an absolute path."""
+    media = tmp_path / "photo.jpg"
+    _write_media(media)
+    monkeypatch.chdir(tmp_path)
+
+    key = CacheKey.from_file(path="photo.jpg", algorithm=HashAlgorithm.PHASH)
+
+    assert_that(key.path.is_absolute()).is_true()
+    assert_that(key.path).is_equal_to(media.resolve())
+
+
+def test_prune_stale_survives_cwd_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pruning works after the CWD changes because keys store absolute paths."""
+    media = tmp_path / "photo.jpg"
+    _write_media(media)
+    monkeypatch.chdir(tmp_path)
+    key = CacheKey.from_file(path="photo.jpg", algorithm=HashAlgorithm.PHASH)
+
+    with HashCache(db_path=tmp_path / "cache.db") as cache:
+        cache.set(key=key, digest="digest")
+        media.unlink()
+        monkeypatch.chdir(tmp_path.parent)
+
+        assert_that(cache.prune_stale()).is_equal_to(1)
+        assert_that(cache.stats().entry_count).is_equal_to(0)
+
+
+def test_on_disk_database_uses_wal_journal(tmp_path: Path) -> None:
+    """On-disk databases are opened in write-ahead-logging mode."""
+    with HashCache(db_path=tmp_path / "cache.db") as cache:
+        mode = cache._connection.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert_that(mode.lower()).is_equal_to("wal")
+
+
+def test_in_memory_database_does_not_use_wal_journal() -> None:
+    """In-memory databases keep the default journal rather than WAL."""
+    with HashCache(db_path=":memory:") as cache:
+        mode = cache._connection.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert_that(mode.lower()).is_equal_to("memory")
+
+
+def test_get_many_batches_across_chunks(
+    cache: HashCache,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batched reads span multiple IN-clause chunks and stay correct."""
+    monkeypatch.setattr(cache_module, "_MAX_SQL_VARIABLES", 2)
+    keys = []
+    for index in range(5):
+        media = tmp_path / f"photo_{index}.jpg"
+        _write_media(media, content=f"content-{index}".encode())
+        key = CacheKey.from_file(path=media, algorithm=HashAlgorithm.PHASH)
+        keys.append(key)
+        cache.set(key=key, digest=f"digest-{index}")
+
+    results = cache.get_many(keys=keys)
+
+    assert_that(results).is_length(5)
+    assert_that(results[keys[4]]).is_equal_to("digest-4")
+    assert_that(cache.stats().hits).is_equal_to(5)
+
+
+def test_prune_stale_batches_across_chunks(
+    cache: HashCache,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pruning deletes across multiple IN-clause chunks in one transaction."""
+    monkeypatch.setattr(cache_module, "_MAX_SQL_VARIABLES", 2)
+    for index in range(5):
+        media = tmp_path / f"photo_{index}.jpg"
+        _write_media(media)
+        key = CacheKey.from_file(path=media, algorithm=HashAlgorithm.PHASH)
+        cache.set(key=key, digest=f"digest-{index}")
+        media.unlink()
+
+    assert_that(cache.prune_stale()).is_equal_to(5)
+    assert_that(cache.stats().entry_count).is_equal_to(0)
+
+
+def test_get_many_batches_shared_path_algorithms(
+    cache: HashCache,
+    tmp_path: Path,
+) -> None:
+    """A single path with multiple algorithms resolves correctly in a batch."""
+    media = tmp_path / "photo.jpg"
+    _write_media(media)
+    phash_key = CacheKey.from_file(path=media, algorithm=HashAlgorithm.PHASH)
+    dhash_key = CacheKey.from_file(path=media, algorithm=HashAlgorithm.DHASH)
+    cache.set(key=phash_key, digest="phash-digest")
+    cache.set(key=dhash_key, digest="dhash-digest")
+
+    results = cache.get_many(keys=[phash_key, dhash_key])
+
+    assert_that(results[phash_key]).is_equal_to("phash-digest")
+    assert_that(results[dhash_key]).is_equal_to("dhash-digest")
+
+
+def test_get_many_batch_failure_raises_cache_error(cache: HashCache) -> None:
+    """A batch read against a closed connection surfaces as a cache error."""
+    key = CacheKey(
+        path=Path("/virtual/photo.jpg"),
+        mtime=1.0,
+        size=1,
+        algorithm=HashAlgorithm.PHASH,
+    )
+    cache.close()
+
+    with pytest.raises(CacheError):
+        cache.get_many(keys=[key])
