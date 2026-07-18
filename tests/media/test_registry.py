@@ -279,3 +279,25 @@ def test_detect_media_type_returns_none_when_all_layers_fail(
     unknown.write_bytes(b"nothing recognizable in here\n")
 
     assert_that(detect_media_type(unknown)).is_none()
+
+
+def test_sniff_skips_matches_without_mime_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """puremagic matches lacking a MIME type are skipped, not fatal."""
+    target = tmp_path / "sample.bin"
+    target.write_bytes(b"\x00\x01")
+
+    class _Match:
+        def __init__(self, mime_type: str | None) -> None:
+            self.mime_type = mime_type
+
+    monkeypatch.setattr(
+        "winnow.media.registry.puremagic.magic_file",
+        lambda _: [_Match(None), _Match(""), _Match("image/png")],
+    )
+
+    result = detect_media_type(target)
+
+    assert_that(result).is_equal_to(MediaType.IMAGE)

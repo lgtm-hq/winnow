@@ -339,7 +339,10 @@ def _sniff_media_type(path: Path) -> MediaType | None:
         return None
 
     for match in matches:
-        mime_prefix, _, _ = match.mime_type.partition("/")
+        mime_type = match.mime_type
+        if not mime_type:
+            continue
+        mime_prefix, _, _ = mime_type.partition("/")
         media_type = _MIME_PREFIX_TYPES.get(mime_prefix)
         if media_type is not None:
             return media_type
