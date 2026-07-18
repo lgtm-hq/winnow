@@ -319,10 +319,15 @@ def test_extract_frame_wraps_mkdir_oserror(
 
     original_mkdir = Path.mkdir
 
-    def boom(self: Path, *args: object, **kwargs: object) -> None:
+    def boom(
+        self: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
         if self == destination.parent:
             raise OSError("permission denied")
-        return original_mkdir(self, *args, **kwargs)
+        original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
 
     monkeypatch.setattr(Path, "mkdir", boom)
     with pytest.raises(MediaError, match="destination directory"):
