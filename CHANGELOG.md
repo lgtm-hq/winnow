@@ -21,6 +21,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.9.0] - 2026-07-18
+
+### Added
+
+- **hash**: image perceptual hasher (pHash/dHash/aHash/wHash) (#147) (63243e3)
+
+### Changed
+
+- **adr**: add ADR 0002 native hashing decision (#153) (5408274)
+- **cli**: add CLI command reference (#148) (94916c8)
+- **quality**: property-based tests for security-sensitive utilities (#145) (deb6fe9)
+
 ## [0.8.0] - 2026-07-18
 
 ### Added
