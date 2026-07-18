@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.16.0] - 2026-07-18
+
+### Added
+
+- **classify**: screenshot and photo/graphic classifiers (#151) (10e1f49)
+
 ## [0.15.0] - 2026-07-18
 
 ### Added
