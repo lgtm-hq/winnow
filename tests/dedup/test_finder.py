@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import time
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -221,11 +224,55 @@ def test_empty_input_returns_no_groups() -> None:
 
 
 def test_scales_to_many_files_without_explosion() -> None:
-    """Union-find grouping handles a few thousand files efficiently."""
-    files = [_image(f"/dup_{index}.jpg", "ff00") for index in range(1_000)]
-    files.extend(_image(f"/uniq_{index}.jpg", "0000") for index in range(1_000))
+    """Thousands of distinct hashes group quickly via the band index."""
+    rng = random.Random(1337)  # nosec B311 - deterministic test fixture data
+    hashes: set[int] = set()
+    while len(hashes) < 2_000:
+        hashes.add(rng.getrandbits(64))
+    files = [
+        _image(f"/uniq_{index}.jpg", f"{value:016x}")
+        for index, value in enumerate(sorted(hashes))
+    ]
+    files.extend(_image(f"/dup_{index}.jpg", "f" * 16) for index in range(1_000))
 
-    groups = find_duplicates(files, threshold=0)
+    started = time.perf_counter()
+    groups = find_duplicates(files, threshold=5)
+    elapsed = time.perf_counter() - started
 
-    assert_that(groups).is_length(2)
+    assert_that(groups).is_length(1)
     assert_that(groups[0].files).is_length(1_000)
+    assert_that(elapsed).is_less_than(5.0)
+
+
+def test_band_index_finds_every_brute_force_near_match() -> None:
+    """The banded candidate index misses no pair a brute-force scan finds."""
+    rng = random.Random(99)  # nosec B311 - deterministic test fixture data
+    base = rng.getrandbits(64)
+    values = {base}
+    while len(values) < 60:
+        flipped = base
+        for bit in rng.sample(range(64), rng.randint(1, 12)):
+            flipped ^= 1 << bit
+        values.add(flipped)
+    threshold = 8
+    ordered = sorted(values)
+    path_by_value = {
+        value: Path(f"/img_{index}.jpg") for index, value in enumerate(ordered)
+    }
+    expected = {
+        frozenset({path_by_value[value_a], path_by_value[value_b]})
+        for value_a, value_b in combinations(ordered, 2)
+        if (value_a ^ value_b).bit_count() <= threshold
+    }
+
+    groups = find_duplicates(
+        [_image(str(path_by_value[value]), f"{value:016x}") for value in ordered],
+        threshold=threshold,
+    )
+
+    found = {
+        frozenset({pair.path_a, pair.path_b})
+        for group in groups
+        for pair in group.pairs
+    }
+    assert_that(found).contains(*expected)

@@ -8,6 +8,13 @@ distance threshold. Grouping uses union-find so that transitively similar files
 Hashes are only compared within the same :class:`~winnow.models.media.MediaType`
 and the same bit length, so mixing hash widths or media types never produces
 cross-type matches.
+
+Near-match candidates are generated with a pigeonhole band index rather than
+all-pairs comparison: each hash is split into ``threshold + 1`` bit bands, and
+two hashes within the threshold must agree exactly on at least one band, so only
+hashes sharing a band bucket are ever compared. For realistic libraries — where
+most hashes are unique — this keeps grouping near-linear instead of quadratic in
+the number of distinct hashes.
 """
 
 from __future__ import annotations
@@ -15,10 +22,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
 from typing import Self
 
+from winnow.dedup._band_index import candidate_pairs
+from winnow.dedup._union_find import UnionFind
 from winnow.dedup.hashing import HashFormat, parse_hash
 from winnow.exceptions import DuplicateError
 from winnow.models.config import WinnowConfig
@@ -50,52 +58,6 @@ class _Edge:
     index_a: int
     index_b: int
     similarity: float
-
-
-class _UnionFind:
-    """Disjoint-set structure with path compression and union by rank.
-
-    Args:
-        size: Number of singleton elements to track.
-    """
-
-    __slots__ = ("_parent", "_rank")
-
-    def __init__(self, size: int) -> None:
-        self._parent = list(range(size))
-        self._rank = [0] * size
-
-    def find(self, item: int) -> int:
-        """Return the representative root of ``item``.
-
-        Args:
-            item: Element index.
-
-        Returns:
-            Root index of the set containing ``item``.
-        """
-        root = item
-        while self._parent[root] != root:
-            root = self._parent[root]
-        while self._parent[item] != root:
-            self._parent[item], item = root, self._parent[item]
-        return root
-
-    def union(self, first: int, second: int) -> None:
-        """Merge the sets containing ``first`` and ``second``.
-
-        Args:
-            first: First element index.
-            second: Second element index.
-        """
-        root_first, root_second = self.find(first), self.find(second)
-        if root_first == root_second:
-            return
-        if self._rank[root_first] < self._rank[root_second]:
-            root_first, root_second = root_second, root_first
-        self._parent[root_second] = root_first
-        if self._rank[root_first] == self._rank[root_second]:
-            self._rank[root_first] += 1
 
 
 class DuplicateFinder:
@@ -234,7 +196,7 @@ class DuplicateFinder:
         Returns:
             Duplicate groups discovered within the partition (unnumbered).
         """
-        union_find = _UnionFind(len(items))
+        union_find = UnionFind(len(items))
         edges: list[_Edge] = []
         buckets = _build_buckets(decoded=decoded, indices=indices)
         _link_exact_duplicates(buckets=buckets, union_find=union_find, edges=edges)
@@ -257,7 +219,7 @@ class DuplicateFinder:
         *,
         buckets: dict[int, list[int]],
         bit_length: int,
-        union_find: _UnionFind,
+        union_find: UnionFind,
         edges: list[_Edge],
     ) -> None:
         """Union bucket representatives within the distance threshold.
@@ -269,7 +231,12 @@ class DuplicateFinder:
             edges: Edge list to append near-match relationships to.
         """
         representatives = {value: members[0] for value, members in buckets.items()}
-        for value_a, value_b in combinations(representatives, 2):
+        candidates = candidate_pairs(
+            values=list(representatives),
+            bit_length=bit_length,
+            threshold=self.threshold,
+        )
+        for value_a, value_b in candidates:
             distance = (value_a ^ value_b).bit_count()
             if distance > self.threshold:
                 continue
@@ -370,7 +337,7 @@ def _build_buckets(
 def _link_exact_duplicates(
     *,
     buckets: dict[int, list[int]],
-    union_find: _UnionFind,
+    union_find: UnionFind,
     edges: list[_Edge],
 ) -> None:
     """Union files with identical hashes and record exact-match edges.
@@ -391,7 +358,7 @@ def _assemble_groups(
     items: list[HashedFile],
     media_type: MediaType,
     indices: list[int],
-    union_find: _UnionFind,
+    union_find: UnionFind,
     edges: list[_Edge],
 ) -> list[DuplicateGroup]:
     """Build duplicate groups from union-find components and edges.
