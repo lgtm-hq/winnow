@@ -14,7 +14,7 @@ FastAPI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any, Self, cast
 
 from winnow.exceptions import PipelineError
@@ -131,14 +131,8 @@ class PipelineContext:
 
 
 _SERVICE_SLOTS: frozenset[str] = frozenset(
-    {
-        "metadata_service",
-        "hasher",
-        "cache",
-        "saga",
-        "reporter",
-    },
-)
+    context_field.name for context_field in fields(PipelineContext)
+) - {"config"}
 
 
 __all__ = ["PipelineContext"]

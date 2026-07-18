@@ -5,13 +5,17 @@ crash-safe and reversible. Commands implement the command pattern: :meth:`execut
 applies a change and records enough state to reverse it, while :meth:`undo`
 restores the prior filesystem state. Commands serialize to and from plain dicts so
 a saga can persist them in a transaction log and reconstruct them later.
+
+The base :class:`Command` owns the shared lifecycle (re-execution guards, error
+wrapping, log bookkeeping) and derives serialization from dataclass fields, so
+each concrete command only supplies its filesystem call and its reversal.
 """
 
 from __future__ import annotations
 
 import shutil
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
 
@@ -27,7 +31,10 @@ from winnow.fs import (
 )
 from winnow.fs.errors import FileSystemOperationError
 
+_FS_ERRORS = (FileSystemOperationError, OSError, shutil.Error)
 
+
+@dataclass(slots=True)
 class Command(ABC):
     """Abstract reversible filesystem command.
 
@@ -35,13 +42,23 @@ class Command(ABC):
     helpers. A failed :meth:`execute` leaves the filesystem unchanged because the
     underlying helpers roll back partial work. A successful :meth:`execute` records
     the state required for :meth:`undo` to restore the prior filesystem contents.
+
+    Subclasses implement :meth:`_apply` and :meth:`_revert`; the base class
+    handles execution-state tracking, error wrapping, and dict serialization
+    derived from the subclass's dataclass fields.
     """
 
-    __slots__ = ()
-
     command_name: ClassVar[str]
+    _execute_path_field: ClassVar[str] = "path"
+    _undo_path_field: ClassVar[str] = "path"
 
-    @abstractmethod
+    _log: OperationLog | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
     def execute(self) -> OperationLog:
         """Apply the command's filesystem mutation.
 
@@ -51,22 +68,63 @@ class Command(ABC):
         Raises:
             PipelineError: When the mutation cannot be applied or has already run.
         """
+        if self._log is not None:
+            raise PipelineError(
+                "command has already been executed",
+                operation=f"pipeline.{self.command_name}.execute",
+            )
+        try:
+            log = self._apply()
+        except _FS_ERRORS as error:
+            raise _wrap_error(
+                error,
+                command=self.command_name,
+                path=getattr(self, self._execute_path_field),
+            ) from error
+        self._log = log
+        return log
 
-    @abstractmethod
     def undo(self) -> None:
         """Reverse a previously executed command.
 
         Raises:
             PipelineError: When the command has not run or cannot be reversed.
         """
+        if self._log is None:
+            raise PipelineError(
+                "cannot undo a command that has not been executed",
+                operation=f"pipeline.{self.command_name}.undo",
+            )
+        try:
+            self._revert(self._log)
+        except _FS_ERRORS as error:
+            raise _wrap_error(
+                error,
+                command=self.command_name,
+                path=getattr(self, self._undo_path_field),
+                undo=True,
+            ) from error
+        self._log = None
 
-    @abstractmethod
     def to_dict(self) -> dict[str, object]:
         """Serialize the command to a JSON-friendly dict.
 
         Returns:
-            Declarative command parameters keyed by ``command`` type name.
+            Declarative command parameters keyed by ``command`` type name, with
+            one entry per dataclass field in declaration order.
         """
+        payload: dict[str, object] = {"command": self.command_name}
+        for spec in fields(self):
+            if not spec.init:
+                continue
+            value = getattr(self, spec.name)
+            if isinstance(value, Path):
+                payload[spec.name] = str(value)
+            elif isinstance(value, BackupOptions):
+                payload[spec.name] = _backup_to_dict(value)
+            else:
+                payload[spec.name] = value
+        return payload
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> Command:
@@ -98,9 +156,202 @@ class Command(ABC):
         return command_type._from_dict(data)
 
     @classmethod
-    @abstractmethod
     def _from_dict(cls, data: dict[str, object]) -> Command:
-        """Build a concrete command from its serialized fields."""
+        """Build a concrete command from its serialized fields.
+
+        Field values are decoded by annotation: ``Path`` fields are required
+        strings, ``backup`` fields accept bools or backup-option dicts, and
+        remaining fields fall back to their dataclass defaults.
+
+        Raises:
+            PipelineError: When a required path field is missing.
+        """
+        kwargs: dict[str, object] = {}
+        for spec in fields(cls):
+            if not spec.init:
+                continue
+            default = None if spec.default is MISSING else spec.default
+            if spec.type == "Path":
+                kwargs[spec.name] = Path(_require_str(data, spec.name))
+            elif spec.type == "bool | BackupOptions":
+                kwargs[spec.name] = _backup_from_dict(data.get(spec.name, default))
+            else:
+                kwargs[spec.name] = bool(data.get(spec.name, default))
+        return cls(**kwargs)
+
+    @abstractmethod
+    def _apply(self) -> OperationLog:
+        """Perform the filesystem mutation and return its operation log."""
+
+    @abstractmethod
+    def _revert(self, log: OperationLog) -> None:
+        """Reverse the filesystem mutation recorded in ``log``."""
+
+
+@dataclass(slots=True)
+class _TransferCommand(Command):
+    """Base for commands that transfer content from a source to a destination.
+
+    Args:
+        source: Existing path to transfer.
+        destination: Destination path to create or replace.
+        backup: Backup configuration used when overwriting the destination.
+    """
+
+    _execute_path_field: ClassVar[str] = "source"
+    _undo_path_field: ClassVar[str] = "destination"
+
+    source: Path
+    destination: Path
+    backup: bool | BackupOptions = True
+
+
+@dataclass(slots=True)
+class MoveFile(_TransferCommand):
+    """Move a file, directory, or symlink to a new location.
+
+    Args:
+        source: Existing path to move.
+        destination: Destination path to create or replace.
+        backup: Backup configuration used when overwriting the destination.
+    """
+
+    command_name: ClassVar[str] = "move_file"
+
+    def _apply(self) -> OperationLog:
+        """Move ``source`` onto ``destination``."""
+        return atomic_move(
+            source=self.source,
+            destination=self.destination,
+            backup=self.backup,
+        )
+
+    def _revert(self, log: OperationLog) -> None:
+        """Move ``destination`` back to ``source`` and restore any overwrite."""
+        atomic_move(
+            source=self.destination,
+            destination=self.source,
+            backup=False,
+        )
+        if log.backups:
+            restore_backup(
+                backup_path=log.backups[0],
+                destination=self.destination,
+            )
+
+
+@dataclass(slots=True)
+class CopyFile(_TransferCommand):
+    """Copy a file, directory, or symlink to a new location.
+
+    Args:
+        source: Existing path to copy.
+        destination: Destination path to create or replace.
+        backup: Backup configuration used when overwriting the destination.
+    """
+
+    command_name: ClassVar[str] = "copy_file"
+
+    def _apply(self) -> OperationLog:
+        """Copy ``source`` onto ``destination``."""
+        return atomic_copy(
+            source=self.source,
+            destination=self.destination,
+            backup=self.backup,
+        )
+
+    def _revert(self, log: OperationLog) -> None:
+        """Remove the copied destination and restore any overwritten content."""
+        if log.backups:
+            restore_backup(
+                backup_path=log.backups[0],
+                destination=self.destination,
+            )
+        else:
+            atomic_delete(self.destination, backup=False)
+
+
+@dataclass(slots=True)
+class DeleteFile(Command):
+    """Delete a file, directory, or symlink, retaining a backup for undo.
+
+    Args:
+        path: Existing path to delete.
+        backup: Backup configuration. A backup is required for :meth:`undo`.
+    """
+
+    command_name: ClassVar[str] = "delete_file"
+
+    path: Path
+    backup: bool | BackupOptions = True
+
+    def _apply(self) -> OperationLog:
+        """Delete ``path`` after staging a backup."""
+        return atomic_delete(self.path, backup=self.backup)
+
+    def _revert(self, log: OperationLog) -> None:
+        """Restore the deleted path from its backup.
+
+        Raises:
+            PipelineError: When no backup was retained for the delete.
+        """
+        if not log.backups:
+            raise PipelineError(
+                "cannot undo delete without a retained backup",
+                operation=f"pipeline.{self.command_name}.undo",
+                file_path=self.path,
+            )
+        restore_backup(
+            backup_path=log.backups[0],
+            destination=self.path,
+        )
+
+
+@dataclass(slots=True)
+class CreateDirectory(Command):
+    """Create a directory, tracking created directories for undo.
+
+    Args:
+        path: Directory path to create.
+        parents: Whether missing parent directories should be created.
+        exist_ok: Whether an existing directory should be accepted.
+    """
+
+    command_name: ClassVar[str] = "create_directory"
+
+    path: Path
+    parents: bool = True
+    exist_ok: bool = False
+
+    def _apply(self) -> OperationLog:
+        """Create ``path`` and record the directories that were created."""
+        return atomic_mkdir(
+            path=self.path,
+            parents=self.parents,
+            exist_ok=self.exist_ok,
+        )
+
+    def _revert(self, log: OperationLog) -> None:
+        """Remove directories created by :meth:`execute`, leaf first.
+
+        Raises:
+            PipelineError: When a created directory is not empty and therefore
+                cannot be safely removed.
+        """
+        for created in reversed(log.created_paths):
+            if not created.is_dir():
+                continue
+            try:
+                created.rmdir()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise _wrap_error(
+                    error,
+                    command=self.command_name,
+                    path=created,
+                    undo=True,
+                ) from error
 
 
 def _backup_to_dict(backup: bool | BackupOptions) -> object:
@@ -144,393 +395,6 @@ def _require_str(data: dict[str, object], key: str) -> str:
             details={"data": dict(data)},
         )
     return value
-
-
-@dataclass(slots=True)
-class MoveFile(Command):
-    """Move a file, directory, or symlink to a new location.
-
-    Args:
-        source: Existing path to move.
-        destination: Destination path to create or replace.
-        backup: Backup configuration used when overwriting the destination.
-    """
-
-    command_name: ClassVar[str] = "move_file"
-
-    source: Path
-    destination: Path
-    backup: bool | BackupOptions = True
-    _log: OperationLog | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
-    def execute(self) -> OperationLog:
-        """Move ``source`` onto ``destination``.
-
-        Returns:
-            Structured log entry for the move.
-
-        Raises:
-            PipelineError: When the move fails or the command already ran.
-        """
-        _reject_reexecution(self._log, command=self.command_name)
-        try:
-            log = atomic_move(
-                source=self.source,
-                destination=self.destination,
-                backup=self.backup,
-            )
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.source,
-            ) from error
-        self._log = log
-        return log
-
-    def undo(self) -> None:
-        """Move ``destination`` back to ``source`` and restore any overwrite.
-
-        Raises:
-            PipelineError: When the command has not run or cannot be reversed.
-        """
-        log = _require_execution(self._log, command=self.command_name)
-        try:
-            atomic_move(
-                source=self.destination,
-                destination=self.source,
-                backup=False,
-            )
-            _restore_first_backup(log, destination=self.destination)
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.destination,
-                undo=True,
-            ) from error
-        self._log = None
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize the move command."""
-        return {
-            "command": self.command_name,
-            "source": str(self.source),
-            "destination": str(self.destination),
-            "backup": _backup_to_dict(self.backup),
-        }
-
-    @classmethod
-    def _from_dict(cls, data: dict[str, object]) -> MoveFile:
-        """Rebuild a move command from serialized fields."""
-        return cls(
-            source=Path(_require_str(data, "source")),
-            destination=Path(_require_str(data, "destination")),
-            backup=_backup_from_dict(data.get("backup", True)),
-        )
-
-
-@dataclass(slots=True)
-class CopyFile(Command):
-    """Copy a file, directory, or symlink to a new location.
-
-    Args:
-        source: Existing path to copy.
-        destination: Destination path to create or replace.
-        backup: Backup configuration used when overwriting the destination.
-    """
-
-    command_name: ClassVar[str] = "copy_file"
-
-    source: Path
-    destination: Path
-    backup: bool | BackupOptions = True
-    _log: OperationLog | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
-    def execute(self) -> OperationLog:
-        """Copy ``source`` onto ``destination``.
-
-        Returns:
-            Structured log entry for the copy.
-
-        Raises:
-            PipelineError: When the copy fails or the command already ran.
-        """
-        _reject_reexecution(self._log, command=self.command_name)
-        try:
-            log = atomic_copy(
-                source=self.source,
-                destination=self.destination,
-                backup=self.backup,
-            )
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.source,
-            ) from error
-        self._log = log
-        return log
-
-    def undo(self) -> None:
-        """Remove the copied destination and restore any overwritten content.
-
-        Raises:
-            PipelineError: When the command has not run or cannot be reversed.
-        """
-        log = _require_execution(self._log, command=self.command_name)
-        try:
-            if log.backups:
-                restore_backup(
-                    backup_path=log.backups[0],
-                    destination=self.destination,
-                )
-            else:
-                atomic_delete(self.destination, backup=False)
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.destination,
-                undo=True,
-            ) from error
-        self._log = None
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize the copy command."""
-        return {
-            "command": self.command_name,
-            "source": str(self.source),
-            "destination": str(self.destination),
-            "backup": _backup_to_dict(self.backup),
-        }
-
-    @classmethod
-    def _from_dict(cls, data: dict[str, object]) -> CopyFile:
-        """Rebuild a copy command from serialized fields."""
-        return cls(
-            source=Path(_require_str(data, "source")),
-            destination=Path(_require_str(data, "destination")),
-            backup=_backup_from_dict(data.get("backup", True)),
-        )
-
-
-@dataclass(slots=True)
-class DeleteFile(Command):
-    """Delete a file, directory, or symlink, retaining a backup for undo.
-
-    Args:
-        path: Existing path to delete.
-        backup: Backup configuration. A backup is required for :meth:`undo`.
-    """
-
-    command_name: ClassVar[str] = "delete_file"
-
-    path: Path
-    backup: bool | BackupOptions = True
-    _log: OperationLog | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
-    def execute(self) -> OperationLog:
-        """Delete ``path`` after staging a backup.
-
-        Returns:
-            Structured log entry for the delete.
-
-        Raises:
-            PipelineError: When the delete fails or the command already ran.
-        """
-        _reject_reexecution(self._log, command=self.command_name)
-        try:
-            log = atomic_delete(self.path, backup=self.backup)
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.path,
-            ) from error
-        self._log = log
-        return log
-
-    def undo(self) -> None:
-        """Restore the deleted path from its backup.
-
-        Raises:
-            PipelineError: When the command has not run or no backup exists.
-        """
-        log = _require_execution(self._log, command=self.command_name)
-        if not log.backups:
-            raise PipelineError(
-                "cannot undo delete without a retained backup",
-                operation=f"pipeline.{self.command_name}.undo",
-                file_path=self.path,
-            )
-        try:
-            restore_backup(
-                backup_path=log.backups[0],
-                destination=self.path,
-            )
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.path,
-                undo=True,
-            ) from error
-        self._log = None
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize the delete command."""
-        return {
-            "command": self.command_name,
-            "path": str(self.path),
-            "backup": _backup_to_dict(self.backup),
-        }
-
-    @classmethod
-    def _from_dict(cls, data: dict[str, object]) -> DeleteFile:
-        """Rebuild a delete command from serialized fields."""
-        return cls(
-            path=Path(_require_str(data, "path")),
-            backup=_backup_from_dict(data.get("backup", True)),
-        )
-
-
-@dataclass(slots=True)
-class CreateDirectory(Command):
-    """Create a directory, tracking created directories for undo.
-
-    Args:
-        path: Directory path to create.
-        parents: Whether missing parent directories should be created.
-        exist_ok: Whether an existing directory should be accepted.
-    """
-
-    command_name: ClassVar[str] = "create_directory"
-
-    path: Path
-    parents: bool = True
-    exist_ok: bool = False
-    _log: OperationLog | None = field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
-    def execute(self) -> OperationLog:
-        """Create ``path`` and record the directories that were created.
-
-        Returns:
-            Structured log entry for the mkdir.
-
-        Raises:
-            PipelineError: When the directory cannot be created or already ran.
-        """
-        _reject_reexecution(self._log, command=self.command_name)
-        try:
-            log = atomic_mkdir(
-                path=self.path,
-                parents=self.parents,
-                exist_ok=self.exist_ok,
-            )
-        except (FileSystemOperationError, OSError, shutil.Error) as error:
-            raise _wrap_error(
-                error,
-                command=self.command_name,
-                path=self.path,
-            ) from error
-        self._log = log
-        return log
-
-    def undo(self) -> None:
-        """Remove directories created by :meth:`execute`, leaf first.
-
-        Raises:
-            PipelineError: When the command has not run or a directory is not
-                empty and therefore cannot be safely removed.
-        """
-        log = _require_execution(self._log, command=self.command_name)
-        for created in reversed(log.created_paths):
-            if not created.is_dir():
-                continue
-            try:
-                created.rmdir()
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                raise _wrap_error(
-                    error,
-                    command=self.command_name,
-                    path=created,
-                    undo=True,
-                ) from error
-        self._log = None
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize the create-directory command."""
-        return {
-            "command": self.command_name,
-            "path": str(self.path),
-            "parents": self.parents,
-            "exist_ok": self.exist_ok,
-        }
-
-    @classmethod
-    def _from_dict(cls, data: dict[str, object]) -> CreateDirectory:
-        """Rebuild a create-directory command from serialized fields."""
-        return cls(
-            path=Path(_require_str(data, "path")),
-            parents=bool(data.get("parents", True)),
-            exist_ok=bool(data.get("exist_ok", False)),
-        )
-
-
-def _reject_reexecution(log: OperationLog | None, *, command: str) -> None:
-    """Reject executing a command that already applied an operation.
-
-    Raises:
-        PipelineError: When the command has already been executed.
-    """
-    if log is not None:
-        raise PipelineError(
-            "command has already been executed",
-            operation=f"pipeline.{command}.execute",
-        )
-
-
-def _require_execution(log: OperationLog | None, *, command: str) -> OperationLog:
-    """Return the operation log for an executed command.
-
-    Raises:
-        PipelineError: When the command has not been executed.
-    """
-    if log is None:
-        raise PipelineError(
-            "cannot undo a command that has not been executed",
-            operation=f"pipeline.{command}.undo",
-        )
-    return log
-
-
-def _restore_first_backup(log: OperationLog, *, destination: Path) -> None:
-    """Restore the first recorded backup to a destination when present."""
-    if log.backups:
-        restore_backup(backup_path=log.backups[0], destination=destination)
 
 
 def _wrap_error(
