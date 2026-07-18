@@ -10,6 +10,7 @@ class HashAlgorithm(StrEnum):
 
     MD5 = auto()
     SHA256 = auto()
+    AHASH = auto()
     PHASH = auto()
     DHASH = auto()
     WHASH = auto()
