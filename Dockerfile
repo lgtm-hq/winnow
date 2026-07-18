@@ -11,9 +11,11 @@
 # -----------------------------------------------------------------------------
 # Stage: builder — install deps into .venv with uv
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+# Renovate manages digest bumps for pinned base images.
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc \
+    /uv /usr/local/bin/uv
 
 ENV UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy
@@ -29,7 +31,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage: runtime — slim Python runtime, non-root, entrypoint winnow
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim
+FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
 
 LABEL org.opencontainers.image.description="Winnow — organize and deduplicate your media library."
 
@@ -43,7 +45,8 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 
-RUN useradd --create-home --no-log-init --uid 1001 --user-group winnow
+RUN useradd --create-home --no-log-init --uid 1001 --user-group winnow && \
+    chown -R winnow:winnow /app
 
 USER winnow
 

@@ -50,6 +50,7 @@ jobs:
       validate-on-pr: true
       scan: true
       scan-exit-code: '0'
+      cache-registry-ref: ghcr.io/lgtm-hq/winnow:cache
       provenance: true
       sbom: true
       cosign-sign: true
@@ -57,6 +58,9 @@ jobs:
       egress-policy: block
       egress-preset: docker
       allowed-endpoints-mode: replace
+      # Full list (replace mode): docker preset baseline + pypi/astral for uv
+      # build + sigstore for cosign + trivy hosts (get.trivy.dev installer;
+      # ghcr.io/mirror.gcr.io/public.ecr.aws for vulnerability DB).
       allowed-endpoints: >
         github.com:443
         api.github.com:443
@@ -81,3 +85,6 @@ jobs:
         tuf-repo-cdn.sigstore.dev:443
         timestamp.sigstore.dev:443
         oauth2.sigstore.dev:443
+        get.trivy.dev:443
+        mirror.gcr.io:443
+        public.ecr.aws:443
