@@ -17,12 +17,13 @@ import pytest
 from assertpy import assert_that
 
 from winnow.exceptions import MediaError
-from winnow.media.video import _parse_frame_rate as parse_frame_rate
 from winnow.media.video import (
+    _parse_ffprobe_output,
     extract_frame,
     extract_video_metadata,
     ffprobe_available,
 )
+from winnow.media.video import _parse_frame_rate as parse_frame_rate
 
 _WHICH_TARGET = "winnow.media.video.shutil.which"
 _RUN_TARGET = "winnow.media.video.subprocess.run"
@@ -332,3 +333,28 @@ def test_extract_frame_wraps_mkdir_oserror(
     monkeypatch.setattr(Path, "mkdir", boom)
     with pytest.raises(MediaError, match="destination directory"):
         extract_frame(video, destination, timestamp_seconds=0.0)
+
+
+def test_extract_video_metadata_falls_back_past_na_stream_values() -> None:
+    """ffprobe "N/A" stream values fall back to container-level fields."""
+    payload = json.dumps(
+        {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1280,
+                    "height": 720,
+                    "duration": "N/A",
+                    "bit_rate": "N/A",
+                    "avg_frame_rate": "30/1",
+                },
+            ],
+            "format": {"duration": "12.5", "bit_rate": "800000"},
+        },
+    )
+
+    metadata = _parse_ffprobe_output(payload=payload, path=Path("clip.mkv"))
+
+    assert_that(metadata.duration_seconds).is_equal_to(12.5)
+    assert_that(metadata.bitrate).is_equal_to(800000)

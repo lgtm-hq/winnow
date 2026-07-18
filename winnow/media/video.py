@@ -263,10 +263,10 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
     container: dict[str, object] = data.get("format", {})
 
     duration = coerce_non_negative_float(
-        video_stream.get("duration") or container.get("duration")
+        _first_available(video_stream.get("duration"), container.get("duration")),
     )
     bitrate = coerce_non_negative_int(
-        video_stream.get("bit_rate") or container.get("bit_rate"),
+        _first_available(video_stream.get("bit_rate"), container.get("bit_rate")),
         via_float=True,
     )
     codec = video_stream.get("codec_name")
@@ -279,6 +279,26 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
         bitrate=bitrate,
         frame_rate=_parse_frame_rate(video_stream.get("avg_frame_rate")),
     )
+
+
+def _first_available(*values: object) -> object:
+    """Return the first ffprobe value that is present and usable.
+
+    ffprobe reports missing stream-level fields as the literal string
+    ``"N/A"``, which is truthy and would otherwise mask a real value in the
+    container-level fallback.
+
+    Args:
+        values: Candidate values in priority order.
+
+    Returns:
+        The first value that is neither None nor ``"N/A"``, or None.
+    """
+    for value in values:
+        if value is None or value == "N/A":
+            continue
+        return value
+    return None
 
 
 def _parse_frame_rate(value: object) -> float | None:
