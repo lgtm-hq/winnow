@@ -106,6 +106,7 @@ class HashCache:
             CacheError: If the database or its parent directory is unavailable.
         """
         target = _IN_MEMORY if self._in_memory else str(self._db_path)
+        connection: sqlite3.Connection | None = None
         try:
             if not self._in_memory:
                 self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +115,8 @@ class HashCache:
                 connection.execute("PRAGMA journal_mode=WAL")
             return connection
         except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
             raise CacheError(
                 "Unable to open hash cache database",
                 operation="cache.connect",
