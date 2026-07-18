@@ -1,12 +1,10 @@
 # CLI Reference
 
-This document covers every command and option available on the current Winnow
-CLI surface, plus the standard flag conventions that all future subcommands
-will follow.
+This document covers every command and option available on the current Winnow CLI
+surface, plus the standard flag conventions that all future subcommands will follow.
 
-> **Status:** Pre-alpha. Only the root command (`winnow`) ships today.
-> Subcommands are tracked in
-> [open issues](https://github.com/lgtm-hq/winnow/issues) (see the parent
+> **Status:** Pre-alpha. Only the root command (`winnow`) ships today. Subcommands are
+> tracked in [open issues](https://github.com/lgtm-hq/winnow/issues) (see the parent
 > epic at [#2](https://github.com/lgtm-hq/winnow/issues/2)).
 
 ---
@@ -15,8 +13,8 @@ will follow.
 
 ### `winnow`
 
-Root command. When invoked without a subcommand it prints the current version
-and exits with code 0.
+Root command. When invoked without a subcommand it prints the current version and exits
+with code 0.
 
 #### Usage
 
@@ -26,28 +24,30 @@ winnow [OPTIONS] COMMAND [ARGS]...
 
 #### Options
 
-| Flag         | Description                  |
-| ------------ | ---------------------------- |
-| `--version`  | Show the version and exit.   |
-| `--no-color` | Disable colored output.      |
-| `--help`     | Show this message and exit.  |
+| Flag         | Description                 |
+| ------------ | --------------------------- |
+| `--version`  | Show the version and exit.  |
+| `--no-color` | Disable colored output.     |
+| `--help`     | Show this message and exit. |
 
 #### Examples
 
 ```bash
-winnow              # winnow 0.7.0 — use --help for commands.
-winnow --version    # winnow, version 0.7.0
+winnow              # winnow X.Y.Z — use --help for commands.
+winnow --version    # winnow, version X.Y.Z
 winnow --help       # show available options
 ```
+
+The version shown is illustrative; the CLI prints the installed `winnow-media` version.
 
 ---
 
 ## Standard Flag Conventions
 
-`winnow/cli/standards.py` defines reusable Click option factories that every
-upcoming subcommand will use. The sections below document each flag and the
-composite decorators that group them, so contributors pick the right factory
-and users know what to expect across the CLI.
+`winnow/cli/standards.py` defines reusable Click option factories that every upcoming
+subcommand will use. The sections below document each flag and the composite decorators
+that group them, so contributors pick the right factory and users know what to expect
+across the CLI.
 
 ### Individual options
 
@@ -67,16 +67,16 @@ and users know what to expect across the CLI.
 
 The cache group is applied as a unit via `cache_options()`:
 
-| Flag                              | Type    | Default | Description                    |
-| --------------------------------- | ------- | ------- | ------------------------------ |
-| `--enable-cache` / `--no-cache`   | flag    | `true`  | Enable or disable caching.     |
-| `--cache-path`                    | path    | none    | Cache directory path.          |
-| `--cache-ttl`                     | int ≥ 0 | none    | Cache time-to-live in seconds. |
+| Flag                            | Type    | Default | Description                    |
+| ------------------------------- | ------- | ------- | ------------------------------ |
+| `--enable-cache` / `--no-cache` | flag    | `true`  | Enable or disable caching.     |
+| `--cache-path`                  | path    | none    | Cache directory path.          |
+| `--cache-ttl`                   | int ≥ 0 | none    | Cache time-to-live in seconds. |
 
 ### Composite option groups
 
-Subcommands attach options through one of three compositor decorators defined
-in `winnow.cli.standards`:
+Subcommands attach options through one of three compositor decorators defined in
+`winnow.cli.standards`:
 
 | Compositor                   | Included options                      |
 | ---------------------------- | ------------------------------------- |
@@ -84,14 +84,19 @@ in `winnow.cli.standards`:
 | `reporting_command_options`  | standard + `--format`, `--output`     |
 | `processing_command_options` | standard + `--workers`, cache options |
 
+Note the usage asymmetry: the compositors above are applied directly
+(`@standard_command_options`) because they accept the callback, while the individual
+option factories are functions that must be **called** first to return a decorator
+(`@dry_run_option()`, `@yes_option()`).
+
 ---
 
 ## Adding a subcommand
 
-1. Choose the appropriate compositor from `winnow.cli.standards` and decorate
-   the callback (e.g. `@standard_command_options`).
+1. Choose the appropriate compositor from `winnow.cli.standards` and decorate the
+   callback (e.g. `@standard_command_options`).
 2. Register the command on `main` in `winnow/cli/__init__.py` via
    `main.add_command(your_command)`.
 3. Use `--dry-run` for any write operation and `--yes` for destructive prompts.
-4. Read `ctx.obj["no_color"]` from the root context to honour the user's
-   colour output preference.
+4. Read `ctx.obj["no_color"]` from the root context to honour the user's colour output
+   preference.
