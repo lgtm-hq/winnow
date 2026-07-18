@@ -146,6 +146,7 @@ expectations.
 ## Documentation
 
 - [Contributing](CONTRIBUTING.md)
+- [CLI Reference](docs/cli-reference.md)
 - [Architecture ADRs](docs/adr/README.md)
 - [Security policy](SECURITY.md)
 - [Governance](GOVERNANCE.md)
