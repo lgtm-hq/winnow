@@ -33,14 +33,17 @@ def test_find_empty_directories_cascades_bottom_up(tmp_path: Path) -> None:
 
     result = find_empty_directories(tmp_path)
 
-    assert_that(result).is_equal_to(
-        [
-            tmp_path / "empty" / "nested" / "leaf",
-            tmp_path / "empty" / "nested",
-            tmp_path / "empty",
-            tmp_path / "empty2",
-        ],
+    assert_that(result).contains_only(
+        tmp_path / "empty" / "nested" / "leaf",
+        tmp_path / "empty" / "nested",
+        tmp_path / "empty",
+        tmp_path / "empty2",
     )
+    # os.walk guarantees children before parents but not sibling order, so
+    # assert only the child-before-parent invariant.
+    for index, path in enumerate(result):
+        for descendant in result[index + 1 :]:
+            assert_that(descendant.is_relative_to(path)).is_false()
 
 
 def test_find_empty_directories_preserves_populated_and_root(tmp_path: Path) -> None:
