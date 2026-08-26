@@ -21,6 +21,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.19.0] - 2026-08-26
+
+### Added
+
+- add org AI review via lgtm-ci reusable (#176) (127bf78)
+
+### Changed
+
+- **lint**: enforce module and function complexity budgets (#175) (5181b22)
+- **fs**: split transaction into per-operation modules (#174) (7da57a9)
+
 ## [0.18.0] - 2026-07-18
 
 ### Added
