@@ -26,7 +26,7 @@ jobs:
     # reusable skips them anyway.
     if: github.event.pull_request.head.repo.full_name == github.repository
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-ai-review.yml@b2254c69f9117457b3232fabf1d2ae640a5f6a08 # v0.68.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-ai-review.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
     permissions:
       # Checkout + PR diff. Posting uses the lintro-review App
       # token minted inside the reusable. actions: read lets
@@ -44,4 +44,4 @@ jobs:
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
     with:
-      tooling-ref: 'b2254c69f9117457b3232fabf1d2ae640a5f6a08' # v0.68.0
+      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6

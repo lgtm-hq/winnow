@@ -31,6 +31,19 @@ make fmt     # uv run lintro fmt
 make test    # pytest with 85% coverage gate
 ```
 
+### CI tooling pins
+
+The workflows in `.github/workflows/` call reusables from
+[lgtm-ci](https://github.com/lgtm-hq/lgtm-ci). Those pins are bumped manually, not by
+Renovate: every `uses:` and `tooling-ref:` line moves together to the same commit SHA in
+one PR, with a `# vX.Y.Z` comment naming the release. Before opening the PR, check that
+exactly one SHA remains:
+
+```bash
+grep -rhoE "lgtm-ci[^@]*@[0-9a-f]{40}|tooling-ref: '[0-9a-f]{40}'" .github/workflows \
+  | grep -oE "[0-9a-f]{40}" | sort -u
+```
+
 ## Commits and Pull Requests
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/) in PR titles
