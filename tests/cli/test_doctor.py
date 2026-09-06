@@ -15,6 +15,7 @@ from winnow.cli.commands.doctor import (
     CheckResult,
     CheckStatus,
     check_cache_dir,
+    check_data_dir,
     check_ffmpeg,
     check_optional_extras,
     check_python_version,
@@ -272,3 +273,40 @@ def test_doctor_command_respects_no_color(
     result = CliRunner().invoke(main, ["--no-color", "doctor"])
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).does_not_contain("\x1b[")
+
+
+def test_check_data_dir_passes_for_writable_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The data directory row reflects ``WINNOW_DATA_DIR`` and passes when writable."""
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(tmp_path))
+    result = check_data_dir()
+    assert_that(result.name).is_equal_to("Data directory")
+    assert_that(result.status).is_equal_to(CheckStatus.PASS)
+    assert_that(result.detail).contains(str(tmp_path), "WINNOW_DATA_DIR")
+
+
+def test_check_data_dir_warns_when_uncreatable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing data directory warns when its parent cannot be written."""
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(tmp_path / "nested" / "data"))
+    monkeypatch.setattr(doctor_module, "_directory_is_writable", lambda _: False)
+    result = check_data_dir()
+    assert_that(result.status).is_equal_to(CheckStatus.WARN)
+    assert_that(result.detail).contains("cannot be created")
+
+
+def test_run_checks_includes_data_dir_after_cache_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report lists the data directory row right after the cache row."""
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(doctor_module, "find_config_path", lambda: None)
+    names = [result.name for result in run_checks()]
+    assert_that(names.index("Data directory")).is_equal_to(
+        names.index("Cache directory") + 1,
+    )
