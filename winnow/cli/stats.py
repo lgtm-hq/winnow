@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 import click
 from rich.table import Table
 
-from winnow.cli.rendering import console_from_context, format_size, format_timestamp
+from winnow.cli.console import console_from_context
+from winnow.cli.rendering import format_size, format_timestamp
 from winnow.media.registry import DEFAULT_FORMAT_REGISTRY, FormatRegistry
 from winnow.models.media import MediaType
 
