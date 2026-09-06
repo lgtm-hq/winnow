@@ -21,6 +21,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.20.1] - 2026-09-06
+
+### Changed
+
+- **deps**: remove the empty cv optional extra and its doctor probe (#205) (054359c)
+
+### Fixed
+
+- **config**: drop dead cache TTL/size settings and open the hash cache from config
+  (#206) (76129ab)
+
 ## [0.20.0] - 2026-09-06
 
 ### Added
