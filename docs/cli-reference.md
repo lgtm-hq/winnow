@@ -66,6 +66,49 @@ Both `--dry-run` and the success message resolve the same target: the explicit
 `--config` path, else the discovered configuration file, else the working-directory
 default.
 
+### `winnow cache`
+
+Inspects and manages the perceptual-hash cache database (`cache.db` under
+`cache.directory`). The database is never created by these commands: when the file
+does not exist they print `no cache database at <path>` and exit 0.
+
+#### `winnow cache show`
+
+Prints a `Cache` table with one `hash` row (entry count) and a footer
+`Database: <path> (<size>)`. Hit rate is not shown because the counters are
+per-process. Without a database the row reads `0`.
+
+| Flag            | Description                 |
+| --------------- | --------------------------- |
+| `--config FILE` | Path to configuration file. |
+
+#### `winnow cache clear`
+
+Removes every cached entry.
+
+| Flag            | Description                                                |
+| --------------- | ---------------------------------------------------------- |
+| `--dry-run`     | Print `Would remove N entries.` without deleting anything. |
+| `--yes`, `-y`   | Skip the `Remove N cached entries?` prompt.                |
+| `--config FILE` | Path to configuration file.                                |
+
+An empty cache prints `Nothing to remove.`; a declined prompt prints `Aborted.` and
+exits 0; success prints `Removed N entries.`
+
+#### `winnow cache prune`
+
+Removes entries whose source files no longer exist.
+
+| Flag            | Description                                                   |
+| --------------- | ------------------------------------------------------------- |
+| `--dry-run`     | List each stale path, then `N stale entries (dry run).`       |
+| `--yes`, `-y`   | Skip the `Prune N stale entries?` prompt.                     |
+| `--config FILE` | Path to configuration file.                                   |
+
+No stale entries prints `No stale entries.`; a declined prompt prints `Aborted.` and
+exits 0; success prints `Pruned N entries.` (`N` counts rows, so a path cached under
+several algorithms removes more rows than the prompt's path count).
+
 ---
 
 ## Standard Flag Conventions
@@ -146,9 +189,9 @@ apart.
 | 2    | Usage error: bad flag, missing argument, unknown command                                                                            | Click                                                               |
 | 130  | Interrupted by Ctrl-C                                                                                                               | `WinnowGroup.invoke`                                                |
 
-Declined prompts split by how the command asks: `clean` and the REPL print `Aborted.`
-and return (0); `config reset` and `init` use `click.confirm(..., abort=True)`, so a
-decline is Click's `Abort` and exits 1.
+Declined prompts split by how the command asks: `clean`, `cache clear`, `cache prune`,
+and the REPL print `Aborted.` and return (0); `config reset` and `init` use
+`click.confirm(..., abort=True)`, so a decline is Click's `Abort` and exits 1.
 
 Use the `ExitCode` enum from `winnow.cli.errors` rather than bare integers when a
 command needs to report a failure itself (for example `doctor` exiting with
