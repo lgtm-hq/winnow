@@ -27,6 +27,19 @@ def test_winnow_config_defaults() -> None:
     assert_that(config.paths).is_instance_of(PathSettings)
 
 
+def test_cache_settings_fields_are_enabled_and_directory() -> None:
+    """CacheSettings exposes only the fields the cache implementation reads."""
+    assert_that(set(CacheSettings.model_fields)).is_equal_to({"enabled", "directory"})
+
+
+def test_cache_settings_rejects_removed_ttl_field() -> None:
+    """Stale ``ttl_seconds``/``max_size_mb`` keys fail validation loudly."""
+    with pytest.raises(ValidationError):
+        CacheSettings(ttl_seconds=1)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        CacheSettings(max_size_mb=1)  # type: ignore[call-arg]
+
+
 def test_winnow_config_validation() -> None:
     """WinnowConfig validates similarity bounds and source directories."""
     config = WinnowConfig(

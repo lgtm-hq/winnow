@@ -17,8 +17,6 @@ class CacheSettings(BaseModel):
 
     enabled: bool = True
     directory: Path = Field(default_factory=lambda: Path.home() / ".cache" / "winnow")
-    max_size_mb: int = Field(default=1024, ge=1)
-    ttl_seconds: int = Field(default=604_800, ge=0)
 
 
 class PathSettings(BaseModel):
