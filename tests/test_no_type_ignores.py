@@ -16,10 +16,17 @@ _MARKER = "type: " + "ignore"
 
 def test_no_type_ignore_comments() -> None:
     """No file under winnow/ or tests/ contains a mypy suppression comment."""
-    offenders = [
-        f"{path}:{lineno}"
+    py_files = [
+        path
         for directory in ("winnow", "tests")
         for path in sorted((_REPO_ROOT / directory).rglob("*.py"))
+    ]
+    assert_that(py_files).described_as(
+        f"expected Python files under {_REPO_ROOT}",
+    ).is_not_empty()
+    offenders = [
+        f"{path}:{lineno}"
+        for path in py_files
         for lineno, line in enumerate(path.read_text().splitlines(), start=1)
         if _MARKER in line
     ]
