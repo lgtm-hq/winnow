@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
+from types import ModuleType
+
 import click
 import pytest
 from assertpy import assert_that
 
+import winnow.cli.console
 from winnow.cli.console import (
     StatusLevel,
     console_from_context,
@@ -62,6 +66,42 @@ def test_console_from_context_defaults_to_color_when_unset(
     ctx = click.Context(click.Command("winnow"))
     console = console_from_context(ctx)
     assert_that(console.no_color).is_false()
+
+
+def test_console_from_context_defaults_to_color_without_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A context whose object is ``None`` yields a colored console."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    ctx = click.Context(click.Command("winnow"), obj=None)
+    console = console_from_context(ctx)
+    assert_that(console.no_color).is_false()
+
+
+# ``winnow.cli`` re-exports the ``stats``/``info``/``clean`` Click commands under
+# the same names as their modules, so resolve the modules explicitly.
+_COMMAND_MODULES: list[ModuleType] = [
+    importlib.import_module("winnow.cli.stats"),
+    importlib.import_module("winnow.cli.info"),
+    importlib.import_module("winnow.cli.clean"),
+]
+
+
+@pytest.mark.parametrize(
+    "command_module",
+    _COMMAND_MODULES,
+    ids=["stats", "info", "clean"],
+)
+def test_command_modules_use_shared_console_factory(
+    command_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Commands bind the single console factory, so ``NO_COLOR`` is honored."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    factory = command_module.console_from_context
+    assert_that(factory).is_same_as(winnow.cli.console.console_from_context)
+    ctx = click.Context(click.Command("winnow"))
+    assert_that(factory(ctx).no_color).is_true()
 
 
 def test_status_text_applies_level_style() -> None:

@@ -9,6 +9,14 @@ from winnow.media.image import (
     generate_thumbnail,
     heif_supported,
     read_exif,
+    read_maker_note_tags,
+)
+from winnow.media.inventory import (
+    DirectoryStats,
+    FileInfo,
+    collect_directory_stats,
+    inspect_file,
+    iter_regular_files,
 )
 from winnow.media.registry import (
     DEFAULT_FORMAT_REGISTRY,
@@ -20,11 +28,17 @@ from winnow.media.registry import (
     media_type_for_extension,
     normalize_extension,
 )
+from winnow.media.service import (
+    DefaultMetadataService,
+    MetadataService,
+    create_metadata_service,
+)
 from winnow.media.video import (
     extract_frame,
     extract_video_metadata,
     ffmpeg_available,
     ffprobe_available,
+    read_video_tags,
 )
 
 __all__ = [
@@ -32,8 +46,14 @@ __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
     "RAW_IMAGE_MIME_TYPES",
+    "DefaultMetadataService",
+    "DirectoryStats",
+    "FileInfo",
     "FormatRegistry",
+    "MetadataService",
     "create_default_format_registry",
+    "collect_directory_stats",
+    "create_metadata_service",
     "detect_media_type",
     "extract_audio_metadata",
     "extract_frame",
@@ -43,8 +63,12 @@ __all__ = [
     "ffprobe_available",
     "generate_thumbnail",
     "heif_supported",
+    "inspect_file",
+    "iter_regular_files",
     "media_type_for_extension",
     "normalize_extension",
     "read_audio_tags",
     "read_exif",
+    "read_maker_note_tags",
+    "read_video_tags",
 ]

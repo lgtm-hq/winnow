@@ -253,6 +253,18 @@ class ImageHasher:
             operation="configure_hasher",
         )
 
+    @property
+    def cache_algorithm(self) -> str:
+        """Identity string for the hash cache.
+
+        Combines the algorithm name and edge length, for example
+        ``"phash:8"``, so hashes of different sizes never share a cache key.
+
+        Returns:
+            Stable hasher identity satisfying :class:`PerceptualHasher`.
+        """
+        return f"{self.algorithm.value}:{self.hash_size}"
+
     def hash(self, image: Image.Image) -> PerceptualHash:
         """Compute the perceptual hash of an in-memory image.
 
