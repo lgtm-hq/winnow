@@ -72,8 +72,9 @@ class SagaStore:
         Raises:
             SagaError: ``MSG_LOCKED`` when another connection holds the write
                 lock past :data:`CONNECT_TIMEOUT`; ``MSG_WRITE_FAILED`` for
-                any other :class:`sqlite3.Error`. The transaction is rolled
-                back in both cases.
+                any other :class:`sqlite3.Error`. Any other exception raised
+                inside the block propagates unchanged. The transaction is
+                rolled back in every case so the write lock is released.
         """
         connection = self._require_connection(operation)
         try:
@@ -81,9 +82,11 @@ class SagaStore:
             yield connection
             connection.execute("COMMIT;")
         except sqlite3.Error as error:
-            if connection.in_transaction:
-                connection.execute("ROLLBACK;")
+            _rollback(connection)
             raise _wrap_sqlite_error(error, operation=operation) from error
+        except BaseException:
+            _rollback(connection)
+            raise
 
     def query(
         self,
@@ -204,6 +207,16 @@ def _open(path: Path | str) -> sqlite3.Connection:
         connection.close()
         raise _wrap_sqlite_error(error, operation="__init__") from error
     return connection
+
+
+def _rollback(connection: sqlite3.Connection) -> None:
+    """Roll back the open transaction, if any, releasing the write lock.
+
+    Args:
+        connection: Connection whose transaction should be discarded.
+    """
+    if connection.in_transaction:
+        connection.execute("ROLLBACK;")
 
 
 def _wrap_sqlite_error(error: sqlite3.Error, *, operation: str) -> SagaError:

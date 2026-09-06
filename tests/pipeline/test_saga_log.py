@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -454,6 +455,32 @@ def test_failed_write_rolls_back_and_wraps(
     )
     assert_that(error.value.__cause__).is_instance_of(sqlite3.Error)
     assert_that(saga_log.list_commands("ghost")).is_empty()
+
+
+def test_non_sqlite_error_in_transaction_releases_write_lock(
+    saga_log: SagaLog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-``sqlite3`` exception inside a write rolls back and unlocks."""
+    session_id = _new_session(saga_log, tmp_path)
+
+    def _boom(*args: object, **kwargs: object) -> str:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(json, "dumps", _boom)
+    with pytest.raises(ValueError, match="boom"):
+        saga_log.append_command(session_id=session_id, command=_move(tmp_path, "a"))
+    monkeypatch.undo()
+
+    connection = saga_log._store._connection  # noqa: SLF001
+    assert_that(connection).is_not_none()
+    if connection is None:  # pragma: no cover - guarded above
+        pytest.fail("expected an open connection")
+    assert_that(connection.in_transaction).is_false()
+    assert_that(
+        saga_log.append_command(session_id=session_id, command=_move(tmp_path, "b")),
+    ).is_greater_than(0)
 
 
 def test_context_manager_closes_log(db_path: Path, tmp_path: Path) -> None:
