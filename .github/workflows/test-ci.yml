@@ -30,6 +30,8 @@ jobs:
       python-versions: '3.11,3.12,3.13'
       test-path: tests
       coverage: false
+      # Overrides addopts to drop '-m "not integration"': CI runs the full
+      # suite; locally integration tests are opt-in (make test-integration).
       extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
       job-name: '🧪 Python Compatibility'
@@ -58,6 +60,8 @@ jobs:
       coverage-format: json
       coverage-threshold: 85
       upload-coverage: true
+      # Overrides addopts to drop '-m "not integration"': CI runs the full
+      # suite; locally integration tests are opt-in (make test-integration).
       extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
       job-name: Python Coverage
