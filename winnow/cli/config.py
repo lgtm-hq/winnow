@@ -16,7 +16,6 @@ from winnow.config import (
     set_config_value,
     validate_config,
 )
-from winnow.exceptions import ConfigError
 
 __all__ = ["config"]
 
@@ -66,12 +65,9 @@ def show(
         config_path: Explicit configuration file path.
 
     Raises:
-        ClickException: If the configuration cannot be loaded.
+        ConfigError: If the configuration cannot be loaded.
     """
-    try:
-        config_model = load_config(config_path=config_path)
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+    config_model = load_config(config_path=config_path)
 
     if output_format == "json":
         click.echo(json.dumps(config_model.model_dump(mode="json"), indent=2))
@@ -97,16 +93,13 @@ def set_value(
         config_path: Explicit configuration file path.
 
     Raises:
-        ClickException: If the key or value is rejected by validation.
+        ConfigError: If the key or value is rejected by validation.
     """
-    try:
-        set_config_value(
-            key=key,
-            value=_parse_value(value),
-            config_path=config_path,
-        )
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+    set_config_value(
+        key=key,
+        value=_parse_value(value),
+        config_path=config_path,
+    )
 
     target = config_path if config_path is not None else find_config_path()
     click.echo(f"Set {key} in {target}")
@@ -127,17 +120,14 @@ def reset(
         config_path: Explicit configuration file path.
 
     Raises:
-        ClickException: If the configuration cannot be written.
+        ConfigError: If the configuration cannot be written.
     """
     if not yes:
         click.confirm(
             "Reset configuration to defaults?",
             abort=True,
         )
-    try:
-        reset_config(config_path=config_path)
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+    reset_config(config_path=config_path)
 
     target = config_path if config_path is not None else find_config_path()
     click.echo(f"Reset configuration to defaults at {target}")
@@ -155,15 +145,12 @@ def validate(
         config_path: Explicit configuration file path.
 
     Raises:
-        ClickException: If the configuration is invalid.
+        ConfigError: If the configuration is invalid.
     """
     resolved = config_path if config_path is not None else find_config_path()
     if resolved is None:
         click.echo("No configuration file found; defaults are valid.")
         return
-    try:
-        validate_config(config_path=resolved)
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+    validate_config(config_path=resolved)
 
     click.echo(f"Configuration at {resolved} is valid.")

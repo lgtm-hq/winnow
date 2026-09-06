@@ -24,6 +24,7 @@ from rich.console import Console
 from rich.table import Table
 
 from winnow.cli.console import StatusLevel, console_from_context, status_text
+from winnow.cli.errors import ExitCode
 from winnow.config import find_config_path, load_config
 from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
@@ -336,4 +337,4 @@ def doctor_command(ctx: click.Context) -> None:
     results = run_checks()
     render_report(console, results)
     if any(result.status is CheckStatus.FAIL for result in results):
-        ctx.exit(1)
+        ctx.exit(ExitCode.FAILURE)
