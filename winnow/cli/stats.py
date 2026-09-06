@@ -162,6 +162,8 @@ def build_stats_table(directory: Path, directory_stats: DirectoryStats) -> Table
 def stats(ctx: click.Context, *, directory: Path, recursive: bool) -> None:
     """Summarize the media files under DIRECTORY.
 
+    \f
+
     Args:
         ctx: Active Click context carrying shared options.
         directory: Directory to summarize.

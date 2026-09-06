@@ -197,6 +197,8 @@ def build_info_table(file_info: FileInfo) -> Table:
 def info(ctx: click.Context, *, file: Path) -> None:
     """Show metadata for a single media FILE.
 
+    \f
+
     Args:
         ctx: Active Click context carrying shared options.
         file: Media file to inspect.
