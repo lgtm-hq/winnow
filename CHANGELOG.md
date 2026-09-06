@@ -21,6 +21,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.26.0] - 2026-09-06
+
+### Added
+
+- **hash**: PerceptualHasher protocol + cache key identity (#39 PR A) (#220) (7763e24)
+
+### Changed
+
+- **cli**: move clean/info/stats domain logic into winnow.fs and winnow.media (#229)
+  (aa4baa7)
+
 ## [0.25.0] - 2026-09-06
 
 ### Added
