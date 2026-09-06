@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.24.0] - 2026-09-06
+
+### Added
+
+- **classify**: special-folder route resolver (#69 PR A) (#211) (83a2e8e)
+
 ## [0.23.0] - 2026-09-06
 
 ### Added
