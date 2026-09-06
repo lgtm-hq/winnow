@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from winnow.media.audio import extract_audio_metadata, read_audio_tags
+from winnow.media.c2pa import (
+    AI_SOURCE_TYPE_MARKERS,
+    manifest_declares_ai_source,
+    read_c2pa_manifest,
+)
 from winnow.media.image import (
     DEFAULT_THUMBNAIL_SIZE,
     extract_image_metadata,
@@ -35,6 +40,7 @@ from winnow.media.video import (
 )
 
 __all__ = [
+    "AI_SOURCE_TYPE_MARKERS",
     "DEFAULT_FORMATS",
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
@@ -53,9 +59,11 @@ __all__ = [
     "ffprobe_available",
     "generate_thumbnail",
     "heif_supported",
+    "manifest_declares_ai_source",
     "media_type_for_extension",
     "normalize_extension",
     "read_audio_tags",
+    "read_c2pa_manifest",
     "read_exif",
     "read_maker_note_tags",
     "read_video_tags",
