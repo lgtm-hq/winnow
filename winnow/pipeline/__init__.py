@@ -27,6 +27,7 @@ from winnow.pipeline.events import (
 )
 from winnow.pipeline.state import RunState
 from winnow.pipeline.step import Step
+from winnow.pipeline.steps import DiscoveryStep
 
 __all__ = [
     "Command",
@@ -44,4 +45,5 @@ __all__ = [
     "StepIssue",
     "StepProgress",
     "StepStarted",
+    "DiscoveryStep",
 ]
