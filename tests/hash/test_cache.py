@@ -232,6 +232,21 @@ def test_distinct_algorithms_coexist(cache: HashCache, tmp_path: Path) -> None:
     assert_that(cache.stats().entry_count).is_equal_to(2)
 
 
+def test_distinct_hash_sizes_coexist(cache: HashCache, tmp_path: Path) -> None:
+    """Hasher identities differing only by hash size are distinct keys."""
+    media = tmp_path / "photo.jpg"
+    _write_media(media)
+    small_key = CacheKey.from_file(path=media, algorithm="phash:8")
+    large_key = CacheKey.from_file(path=media, algorithm="phash:16")
+
+    cache.set(key=small_key, digest="digest-8")
+    cache.set(key=large_key, digest="digest-16")
+
+    assert_that(cache.get(key=small_key)).is_equal_to("digest-8")
+    assert_that(cache.get(key=large_key)).is_equal_to("digest-16")
+    assert_that(cache.stats().entry_count).is_equal_to(2)
+
+
 def test_set_many_and_get_many(cache: HashCache, tmp_path: Path) -> None:
     """Batch writes are visible through batch reads."""
     entries = []
