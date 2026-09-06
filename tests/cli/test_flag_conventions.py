@@ -87,6 +87,10 @@ def _long_flags(command: click.Command) -> set[str]:
 
 _COMMANDS = _walk(main)
 _IDS = [name for name, _ in _COMMANDS]
+# Root group included: every rule except the root-only ``--no-color`` rule
+# applies to ``winnow`` itself as much as to its subcommands.
+_ALL_COMMANDS = [("winnow", main), *_COMMANDS]
+_ALL_IDS = [name for name, _ in _ALL_COMMANDS]
 _TABLE_NAMES = sorted(_DESTRUCTIVE | _YES_ONLY | set(_FORMAT_EXCEPTIONS))
 
 
@@ -98,13 +102,13 @@ def test_no_color_is_root_only(name: str, command: click.Command) -> None:
     )
 
 
-@pytest.mark.parametrize(("name", "command"), _COMMANDS, ids=_IDS)
+@pytest.mark.parametrize(("name", "command"), _ALL_COMMANDS, ids=_ALL_IDS)
 def test_no_command_declares_force(name: str, command: click.Command) -> None:
     """Rule 2: ``--force`` is never used; ``--yes`` is the confirmation skip."""
     assert_that(_long_flags(command)).described_as(name).does_not_contain("--force")
 
 
-@pytest.mark.parametrize(("name", "command"), _COMMANDS, ids=_IDS)
+@pytest.mark.parametrize(("name", "command"), _ALL_COMMANDS, ids=_ALL_IDS)
 def test_destructive_commands_pair_dry_run_with_yes(
     name: str,
     command: click.Command,
@@ -117,7 +121,7 @@ def test_destructive_commands_pair_dry_run_with_yes(
         assert_that(flags).described_as(name).contains("--dry-run")
 
 
-@pytest.mark.parametrize(("name", "command"), _COMMANDS, ids=_IDS)
+@pytest.mark.parametrize(("name", "command"), _ALL_COMMANDS, ids=_ALL_IDS)
 def test_format_choices_match_standard(name: str, command: click.Command) -> None:
     """Rule 4: ``--format`` uses ``FORMAT_CHOICES`` unless listed as an exception."""
     if name in _FORMAT_EXCEPTIONS:
@@ -133,7 +137,7 @@ def test_format_choices_match_standard(name: str, command: click.Command) -> Non
         assert_that(choices).described_as(name).is_equal_to(FORMAT_CHOICES)
 
 
-@pytest.mark.parametrize(("name", "command"), _COMMANDS, ids=_IDS)
+@pytest.mark.parametrize(("name", "command"), _ALL_COMMANDS, ids=_ALL_IDS)
 def test_standard_flags_carry_short_alias(
     name: str,
     command: click.Command,
