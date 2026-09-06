@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from assertpy import assert_that
 
@@ -86,6 +88,7 @@ def test_with_services_unknown_slot_raises() -> None:
 def test_context_is_frozen() -> None:
     """The context is immutable to prevent accidental mutation during a run."""
     context = PipelineContext.from_config(WinnowConfig())
+    field_name = "hasher"
 
-    with pytest.raises(AttributeError):
-        context.hasher = object()  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        setattr(context, field_name, object())
