@@ -89,3 +89,32 @@ def test_media_metadata_rejects_negative_stream_fields() -> None:
     """MediaMetadata rejects negative frame rate, sample rate, and channels."""
     with pytest.raises(ValidationError):
         MediaMetadata(frame_rate=-1, sample_rate=-1, channels=-1)
+
+
+def test_media_file_live_photo_id_defaults_to_none() -> None:
+    """MediaFile.live_photo_id is None unless set."""
+    media_file = MediaFile(
+        path=Path("/photos/IMG_0001.HEIC"),
+        media_type=MediaType.IMAGE,
+        creation_date=datetime(2024, 1, 1, tzinfo=UTC),
+        extension=".heic",
+        size_bytes=1024,
+    )
+
+    assert_that(media_file.live_photo_id).is_none()
+
+
+def test_media_file_live_photo_id_round_trips() -> None:
+    """MediaFile.live_photo_id validates and survives a JSON round-trip."""
+    media_file = MediaFile(
+        path=Path("/photos/IMG_0001.HEIC"),
+        media_type=MediaType.IMAGE,
+        creation_date=datetime(2024, 1, 1, tzinfo=UTC),
+        extension=".heic",
+        size_bytes=1024,
+        live_photo_id="x",
+    )
+
+    restored = MediaFile.model_validate_json(media_file.model_dump_json())
+
+    assert_that(restored.live_photo_id).is_equal_to("x")
