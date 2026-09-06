@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.20.0] - 2026-09-06
+
+### Added
+
+- **report**: add a stepwise SQLite schema migration runner shared by all stores (#203)
+  (94971aa)
+
 ## [0.19.1] - 2026-09-06
 
 ### Changed
