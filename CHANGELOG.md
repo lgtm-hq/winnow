@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.22.0] - 2026-09-06
+
+### Added
+
+- **media**: metadata extraction service (#36 PR A) (#207) (eef88e9)
+
 ## [0.21.0] - 2026-09-06
 
 ### Added
