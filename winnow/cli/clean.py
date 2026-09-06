@@ -135,6 +135,8 @@ def clean(
 ) -> None:
     """Remove empty directories under DIRECTORY.
 
+    \f
+
     Args:
         ctx: Active Click context carrying shared options.
         directory: Root directory to prune.

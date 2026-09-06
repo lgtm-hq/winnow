@@ -25,8 +25,8 @@ duplicating them. Key non-obvious notes:
   tools (ruff, black, mypy, bandit, pydoclint, yamllint) run locally and must stay
   clean. Note markdownlint enforces an 88-char line limit (MD013) on Markdown files.
 - Tests: `make test` runs unit tests with an 85% coverage gate (integration excluded by
-  default via `-m "not integration"` in `pyproject.toml`). `make test-integration`
-  builds a wheel with `uv build` and runs
+  default locally via `-m "not integration"` in `pyproject.toml`, always run in CI).
+  `make test-integration` builds a wheel with `uv build` and runs
   `scripts/ci/release/smoke-test-distribution.sh` (needs `bash`).
 - The CLI is an early-stage skeleton: only `winnow`, `winnow --help`, and
   `winnow --version` exist; there are no media-processing subcommands yet.

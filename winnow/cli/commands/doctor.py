@@ -39,7 +39,6 @@ MINIMUM_PYTHON_VERSION = (3, 11)
 
 _OPTIONAL_EXTRAS: dict[str, tuple[str, ...]] = {
     "face": ("face_recognition",),
-    "cv": ("cv2",),
     "ai-detect": ("onnxruntime",),
 }
 
@@ -324,6 +323,8 @@ def render_report(console: Console, results: Iterable[CheckResult]) -> None:
 @click.pass_context
 def doctor_command(ctx: click.Context) -> None:
     """Diagnose the local environment for running Winnow.
+
+    \f
 
     Args:
         ctx: Active Click context carrying root option state.
