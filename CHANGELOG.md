@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.25.0] - 2026-09-06
+
+### Added
+
+- **pipeline**: step contract — Step, RunState, StepEvents, OrganizeSettings (#53 PR A)
+  (#215) (db4851e)
+
 ## [0.24.0] - 2026-09-06
 
 ### Added
