@@ -131,6 +131,18 @@ def test_check_optional_extras_warns_when_missing(
     assert_that(statuses).is_equal_to({CheckStatus.WARN})
 
 
+def test_optional_extras_do_not_include_cv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The removed ``cv`` extra is no longer probed by ``winnow doctor``."""
+    monkeypatch.setattr(
+        "winnow.cli.commands.doctor.importlib.util.find_spec",
+        lambda _: None,
+    )
+    names = [result.name for result in check_optional_extras()]
+    assert_that(names).does_not_contain("Extra: cv")
+
+
 def test_check_optional_extras_passes_when_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

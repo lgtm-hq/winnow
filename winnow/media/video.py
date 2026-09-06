@@ -109,6 +109,67 @@ def extract_video_metadata(path: Path) -> MediaMetadata:
     return _parse_ffprobe_output(payload=completed.stdout, path=path)
 
 
+def read_video_tags(path: Path) -> dict[str, str]:
+    """Read container-level tags from a video file using ffprobe.
+
+    Returns the ``format.tags`` mapping reported by ``ffprobe -show_format``
+    with lower-cased keys. The call never raises for a readable file: a missing
+    ffprobe, a non-zero exit, unparseable output, or an absent ``tags`` block
+    all degrade to an empty mapping.
+
+    Args:
+        path: Filesystem path to the video.
+
+    Returns:
+        Mapping of lower-cased tag key to its stringified value. Empty when
+        ffprobe is missing, cannot be launched, times out, exits non-zero, or
+        reports no tags.
+
+    Raises:
+        MediaError: If the path is not a file.
+    """
+    if not path.is_file():
+        raise MediaError(
+            "video file does not exist",
+            operation="read_video_tags",
+            file_path=path,
+        )
+
+    binary = shutil.which(_FFPROBE)
+    if binary is None:
+        logger.debug("ffprobe not found; returning no tags for {}", path)
+        return {}
+
+    argv = [
+        binary,
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        str(path),
+    ]
+    try:
+        completed = _run(
+            argv=argv,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            operation="read_video_tags",
+            path=path,
+        )
+    except MediaError as exc:
+        logger.debug("ffprobe could not run for {}: {}", path, exc)
+        return {}
+    if completed.returncode != 0:
+        logger.debug(
+            "ffprobe failed to read tags for {}: {}",
+            path,
+            completed.stderr.strip(),
+        )
+        return {}
+
+    return _parse_format_tags(payload=completed.stdout, path=path)
+
+
 def extract_frame(
     path: Path,
     destination: Path,
@@ -279,6 +340,30 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
         bitrate=bitrate,
         frame_rate=_parse_frame_rate(video_stream.get("avg_frame_rate")),
     )
+
+
+def _parse_format_tags(*, payload: str, path: Path) -> dict[str, str]:
+    """Extract ``format.tags`` from ffprobe JSON output.
+
+    Args:
+        payload: Raw JSON string emitted by ffprobe.
+        path: Media path used in debug logging.
+
+    Returns:
+        Lower-cased tag mapping, or an empty mapping when the payload cannot be
+        decoded or carries no tags.
+    """
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        logger.debug("could not parse ffprobe tag output for {}: {}", path, exc)
+        return {}
+
+    container = data.get("format", {}) if isinstance(data, dict) else {}
+    tags = container.get("tags", {}) if isinstance(container, dict) else {}
+    if not isinstance(tags, dict):
+        return {}
+    return {str(key).lower(): str(value) for key, value in tags.items()}
 
 
 def _first_available(*values: object) -> object:

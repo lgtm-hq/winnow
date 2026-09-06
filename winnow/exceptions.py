@@ -130,6 +130,14 @@ class ReportError(WinnowError):
     """Raised when report database schema or persistence operations fail."""
 
 
+class StorageError(WinnowError):
+    """Raised for SQLite schema and versioning failures.
+
+    Shared by the report, saga log, and jobs stores through
+    :mod:`winnow.storage`; each store wraps it in its own domain error.
+    """
+
+
 __all__ = [
     "CacheError",
     "ConfigError",
@@ -140,5 +148,6 @@ __all__ = [
     "PipelineError",
     "ReportError",
     "SecurityError",
+    "StorageError",
     "WinnowError",
 ]

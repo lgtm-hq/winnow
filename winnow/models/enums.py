@@ -54,7 +54,24 @@ class FileAction(StrEnum):
 
 
 class SymlinkPolicy(StrEnum):
-    """Symlink handling policies for media discovery."""
+    """Symlink handling policies shared by configuration and path validation.
+
+    :class:`~winnow.security.path_validator.PathValidator` treats the policy as
+    binary: it either follows a symlink or refuses to traverse it. The
+    difference between ``SKIP`` and ``ERROR`` is what the caller does after a
+    refusal.
+
+    Attributes:
+        SKIP: Refuse to traverse symlinks. ``PathValidator`` raises
+            :class:`~winnow.exceptions.SecurityError`; the caller skips the
+            path silently.
+        FOLLOW: Resolve symlinks and validate the real target against the
+            allowed roots. ``PathValidator`` permits the symlink as long as
+            its target stays inside a configured root.
+        ERROR: Refuse to traverse symlinks. ``PathValidator`` raises
+            :class:`~winnow.exceptions.SecurityError`; the caller records an
+            error for the path.
+    """
 
     SKIP = auto()
     FOLLOW = auto()

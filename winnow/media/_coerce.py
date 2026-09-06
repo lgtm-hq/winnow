@@ -7,9 +7,16 @@ mapping missing or invalid inputs to ``None`` instead of raising.
 
 from __future__ import annotations
 
+import math
+
+_Numeric = int | float | str
+
 
 def coerce_non_negative_int(value: object, *, via_float: bool = False) -> int | None:
     """Coerce a value into a non-negative integer.
+
+    Only ``int``, ``float``, and ``str`` inputs are considered; booleans and
+    non-finite values are rejected.
 
     Args:
         value: Raw backend field value.
@@ -21,14 +28,11 @@ def coerce_non_negative_int(value: object, *, via_float: bool = False) -> int | 
     Returns:
         Parsed integer, or ``None`` when missing, invalid, or negative.
     """
-    if value is None:
+    if not isinstance(value, _Numeric) or isinstance(value, bool):
         return None
     try:
-        if via_float:
-            parsed = int(float(value))  # type: ignore[arg-type]
-        else:
-            parsed = int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+        parsed = int(float(value)) if via_float else int(value)
+    except (TypeError, ValueError, OverflowError):
         return None
     return parsed if parsed >= 0 else None
 
@@ -36,16 +40,22 @@ def coerce_non_negative_int(value: object, *, via_float: bool = False) -> int | 
 def coerce_non_negative_float(value: object) -> float | None:
     """Coerce a value into a non-negative float.
 
+    Only ``int``, ``float``, and ``str`` inputs are considered; booleans and
+    non-finite values (``nan``, ``inf``) are rejected.
+
     Args:
         value: Raw backend field value.
 
     Returns:
-        Parsed float, or ``None`` when missing, invalid, or negative.
+        Parsed float, or ``None`` when missing, invalid, negative, or
+        non-finite.
     """
-    if value is None:
+    if not isinstance(value, _Numeric) or isinstance(value, bool):
         return None
     try:
-        parsed = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed):
         return None
     return parsed if parsed >= 0 else None

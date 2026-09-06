@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Protocol
 import click
 from rich.table import Table
 
-from winnow.cli.rendering import console_from_context, format_size, format_timestamp
+from winnow.cli.console import console_from_context
+from winnow.cli.rendering import format_size, format_timestamp
 from winnow.media.registry import (
     DEFAULT_FORMAT_REGISTRY,
     FormatRegistry,
@@ -196,6 +197,8 @@ def build_info_table(file_info: FileInfo) -> Table:
 @click.pass_context
 def info(ctx: click.Context, *, file: Path) -> None:
     """Show metadata for a single media FILE.
+
+    \f
 
     Args:
         ctx: Active Click context carrying shared options.

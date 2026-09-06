@@ -15,6 +15,7 @@ from rich.table import Table
 from rich.text import Text
 
 from winnow.cli.console import console_from_context, print_error
+from winnow.cli.errors import ExitCode
 
 __all__ = ["help_command"]
 
@@ -69,7 +70,7 @@ def _render_command_help(
             f"Unknown command: {command_name}",
             suggestion="Run 'winnow help' to list available commands.",
         )
-        ctx.exit(2)
+        ctx.exit(ExitCode.USAGE)
         return
     command_ctx = click.Context(command, info_name=command_name, parent=ctx.find_root())
     console.print(
@@ -86,6 +87,8 @@ def _render_command_help(
 @click.pass_context
 def help_command(ctx: click.Context, command_name: str | None) -> None:
     """Show Rich-formatted help for Winnow or a specific command.
+
+    \f
 
     Args:
         ctx: Active Click context carrying root option state.

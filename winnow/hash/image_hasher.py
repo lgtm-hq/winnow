@@ -22,6 +22,7 @@ import imagehash
 from PIL import Image, UnidentifiedImageError
 
 from winnow.exceptions import HashError
+from winnow.hash.digest import hamming_distance
 from winnow.models.enums import HashAlgorithm
 
 if TYPE_CHECKING:
@@ -105,56 +106,6 @@ def _validate_hash_parameters(
             operation=operation,
             details={"hash_size": hash_size},
         )
-
-
-def _decode_hash(digest: str) -> imagehash.ImageHash:
-    """Decode a hexadecimal digest into an :class:`imagehash.ImageHash`.
-
-    Args:
-        digest: Hexadecimal string produced by a perceptual hash.
-
-    Returns:
-        Reconstructed hash usable for Hamming-distance comparison.
-
-    Raises:
-        HashError: If ``digest`` is not valid hexadecimal hash data.
-    """
-    try:
-        return imagehash.hex_to_hash(digest)
-    except (ValueError, TypeError) as error:
-        raise HashError(
-            "invalid perceptual hash digest",
-            operation="decode_hash",
-            details={"digest": digest},
-        ) from error
-
-
-def hamming_distance(left: str, right: str) -> int:
-    """Return the Hamming distance between two serialized hash digests.
-
-    Args:
-        left: Hexadecimal digest of the first hash.
-        right: Hexadecimal digest of the second hash.
-
-    Returns:
-        Number of differing bits between the two hashes.
-
-    Raises:
-        HashError: If either digest is invalid or the two hashes have
-            incompatible shapes.
-    """
-    if len(left) != len(right):
-        raise HashError(
-            "cannot compare perceptual hashes of different sizes",
-            operation="hamming_distance",
-            details={
-                "left_bits": len(left) * 4,
-                "right_bits": len(right) * 4,
-            },
-        )
-    left_hash = _decode_hash(left)
-    right_hash = _decode_hash(right)
-    return int(left_hash - right_hash)
 
 
 @dataclass(frozen=True, slots=True)
