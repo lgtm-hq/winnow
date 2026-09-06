@@ -169,6 +169,7 @@ class ConnectionManager:
             raise ReportError(
                 MSG_PROVISION_FAILED,
                 operation="apply_schema",
+                details=error.context.details,
             ) from error
 
     def schema_version(self) -> int:

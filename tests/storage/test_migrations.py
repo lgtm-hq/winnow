@@ -175,6 +175,30 @@ def test_failed_baseline_rolls_back(connection: sqlite3.Connection) -> None:
 
     assert_that(exc_info.value.context.details["version"]).is_equal_to(2)
     assert_that(read_schema_version(connection)).is_equal_to(0)
+    tables = [
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table';",
+        )
+    ]
+    assert_that(tables).is_empty()
+
+
+def test_corrupt_version_table_raises_storage_error(
+    connection: sqlite3.Connection,
+) -> None:
+    """A ``schema_version`` table without a ``version`` column is a StorageError."""
+    connection.execute("CREATE TABLE schema_version (v INTEGER);")
+
+    with pytest.raises(StorageError, match="could not read schema version") as exc:
+        apply_schema(
+            connection,
+            baseline=BASELINE,
+            migrations=(),
+            target_version=2,
+        )
+
+    assert_that(exc.value.__cause__).is_instance_of(sqlite3.Error)
 
 
 def test_newer_database_is_rejected(v2_connection: sqlite3.Connection) -> None:

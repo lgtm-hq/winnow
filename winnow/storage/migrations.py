@@ -23,6 +23,7 @@ MSG_MIGRATION_GAP = "no migration for schema version"
 MSG_MIGRATION_FAILED = "failed to apply schema migration"
 MSG_BASELINE_FAILED = "failed to apply schema baseline"
 MSG_TRANSACTION_OPEN = "apply_schema requires no open transaction"
+MSG_VERSION_READ_FAILED = "could not read schema version"
 
 _INSERT_VERSION = "INSERT INTO schema_version (version) VALUES (?);"
 
@@ -82,7 +83,9 @@ def apply_schema(
       migration.
     - ``current > target_version``: raise.
 
-    Migration ordering and coverage are validated before anything executes.
+    Migration ordering is validated before anything executes; gap coverage is
+    validated on the upgrade path (``0 < current < target_version``) before
+    any migration runs. A fresh database runs only ``baseline``.
     The connection must not have a transaction open: every step commits or
     rolls back on its own, so an outer transaction would be committed or
     rolled back together with the step.
@@ -98,6 +101,7 @@ def apply_schema(
 
     Raises:
         StorageError: If ``connection`` has a transaction open, if the stored
+            version cannot be read, if the stored
             version is newer than ``target_version``, if ``migrations`` is not
             strictly ascending or misses a version in
             ``current + 1 .. target_version``, or if a statement fails (the
@@ -106,7 +110,10 @@ def apply_schema(
     if connection.in_transaction:
         raise StorageError(MSG_TRANSACTION_OPEN, operation=OPERATION)
     _validate_ordering(migrations)
-    current = read_schema_version(connection)
+    try:
+        current = read_schema_version(connection)
+    except sqlite3.Error as error:
+        raise StorageError(MSG_VERSION_READ_FAILED, operation=OPERATION) from error
     if current == target_version:
         return current
     if current > target_version:
