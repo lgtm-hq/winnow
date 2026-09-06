@@ -183,6 +183,17 @@ def test_load_config_wraps_invalid_config_errors(tmp_path: Path) -> None:
     assert_that(str(error.value)).contains("validate_config")
 
 
+def test_load_config_rejects_removed_cache_keys(tmp_path: Path) -> None:
+    """A config file still setting ``cache.ttl_seconds`` fails loudly."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("cache:\n  ttl_seconds: 60\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        load_config(config_path=config_path, load_env=False)
+
+    assert_that(str(error.value)).contains("validate_config")
+
+
 def test_generate_default_config_writes_first_run_file(tmp_path: Path) -> None:
     """Verify default config generation writes a loadable YAML file."""
     config_path = generate_default_config(cwd=tmp_path)
