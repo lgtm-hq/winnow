@@ -28,9 +28,11 @@ jobs:
       egress-policy: block
       egress-preset: sbom
     permissions:
-      # write: attach SBOM to release assets (grant predates lgtm-ci v0.69.6,
-      # where reusable-sbom dropped contents:write; also covers checkout)
-      contents: write
+      # read: checkout only. Verified against reusable-sbom @ v0.69.6
+      # (f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f): no job in that file
+      # requests contents:write (lgtm-ci #770 moved release-asset upload
+      # to reusable-sbom-release-upload.yml).
+      contents: read
       # write: upload vulnerability findings to the Security tab
       security-events: write
       # write: OIDC token for SBOM attestation signing
