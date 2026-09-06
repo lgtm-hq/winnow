@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from assertpy import assert_that
-from PIL import Image
+from PIL import ExifTags, Image
 
 from winnow.exceptions import MediaError
 from winnow.media import image as image_module
@@ -17,6 +17,7 @@ from winnow.media.image import (
     generate_thumbnail,
     heif_supported,
     read_exif,
+    read_maker_note_tags,
 )
 
 _STANDARD_IMAGES: list[tuple[str, str]] = [
@@ -297,3 +298,37 @@ def test_extract_image_metadata_reads_exif_once(
     extract_image_metadata(raw_path)
 
     assert_that(calls).is_length(1)
+
+
+def test_read_maker_note_tags_empty_without_maker_note(fixtures_dir: Path) -> None:
+    """A JPEG with EXIF but no MakerNote yields an empty mapping."""
+    assert_that(read_maker_note_tags(fixtures_dir / "sample.jpg")).is_equal_to({})
+
+
+def test_read_maker_note_tags_missing_file_degrades(tmp_path: Path) -> None:
+    """A missing file degrades to an empty mapping."""
+    assert_that(read_maker_note_tags(tmp_path / "missing.jpg")).is_equal_to({})
+
+
+def test_read_maker_note_tags_reads_apple_note(tmp_path: Path) -> None:
+    """A synthetic Apple MakerNote is decoded with the prefix stripped."""
+    uuid = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
+    payload = uuid.encode("ascii") + b"\x00"
+    entry = struct.pack(">HHII", 0x0011, 2, len(payload), 2 + 12 + 4)
+    note = (
+        b"Apple iOS\x00"
+        + b"\x00\x01"
+        + b"MM"
+        + struct.pack(">H", 1)
+        + entry
+        + struct.pack(">I", 0)
+        + payload
+    )
+    exif = Image.Exif()
+    exif[0x010F] = "Apple"
+    exif[ExifTags.IFD.Exif] = {0x927C: note}
+    path = tmp_path / "live.jpg"
+    Image.new("RGB", (8, 8)).save(path, exif=exif)
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({"Tag 0x0011": uuid})
+    assert_that(read_exif(path)).does_not_contain_key("MakerNote Tag 0x0011")

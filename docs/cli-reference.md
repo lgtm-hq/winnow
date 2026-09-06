@@ -40,6 +40,47 @@ winnow --help       # show available options
 
 The version shown is illustrative; the CLI prints the installed `winnow-media` version.
 
+### `winnow init`
+
+Creates a configuration file through guided prompts.
+
+| Flag            | Description                                                     |
+| --------------- | --------------------------------------------------------------- |
+| `--yes`, `-y`   | Overwrite an existing configuration file without prompting.     |
+| `--config FILE` | Path to configuration file (defaults to the working directory). |
+
+`init` uses the standard `--yes` flag rather than a bespoke `--force`; without it the
+command asks before overwriting an existing file.
+
+### `winnow config reset`
+
+Resets the configuration file to validated defaults.
+
+| Flag            | Description                                                   |
+| --------------- | ------------------------------------------------------------- |
+| `--dry-run`     | Print `Would reset configuration to defaults at <path>` only. |
+| `--yes`, `-y`   | Skip the confirmation prompt.                                 |
+| `--config FILE` | Path to configuration file.                                   |
+
+Both `--dry-run` and the success message resolve the same target: the explicit
+`--config` path, else the discovered configuration file, else the working-directory
+default.
+
+---
+
+## Environment
+
+Winnow resolves its per-user directories from the environment at call time, in the order
+listed. Relative overrides are taken as given; `~` is expanded.
+
+| Variable            | Purpose                                           | Fallback                                              |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------------- |
+| `WINNOW_CONFIG_DIR` | Per-user config directory (`.winnow-config.yaml`) | `$XDG_CONFIG_HOME/winnow`, then `~/.config/winnow`    |
+| `WINNOW_DATA_DIR`   | Per-user data directory (`sessions.db` saga log)  | `$XDG_DATA_HOME/winnow`, then `~/.local/share/winnow` |
+
+`WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
+onto configuration fields, not directories.
+
 ---
 
 ## Standard Flag Conventions
@@ -71,6 +112,21 @@ The cache group is applied as a unit via `cache_options()`:
 | ------------------------------- | ---- | ------- | -------------------------- |
 | `--enable-cache` / `--no-cache` | flag | `true`  | Enable or disable caching. |
 | `--cache-path`                  | path | none    | Cache directory path.      |
+
+### Cross-command conventions
+
+| Convention        | Rule                                                                              |
+| ----------------- | --------------------------------------------------------------------------------- |
+| Confirmation skip | `--yes`/`-y` everywhere; never `--force`                                          |
+| Worker count      | `--workers`/`-w`; purpose-specific variants only when genuinely distinct          |
+| Cache toggle      | `--enable-cache/--no-cache`                                                       |
+| Output format     | `--format`/`-f` with `OutputFormat` choices; document dumps are listed exceptions |
+| Color             | `--no-color` on the root command only; subcommands read `ctx.obj["no_color"]`     |
+| Destructive ops   | `--dry-run` + confirmation unless `--yes`                                         |
+
+`tests/cli/test_flag_conventions.py` sweeps every registered command against these
+rules. New destructive commands or format exceptions register themselves in that
+module's tables (`_DESTRUCTIVE`, `_YES_ONLY`, `_FORMAT_EXCEPTIONS`).
 
 ### Composite option groups
 

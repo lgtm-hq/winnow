@@ -7,8 +7,9 @@ from pathlib import Path
 
 import click
 
-from winnow.cli.standards import config_path_option, yes_option
+from winnow.cli.standards import config_path_option, dry_run_option, yes_option
 from winnow.config import (
+    cwd_config_path,
     find_config_path,
     load_config,
     render_config_yaml,
@@ -110,10 +111,12 @@ def set_value(
 
 
 @config.command(name="reset")
+@dry_run_option()
 @yes_option()
 @config_path_option()
 def reset(
     *,
+    dry_run: bool,
     yes: bool,
     config_path: Path | None,
 ) -> None:
@@ -122,12 +125,17 @@ def reset(
     \f
 
     Args:
+        dry_run: Report the target file without writing anything.
         yes: Skip the confirmation prompt when true.
         config_path: Explicit configuration file path.
 
     Raises:
         ConfigError: If the configuration cannot be written.
     """
+    target = config_path or find_config_path() or cwd_config_path()
+    if dry_run:
+        click.echo(f"Would reset configuration to defaults at {target}")
+        return
     if not yes:
         click.confirm(
             "Reset configuration to defaults?",
@@ -135,7 +143,6 @@ def reset(
         )
     reset_config(config_path=config_path)
 
-    target = config_path if config_path is not None else find_config_path()
     click.echo(f"Reset configuration to defaults at {target}")
 
 
