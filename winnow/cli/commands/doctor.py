@@ -39,7 +39,6 @@ MINIMUM_PYTHON_VERSION = (3, 11)
 
 _OPTIONAL_EXTRAS: dict[str, tuple[str, ...]] = {
     "face": ("face_recognition",),
-    "cv": ("cv2",),
     "ai-detect": ("onnxruntime",),
 }
 
