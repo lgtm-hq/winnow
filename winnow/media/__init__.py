@@ -20,6 +20,11 @@ from winnow.media.registry import (
     media_type_for_extension,
     normalize_extension,
 )
+from winnow.media.service import (
+    DefaultMetadataService,
+    MetadataService,
+    create_metadata_service,
+)
 from winnow.media.video import (
     extract_frame,
     extract_video_metadata,
@@ -32,8 +37,11 @@ __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
     "RAW_IMAGE_MIME_TYPES",
+    "DefaultMetadataService",
     "FormatRegistry",
+    "MetadataService",
     "create_default_format_registry",
+    "create_metadata_service",
     "detect_media_type",
     "extract_audio_metadata",
     "extract_frame",
