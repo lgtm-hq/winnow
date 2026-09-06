@@ -2,6 +2,9 @@
 
 Files are classified with the format registry and aggregated into counts per
 media type, a total size, and the span of file modification times.
+
+``--recursive/--no-recursive`` is purpose-specific to this command and
+intentionally not part of ``winnow.cli.standards``.
 """
 
 from __future__ import annotations
