@@ -24,10 +24,11 @@ class ExitCode(IntEnum):
     """Process exit codes returned by the ``winnow`` command."""
 
     SUCCESS = 0
-    """The command completed, including "nothing to do" and declined prompts."""
+    """The command completed, including "nothing to do" and a decline it handles."""
 
     FAILURE = 1
-    """Any :class:`WinnowError` or a command-reported failure such as ``doctor``."""
+    """Any :class:`WinnowError`, a command-reported failure such as ``doctor``,
+    or a declined ``click.confirm(..., abort=True)`` prompt (Click's ``Abort``)."""
 
     USAGE = 2
     """A Click usage error: bad flag, missing argument, or unknown command."""

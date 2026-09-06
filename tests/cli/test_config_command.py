@@ -80,7 +80,7 @@ def test_config_reset_requires_confirmation(tmp_path: Path) -> None:
         input="n\n",
     )
 
-    assert_that(result.exit_code).is_not_equal_to(0)
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
     assert_that(config_path.read_text(encoding="utf-8")).contains("workers: 9")
 
 
