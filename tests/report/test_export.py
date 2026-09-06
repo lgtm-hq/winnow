@@ -162,6 +162,20 @@ def test_export_run_is_idempotent_with_run_id(
     assert_that(_row_counts(report_db)).is_equal_to(before)
 
 
+def test_export_run_with_unknown_run_id_raises_and_writes_nothing(
+    report_db: ReportDatabase,
+) -> None:
+    """Replacing a run that does not exist is an error, not an insert."""
+    export = RunExport(root_path=ROOT, files=[_media("a.jpg")])
+
+    with pytest.raises(ReportError) as exc_info:
+        export_run(report_db, export, run_id=999)
+
+    assert_that(exc_info.value.message).is_equal_to("run to replace does not exist")
+    assert_that(exc_info.value.context.details).is_equal_to({"run_id": 999})
+    assert_that(_row_counts(report_db)).is_equal_to(dict.fromkeys(TABLES, 0))
+
+
 def test_export_run_rolls_back_on_failure(
     report_db: ReportDatabase,
     sample_export: RunExport,
@@ -277,6 +291,71 @@ def test_unknown_group_member_raises_and_writes_nothing(
 
     assert_that(exc_info.value.context.operation).is_equal_to("export_run")
     assert_that(_row_counts(report_db)).is_equal_to(dict.fromkeys(TABLES, 0))
+
+
+def test_member_in_two_groups_raises_and_writes_nothing(
+    report_db: ReportDatabase,
+) -> None:
+    """A path that belongs to more than one group is rejected before writing."""
+    files = [_media("a.jpg"), _media("b.jpg"), _media("c.jpg")]
+    groups = [
+        DuplicateGroup(
+            group_number=1,
+            media_type=MediaType.IMAGE,
+            files=[files[0].path, files[1].path],
+        ),
+        DuplicateGroup(
+            group_number=2,
+            media_type=MediaType.IMAGE,
+            files=[files[1].path, files[2].path],
+        ),
+    ]
+
+    with pytest.raises(ReportError) as exc_info:
+        export_run(report_db, RunExport(root_path=ROOT, files=files, groups=groups))
+
+    assert_that(exc_info.value.message).is_equal_to(
+        "duplicate group member appears in more than one group",
+    )
+    assert_that(exc_info.value.context.details).is_equal_to({"group_number": 2})
+    assert_that(_row_counts(report_db)).is_equal_to(dict.fromkeys(TABLES, 0))
+
+
+def test_repeated_member_within_group_raises(report_db: ReportDatabase) -> None:
+    """A group listing the same path twice is rejected before writing."""
+    files = [_media("a.jpg"), _media("b.jpg")]
+    group = DuplicateGroup(
+        group_number=1,
+        media_type=MediaType.IMAGE,
+        files=[files[0].path, files[0].path],
+    )
+
+    with pytest.raises(ReportError):
+        export_run(report_db, RunExport(root_path=ROOT, files=files, groups=[group]))
+
+    assert_that(_row_counts(report_db)).is_equal_to(dict.fromkeys(TABLES, 0))
+
+
+def test_export_run_target_outside_group_has_no_best_file(
+    report_db: ReportDatabase,
+) -> None:
+    """A target path that is not a member never becomes ``best_file_id``."""
+    files = [_media("a.jpg"), _media("b.jpg"), _media("c.jpg")]
+    group = DuplicateGroup(
+        group_number=1,
+        media_type=MediaType.IMAGE,
+        files=[files[0].path, files[1].path],
+        target_path=files[2].path,
+    )
+
+    run_id = export_run(
+        report_db,
+        RunExport(root_path=ROOT, files=files, groups=[group]),
+    )
+
+    (stored_group,) = report_db.list_duplicate_groups(run_id)
+    assert_that(stored_group.best_file_id).is_none()
+    assert_that(stored_group.target_path).is_equal_to(str(files[2].path))
 
 
 def test_export_run_running_status_has_no_completed_at(

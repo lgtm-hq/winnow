@@ -21,6 +21,8 @@ from winnow.report.schema import TERMINAL_RUN_STATUSES
 if TYPE_CHECKING:
     from winnow.report.export import RunExport
 
+MSG_RUN_NOT_FOUND = "run to replace does not exist"
+
 _OPERATION = "export_run"
 _CHUNK_SIZE = 500
 _CREATION_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -92,10 +94,17 @@ def _insert_run(
         The identifier of the inserted run.
 
     Raises:
-        ReportError: If SQLite does not report a row id for the insert.
+        ReportError: If ``run_id`` names a run that does not exist, or SQLite
+            does not report a row id for the insert.
     """
     if run_id is not None:
         cursor.execute("DELETE FROM report_runs WHERE id = ?;", (run_id,))
+        if cursor.rowcount == 0:
+            raise ReportError(
+                MSG_RUN_NOT_FOUND,
+                operation=_OPERATION,
+                details={"run_id": run_id},
+            )
     cursor.execute(
         _INSERT_RUN,
         (
@@ -182,7 +191,8 @@ def _insert_groups(
             "UPDATE media_files SET group_id = ? WHERE id = ?;",
             [(group_id, file_ids[str(member)]) for member in group.files],
         )
-        best_file_id = None if target is None else file_ids.get(target)
+        members = {str(member) for member in group.files}
+        best_file_id = file_ids[target] if target in members else None
         if best_file_id is not None:
             cursor.execute(
                 "UPDATE duplicate_groups SET best_file_id = ? WHERE id = ?;",

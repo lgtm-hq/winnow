@@ -33,6 +33,7 @@ from winnow.report.schema import RunStatus
 
 MSG_DUPLICATE_PATH = "duplicate path in export"
 MSG_UNKNOWN_GROUP_MEMBER = "duplicate group member is not in export files"
+MSG_REPEATED_GROUP_MEMBER = "duplicate group member appears in more than one group"
 
 _OPERATION = "export_run"
 
@@ -69,10 +70,11 @@ def _validate(export: RunExport) -> None:
         export: Run facts to validate.
 
     Raises:
-        ReportError: If ``files`` repeats a path or a group references a path
-            that is not in ``files``.
+        ReportError: If ``files`` repeats a path, a group references a path
+            that is not in ``files``, or a path belongs to more than one group.
     """
     seen: set[str] = set()
+    grouped: set[str] = set()
     for media in export.files:
         key = str(media.path)
         if key in seen:
@@ -84,13 +86,22 @@ def _validate(export: RunExport) -> None:
         seen.add(key)
     for group in export.groups:
         for member in group.files:
-            if str(member) not in seen:
+            key = str(member)
+            if key not in seen:
                 raise ReportError(
                     MSG_UNKNOWN_GROUP_MEMBER,
                     operation=_OPERATION,
                     file_path=member,
                     details={"group_number": group.group_number},
                 )
+            if key in grouped:
+                raise ReportError(
+                    MSG_REPEATED_GROUP_MEMBER,
+                    operation=_OPERATION,
+                    file_path=member,
+                    details={"group_number": group.group_number},
+                )
+            grouped.add(key)
 
 
 def export_run(
@@ -115,8 +126,9 @@ def export_run(
         The identifier of the exported run.
 
     Raises:
-        ReportError: If the export is invalid or any statement fails; nothing
-            is written in either case.
+        ReportError: If the export is invalid, ``run_id`` names a run that
+            does not exist, or any statement fails; nothing is written in any
+            of these cases.
     """
     _validate(export)
     with database.transaction() as cursor:
