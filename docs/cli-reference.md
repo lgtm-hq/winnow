@@ -40,6 +40,33 @@ winnow --help       # show available options
 
 The version shown is illustrative; the CLI prints the installed `winnow-media` version.
 
+### `winnow live-photos`
+
+Reports Apple Live Photo pairs (a HEIC/JPEG still and a MOV clip sharing a content
+identifier) under a directory. Read-only; always exits 0 on a successful scan.
+
+```text
+winnow live-photos [OPTIONS] DIRECTORY
+```
+
+| Flag                             | Default | Description                              |
+| -------------------------------- | ------- | ---------------------------------------- |
+| `--recursive` / `--no-recursive` | `true`  | Include files in subdirectories.         |
+| `--unpaired`                     | `false` | List unpaired stills and videos instead. |
+| `--format`, `-f`                 | `table` | `table` or `json`; other choices exit 2. |
+
+The default table lists Still, Video, Verified, and Content Identifier per pair;
+`--unpaired` lists Path and Kind (`still` or `video`) for orphans. `--format json` emits
+the whole scan (`pairs`, `unpaired_stills`, `unpaired_videos`) with string paths
+regardless of `--unpaired`. `csv` and `markdown` are accepted by the shared `--format`
+option but raise a usage error (`format not supported by live-photos`).
+
+```bash
+winnow live-photos ~/Pictures                  # table of pairs
+winnow live-photos --unpaired ~/Pictures       # orphans only
+winnow live-photos -f json ~/Pictures | jq .   # machine-readable scan
+```
+
 ---
 
 ## Standard Flag Conventions
