@@ -33,6 +33,7 @@ class PathSettings(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=list)
 
 
+_MIN_PRINTABLE_CODEPOINT = 0x20
 _YEAR_FOLDER_PATTERN = re.compile(r"^\d{4}$")
 _ROUTING_FOLDER_FIELDS: tuple[str, ...] = (
     "screenshots",
@@ -70,8 +71,9 @@ class RoutingSettings(BaseModel):
 
         Raises:
             ValueError: If a folder name is empty, padded, contains a path
-                separator, is ``.``/``..``, matches a four-digit year, or is
-                shared with another category case-insensitively.
+                separator or a control character, is ``.``/``..``, matches a
+                four-digit year, or is shared with another category
+                case-insensitively.
         """
         seen: dict[str, str] = {}
         for field_name in _ROUTING_FOLDER_FIELDS:
@@ -100,6 +102,8 @@ def _check_folder_name(*, field_name: str, value: str) -> None:
         raise ValueError(f"routing.{field_name} must be a non-empty, unpadded name")
     if "/" in value or "\\" in value:
         raise ValueError(f"routing.{field_name} must not contain path separators")
+    if any(ord(char) < _MIN_PRINTABLE_CODEPOINT for char in value):
+        raise ValueError(f"routing.{field_name} must not contain control characters")
     if value in {".", ".."}:
         raise ValueError(f"routing.{field_name} must not be '.' or '..'")
     if _YEAR_FOLDER_PATTERN.match(value):
