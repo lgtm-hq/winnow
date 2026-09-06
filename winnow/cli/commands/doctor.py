@@ -325,6 +325,8 @@ def render_report(console: Console, results: Iterable[CheckResult]) -> None:
 def doctor_command(ctx: click.Context) -> None:
     """Diagnose the local environment for running Winnow.
 
+    \f
+
     Args:
         ctx: Active Click context carrying root option state.
 
