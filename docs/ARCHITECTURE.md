@@ -199,6 +199,19 @@ Reversible file changes use a **command** pattern (Move, Copy, Delete, CreateDir
 to undo; the saga coordinates commit and rollback across steps. File mutations go
 through `winnow/fs/` atomic helpers, not ad hoc `shutil` calls in adapters.
 
+### SQLite stores
+
+Every SQLite store (report today; the saga log of [#7][epic-7] and the API job queue of
+[#11][epic-11] next) records the schema versions it has applied in a `schema_version`
+table, one row per version. `winnow/storage/` is the shared home for this persistence
+plumbing: `apply_schema` runs a store's baseline DDL on a fresh database, applies
+in-code `Migration` steps one transaction at a time to an older database, and rejects a
+database newer than the running build. Migrations are plain SQL tuples kept next to the
+store's DDL (`winnow/report/schema.py:MIGRATIONS`); there is no ORM or Alembic. Bumping
+a store's schema version means updating the baseline to the new shape **and** appending
+the migration that takes the previous version there. Each store wraps `StorageError` in
+its own domain error.
+
 ### PipelineContext / dependency injection (planned)
 
 `PipelineContext` (planned in `winnow/pipeline/`) is the composition root for a run:
@@ -239,6 +252,7 @@ flowchart LR
   Pipeline --> Media[media]
   Pipeline --> Hash[hash]
   Pipeline --> Report[report]
+  Report --> Storage[storage]
   Dedup --> Hash
   Dedup --> Media
   Media --> FS[fs]
