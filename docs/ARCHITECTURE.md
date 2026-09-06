@@ -75,6 +75,7 @@ flowchart TB
   Services --> FS
   Services --> Config
   FS --> Security
+  Security --> Models
 ```
 
 Adapters may read `config/` directly for bootstrapping only (loading and validating
@@ -245,6 +246,7 @@ flowchart LR
   Hash --> FS
   Pipeline --> FS
   FS --> Security[security]
+  Security --> Models[models]
   Pipeline --> Config[config]
   CLI --> Config
   API --> Config

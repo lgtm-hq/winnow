@@ -12,10 +12,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from loguru import logger
-
 from winnow.exceptions import SecurityError
-from winnow.security.enums import SymlinkPolicy
+from winnow.models.enums import SymlinkPolicy
 
 
 class PathValidator:
@@ -30,6 +28,11 @@ class PathValidator:
         allowed_roots: Directories that operations are confined to. Each root
             is resolved during construction. At least one root is required.
         symlink_policy: How to treat symlinks encountered along a path.
+            ``FOLLOW`` resolves them and validates the target; ``SKIP`` and
+            ``ERROR`` both refuse to traverse any untrusted symlink by
+            raising :class:`~winnow.exceptions.SecurityError`. Whether the
+            caller then skips the path silently or records an error is the
+            caller's concern.
         base_dir: Directory used to resolve relative candidate paths. Defaults
             to the current working directory when omitted.
 
@@ -41,7 +44,7 @@ class PathValidator:
         self,
         allowed_roots: Iterable[Path | str],
         *,
-        symlink_policy: SymlinkPolicy = SymlinkPolicy.REJECT,
+        symlink_policy: SymlinkPolicy = SymlinkPolicy.SKIP,
         base_dir: Path | str | None = None,
     ) -> None:
         roots = tuple(Path(root).resolve() for root in allowed_roots)
@@ -180,13 +183,16 @@ class PathValidator:
     ) -> None:
         """Apply the configured symlink policy to a candidate path.
 
+        ``FOLLOW`` permits traversal; ``SKIP`` and ``ERROR`` both refuse it.
+
         Args:
             absolute: Absolute, unresolved candidate path.
             original: Original path supplied by the caller, for diagnostics.
             operation: Operation name recorded on any raised error.
 
         Raises:
-            SecurityError: If a symlink is found and the policy rejects it.
+            SecurityError: If an untrusted symlink is found and the policy
+                is not ``FOLLOW``.
         """
         if self._symlink_policy is SymlinkPolicy.FOLLOW:
             return
@@ -195,20 +201,12 @@ class PathValidator:
         if not symlinks:
             return
 
-        if self._symlink_policy is SymlinkPolicy.REJECT:
-            raise SecurityError(
-                "symlink traversal is not permitted",
-                operation=operation,
-                file_path=original,
-                details={"symlinks": [str(symlink) for symlink in symlinks]},
-            )
-
-        for symlink in symlinks:
-            logger.warning(
-                "Traversing symlink during {operation}: {symlink}",
-                operation=operation,
-                symlink=str(symlink),
-            )
+        raise SecurityError(
+            "symlink traversal is not permitted",
+            operation=operation,
+            file_path=original,
+            details={"symlinks": [str(symlink) for symlink in symlinks]},
+        )
 
     def _untrusted_symlinks(self, absolute: Path) -> list[Path]:
         """Return every untrusted symlink component of ``absolute``.
