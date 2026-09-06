@@ -90,6 +90,31 @@ option factories are functions that must be **called** first to return a decorat
 
 ---
 
+## Exit codes
+
+Every `winnow` invocation ends with one of four exit codes. Commands raise `WinnowError`
+subclasses and let them propagate; the root `WinnowGroup` (`winnow/cli/errors.py`)
+renders them once, as an error panel on stderr, and picks the code. Scripts can
+therefore tell "you called it wrong" (2), "it failed" (1), and "you stopped it" (130)
+apart.
+
+| Code | Meaning                                                                                                                             | Source                                                              |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 0    | Success, including "nothing to do" and a decline the command handles itself                                                         | command returns                                                     |
+| 1    | Failure: any `WinnowError` subclass, a command-reported failure, or a declined `click.confirm(..., abort=True)` prompt (`Aborted!`) | `WinnowGroup.invoke` / `ctx.exit(ExitCode.FAILURE)` / Click `Abort` |
+| 2    | Usage error: bad flag, missing argument, unknown command                                                                            | Click                                                               |
+| 130  | Interrupted by Ctrl-C                                                                                                               | `WinnowGroup.invoke`                                                |
+
+Declined prompts split by how the command asks: `clean` and the REPL print `Aborted.`
+and return (0); `config reset` and `init` use `click.confirm(..., abort=True)`, so a
+decline is Click's `Abort` and exits 1.
+
+Use the `ExitCode` enum from `winnow.cli.errors` rather than bare integers when a
+command needs to report a failure itself (for example `doctor` exiting with
+`ExitCode.FAILURE` when a hard check fails).
+
+---
+
 ## Adding a subcommand
 
 1. Choose the appropriate compositor from `winnow.cli.standards` and decorate the
@@ -99,3 +124,5 @@ option factories are functions that must be **called** first to return a decorat
 3. Use `--dry-run` for any write operation and `--yes` for destructive prompts.
 4. Read `ctx.obj["no_color"]` from the root context to honour the user's colour output
    preference.
+5. Raise `WinnowError` subclasses for domain failures instead of wrapping them in
+   `click.ClickException`; the root handler maps them to exit code 1.

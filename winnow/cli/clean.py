@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from winnow.cli.rendering import console_from_context
+from winnow.cli.console import console_from_context
 from winnow.cli.standards import dry_run_option, yes_option
 
 if TYPE_CHECKING:

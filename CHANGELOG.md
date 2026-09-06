@@ -21,6 +21,36 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.24.0] - 2026-09-06
+
+### Added
+
+- **classify**: special-folder route resolver (#69 PR A) (#211) (83a2e8e)
+
+## [0.23.0] - 2026-09-06
+
+### Added
+
+- **classify**: Live Photo pair detector + maker-note/video tag readers (#67 PR A)
+  (#210) (fccef1b)
+
+### Changed
+
+- **cli**: use winnow.cli.console as the only Rich console factory (#224) (b6f1bd8)
+
+## [0.22.0] - 2026-09-06
+
+### Added
+
+- **media**: metadata extraction service (#36 PR A) (#207) (eef88e9)
+
+## [0.21.0] - 2026-09-06
+
+### Added
+
+- **cli**: one exit-code table and a root handler for WinnowError and Ctrl-C (#209)
+  (83d9937)
+
 ## [0.20.1] - 2026-09-06
 
 ### Changed
