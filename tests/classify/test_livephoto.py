@@ -113,6 +113,30 @@ def test_equal_stems_with_different_identifiers_do_not_pair() -> None:
     assert_that(scan.unpaired_videos).is_equal_to((video,))
 
 
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "whitespace"])
+def test_blank_identifiers_do_not_verify_pairs(blank: str) -> None:
+    """Blank identifiers on both sides never form a verified pair."""
+    still = _ROOT / "IMG_0001.JPG"
+    video = _ROOT / "IMG_0002.MOV"
+
+    scan = _scan({still: blank}, {video: blank})
+
+    assert_that(scan.pairs).is_empty()
+    assert_that(scan.unpaired_stills).is_equal_to((still,))
+    assert_that(scan.unpaired_videos).is_equal_to((video,))
+
+
+def test_blank_identifiers_still_allow_unverified_pairs() -> None:
+    """A blank identifier counts as missing for the equal-stem fallback."""
+    still = _ROOT / "IMG_0001.JPG"
+    video = _ROOT / "IMG_0001.MOV"
+
+    scan = _scan({still: ""}, {video: _UUID})
+
+    assert_that(scan.pairs).is_length(1)
+    assert_that(scan.pairs[0].verified).is_false()
+
+
 @pytest.mark.parametrize(
     ("still_id", "video_id"),
     [(None, _UUID), (_UUID, None), (None, None)],

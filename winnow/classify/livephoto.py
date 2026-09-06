@@ -74,9 +74,11 @@ def still_content_identifier(path: Path) -> str | None:
         path: Filesystem path to the still.
 
     Returns:
-        The identifier string, or ``None`` when absent or unreadable.
+        The identifier string, or ``None`` when absent, blank, or unreadable.
     """
-    return read_maker_note_tags(path).get(APPLE_CONTENT_IDENTIFIER_TAG)
+    return _normalize_identifier(
+        read_maker_note_tags(path).get(APPLE_CONTENT_IDENTIFIER_TAG),
+    )
 
 
 def video_content_identifier(path: Path) -> str | None:
@@ -86,9 +88,28 @@ def video_content_identifier(path: Path) -> str | None:
         path: Filesystem path to the video.
 
     Returns:
-        The identifier string, or ``None`` when absent or ffprobe is missing.
+        The identifier string, or ``None`` when absent, blank, or ffprobe is
+        missing.
     """
-    return read_video_tags(path).get(QUICKTIME_CONTENT_IDENTIFIER_KEY)
+    return _normalize_identifier(
+        read_video_tags(path).get(QUICKTIME_CONTENT_IDENTIFIER_KEY),
+    )
+
+
+def _normalize_identifier(value: str | None) -> str | None:
+    """Strip an identifier and treat blank values as absent.
+
+    Args:
+        value: Raw tag value.
+
+    Returns:
+        The stripped identifier, or ``None`` when ``value`` is ``None`` or
+        whitespace-only.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def find_live_photo_pairs(
@@ -102,7 +123,8 @@ def find_live_photo_pairs(
     Pairing rules:
 
     1. Candidates are paths whose lower-cased suffix is in
-       :data:`STILL_SUFFIXES` or :data:`VIDEO_SUFFIXES`.
+       :data:`STILL_SUFFIXES` or :data:`VIDEO_SUFFIXES`. Identifiers are
+       stripped; blank values are treated as ``None``.
     2. A still and a video with equal identifiers form a verified pair
        regardless of stem or directory. When several files share one
        identifier, same-directory-same-stem matches are paired first, then the
@@ -171,9 +193,9 @@ def _read_candidates(
     for path in sorted(set(paths)):
         suffix = path.suffix.lower()
         if suffix in STILL_SUFFIXES:
-            stills.append((path, still_identifier(path)))
+            stills.append((path, _normalize_identifier(still_identifier(path))))
         elif suffix in VIDEO_SUFFIXES:
-            videos.append((path, video_identifier(path)))
+            videos.append((path, _normalize_identifier(video_identifier(path))))
     return stills, videos
 
 
@@ -181,7 +203,8 @@ def _index_by_identifier(candidates: _Candidates) -> dict[str, list[Path]]:
     """Group candidate paths by their non-``None`` identifier.
 
     Args:
-        candidates: ``(path, identifier)`` tuples.
+        candidates: ``(path, identifier)`` tuples; identifiers are already
+            normalized, so blank values arrive as ``None``.
 
     Returns:
         Mapping of identifier to the paths carrying it, in input order.

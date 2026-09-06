@@ -121,8 +121,9 @@ def read_video_tags(path: Path) -> dict[str, str]:
         path: Filesystem path to the video.
 
     Returns:
-        Mapping of lower-cased tag key to its stringified value. Empty when no
-        tags can be read.
+        Mapping of lower-cased tag key to its stringified value. Empty when
+        ffprobe is missing, cannot be launched, times out, exits non-zero, or
+        reports no tags.
 
     Raises:
         MediaError: If the path is not a file.
@@ -148,12 +149,16 @@ def read_video_tags(path: Path) -> dict[str, str]:
         "-show_format",
         str(path),
     ]
-    completed = _run(
-        argv=argv,
-        timeout=_PROBE_TIMEOUT_SECONDS,
-        operation="read_video_tags",
-        path=path,
-    )
+    try:
+        completed = _run(
+            argv=argv,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            operation="read_video_tags",
+            path=path,
+        )
+    except MediaError as exc:
+        logger.debug("ffprobe could not run for {}: {}", path, exc)
+        return {}
     if completed.returncode != 0:
         logger.debug(
             "ffprobe failed to read tags for {}: {}",

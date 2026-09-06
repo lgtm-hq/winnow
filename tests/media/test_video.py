@@ -457,6 +457,29 @@ def test_read_video_tags_degrades_on_unusable_output(
     assert_that(read_video_tags(video)).is_equal_to({})
 
 
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutExpired(cmd="ffprobe", timeout=1), OSError("cannot launch")],
+    ids=["timeout", "launch_failure"],
+)
+def test_read_video_tags_degrades_when_probe_cannot_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    """A probe that times out or cannot start yields no tags instead of raising."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake")
+    _use_binaries(monkeypatch)
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(_RUN_TARGET, _raise)
+
+    assert_that(read_video_tags(video)).is_equal_to({})
+
+
 def test_read_video_tags_missing_file() -> None:
     """A missing video path raises MediaError."""
     with pytest.raises(MediaError):
