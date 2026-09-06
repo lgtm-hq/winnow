@@ -143,6 +143,40 @@ def read_exif(path: Path) -> dict[str, str]:
     }
 
 
+_MAKER_NOTE_PREFIX: Final[str] = "MakerNote "
+
+
+def read_maker_note_tags(path: Path) -> dict[str, str]:
+    """Read decoded MakerNote tags from an image file.
+
+    Unlike :func:`read_exif`, exifread runs with ``details=True`` so vendor
+    MakerNote IFDs (for example Apple's, which carries the Live Photo content
+    identifier in ``Tag 0x0011``) are decoded. Only MakerNote keys are
+    returned, with the ``"MakerNote "`` prefix stripped. Failures degrade to an
+    empty mapping, matching the :func:`read_exif` policy.
+
+    Args:
+        path: Filesystem path to the image.
+
+    Returns:
+        Mapping of MakerNote tag name (for example ``"Tag 0x0011"``) to its
+        stringified value. Empty when the file has no MakerNote or cannot be
+        parsed.
+    """
+    try:
+        with path.open("rb") as handle:
+            tags = exifread.process_file(handle, details=True)
+    except Exception as exc:  # noqa: BLE001 - exifread may raise struct.error etc.
+        logger.debug("MakerNote read failed for {}: {}", path, exc)
+        return {}
+
+    return {
+        name.removeprefix(_MAKER_NOTE_PREFIX): str(value)
+        for name, value in tags.items()
+        if name.startswith(_MAKER_NOTE_PREFIX)
+    }
+
+
 def generate_thumbnail(
     path: Path,
     destination: Path,

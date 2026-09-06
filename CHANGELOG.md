@@ -21,6 +21,54 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.26.0] - 2026-09-06
+
+### Added
+
+- **hash**: PerceptualHasher protocol + cache key identity (#39 PR A) (#220) (7763e24)
+
+### Changed
+
+- **cli**: move clean/info/stats domain logic into winnow.fs and winnow.media (#229)
+  (aa4baa7)
+
+## [0.25.0] - 2026-09-06
+
+### Added
+
+- **pipeline**: step contract — Step, RunState, StepEvents, OrganizeSettings (#53 PR A)
+  (#215) (db4851e)
+
+## [0.24.0] - 2026-09-06
+
+### Added
+
+- **classify**: special-folder route resolver (#69 PR A) (#211) (83a2e8e)
+
+## [0.23.0] - 2026-09-06
+
+### Added
+
+- **classify**: Live Photo pair detector + maker-note/video tag readers (#67 PR A)
+  (#210) (fccef1b)
+
+### Changed
+
+- **cli**: use winnow.cli.console as the only Rich console factory (#224) (b6f1bd8)
+
+## [0.22.0] - 2026-09-06
+
+### Added
+
+- **media**: metadata extraction service (#36 PR A) (#207) (eef88e9)
+
+## [0.21.0] - 2026-09-06
+
+### Added
+
+- **cli**: one exit-code table and a root handler for WinnowError and Ctrl-C (#209)
+  (83d9937)
+
 ## [0.20.1] - 2026-09-06
 
 ### Changed
