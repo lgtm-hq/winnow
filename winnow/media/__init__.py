@@ -9,6 +9,7 @@ from winnow.media.image import (
     generate_thumbnail,
     heif_supported,
     read_exif,
+    read_maker_note_tags,
 )
 from winnow.media.registry import (
     DEFAULT_FORMAT_REGISTRY,
@@ -25,6 +26,7 @@ from winnow.media.video import (
     extract_video_metadata,
     ffmpeg_available,
     ffprobe_available,
+    read_video_tags,
 )
 
 __all__ = [
@@ -47,4 +49,6 @@ __all__ = [
     "normalize_extension",
     "read_audio_tags",
     "read_exif",
+    "read_maker_note_tags",
+    "read_video_tags",
 ]

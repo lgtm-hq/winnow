@@ -22,6 +22,7 @@ from winnow.media.video import (
     extract_frame,
     extract_video_metadata,
     ffprobe_available,
+    read_video_tags,
 )
 from winnow.media.video import _parse_frame_rate as parse_frame_rate
 
@@ -358,3 +359,105 @@ def test_extract_video_metadata_falls_back_past_na_stream_values() -> None:
 
     assert_that(metadata.duration_seconds).is_equal_to(12.5)
     assert_that(metadata.bitrate).is_equal_to(800000)
+
+
+def test_read_video_tags_lowercases_format_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Container tags are returned with lower-cased keys and string values."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake")
+    _use_binaries(monkeypatch)
+    payload = json.dumps(
+        {
+            "format": {
+                "tags": {
+                    "com.apple.quicktime.content.identifier": "ABC-123",
+                    "Major_Brand": "qt  ",
+                    "minor_version": 512,
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(_RUN_TARGET, lambda *a, **k: _completed(stdout=payload))
+
+    tags = read_video_tags(video)
+
+    assert_that(tags).is_equal_to(
+        {
+            "com.apple.quicktime.content.identifier": "ABC-123",
+            "major_brand": "qt  ",
+            "minor_version": "512",
+        },
+    )
+
+
+def test_read_video_tags_uses_show_format_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tag probe asks ffprobe for the container format without streams."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake")
+    _use_binaries(monkeypatch)
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess[str]:
+        seen.append(argv)
+        return _completed(stdout=json.dumps({"format": {}}))
+
+    monkeypatch.setattr(_RUN_TARGET, fake_run)
+
+    read_video_tags(video)
+
+    assert_that(seen).is_length(1)
+    assert_that(seen[0]).contains("-show_format")
+    assert_that(seen[0]).does_not_contain("-show_streams")
+
+
+def test_read_video_tags_empty_without_ffprobe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing ffprobe yields an empty mapping instead of raising."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake")
+    monkeypatch.setattr(_WHICH_TARGET, lambda name: None)
+
+    assert_that(read_video_tags(video)).is_equal_to({})
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (1, ""),
+        (0, "not json"),
+        (0, json.dumps({"format": {}})),
+        (0, json.dumps({"format": {"tags": "bogus"}})),
+        (0, json.dumps([])),
+    ],
+    ids=["nonzero_exit", "bad_json", "no_tags", "tags_not_mapping", "not_object"],
+)
+def test_read_video_tags_degrades_on_unusable_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+) -> None:
+    """Failures and tag-less output degrade to an empty mapping."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"fake")
+    _use_binaries(monkeypatch)
+    monkeypatch.setattr(
+        _RUN_TARGET,
+        lambda *a, **k: _completed(returncode=returncode, stdout=stdout),
+    )
+
+    assert_that(read_video_tags(video)).is_equal_to({})
+
+
+def test_read_video_tags_missing_file() -> None:
+    """A missing video path raises MediaError."""
+    with pytest.raises(MediaError):
+        read_video_tags(Path("/nonexistent/clip.mov"))
