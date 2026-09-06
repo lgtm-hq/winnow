@@ -49,7 +49,6 @@ dependencies = [
 
 [project.optional-dependencies]
 face = []
-cv = []
 ai-detect = []
 
 [project.scripts]
