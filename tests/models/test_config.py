@@ -35,9 +35,9 @@ def test_cache_settings_fields_are_enabled_and_directory() -> None:
 def test_cache_settings_rejects_removed_ttl_field() -> None:
     """Stale ``ttl_seconds``/``max_size_mb`` keys fail validation loudly."""
     with pytest.raises(ValidationError):
-        CacheSettings(ttl_seconds=1)  # type: ignore[call-arg]
+        CacheSettings.model_validate({"ttl_seconds": 1})
     with pytest.raises(ValidationError):
-        CacheSettings(max_size_mb=1)  # type: ignore[call-arg]
+        CacheSettings.model_validate({"max_size_mb": 1})
 
 
 def test_winnow_config_validation() -> None:

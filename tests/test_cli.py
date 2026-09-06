@@ -140,6 +140,16 @@ def test_standard_option_factories_expose_conventional_flags() -> None:
     assert_that(result.output).does_not_contain("--disable-cache")
 
 
+def test_cache_options_reject_removed_cache_ttl_flag() -> None:
+    """The removed ``--cache-ttl`` flag is a usage error, not a silent no-op."""
+    command = _command_with_options([cache_options()])
+
+    result = CliRunner().invoke(command, ["--cache-ttl", "60"])
+
+    assert_that(result.exit_code).is_not_equal_to(0)
+    assert_that(result.output).contains("--cache-ttl")
+
+
 def test_standard_option_factories_parse_canonical_parameter_names() -> None:
     """Shared options parse into stable callback parameter names."""
     command = _command_with_options(

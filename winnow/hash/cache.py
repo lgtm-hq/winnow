@@ -312,4 +312,6 @@ def open_hash_cache(
     """
     if not settings.enabled:
         return None
-    return HashCache(db_path=(directory or settings.directory) / _db.CACHE_DB_FILENAME)
+    if directory is not None:
+        settings = settings.model_copy(update={"directory": directory})
+    return HashCache(db_path=_db.default_db_path(settings))

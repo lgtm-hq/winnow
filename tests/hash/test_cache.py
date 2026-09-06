@@ -114,6 +114,18 @@ def test_open_hash_cache_directory_override_wins(tmp_path: Path) -> None:
     assert_that((tmp_path / "a").exists()).is_false()
 
 
+def test_open_hash_cache_disabled_ignores_directory_override(
+    tmp_path: Path,
+) -> None:
+    """A disabled cache returns ``None`` even when a directory is given."""
+    settings = CacheSettings(enabled=False, directory=tmp_path / "a")
+
+    result = open_hash_cache(settings, directory=tmp_path / "b")
+
+    assert_that(result).is_none()
+    assert_that(list(tmp_path.iterdir())).is_empty()
+
+
 def test_init_creates_parent_directories(tmp_path: Path) -> None:
     """Opening a cache creates missing parent directories for the database."""
     db_path = tmp_path / "nested" / "dir" / "cache.db"
