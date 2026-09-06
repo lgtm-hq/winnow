@@ -9,6 +9,10 @@ import pytest
 from assertpy import assert_that
 
 from tests.classify.conftest import ImageFactory
+from winnow.classify.ai_generated import (
+    AiGeneratedClassification,
+    AiGeneratedSignals,
+)
 from winnow.classify.photo_graphic import (
     ImageContentType,
     PhotoGraphicClassification,
@@ -63,6 +67,27 @@ def _screenshot(*, is_screenshot: bool, confidence: float) -> ScreenshotClassifi
     )
 
 
+def _ai(*, is_ai_generated: bool, confidence: float) -> AiGeneratedClassification:
+    """Build an AI-generated result with neutral signals.
+
+    Args:
+        is_ai_generated: Whether the detector flagged the image.
+        confidence: Summed confidence to report.
+
+    Returns:
+        A synthetic :class:`AiGeneratedClassification`.
+    """
+    return AiGeneratedClassification(
+        is_ai_generated=is_ai_generated,
+        confidence=confidence,
+        signals=AiGeneratedSignals(
+            c2pa_ai_source=False,
+            prompt_chunk=None,
+            generator_marker=None,
+        ),
+    )
+
+
 def _content(
     *,
     content_type: ImageContentType,
@@ -110,6 +135,31 @@ def _content(
             RoutingSettings(),
             SpecialCategory.LIVE_PHOTO,
             "LivePhotos",
+        ),
+        (
+            FileClassification(
+                ai_generated=_ai(is_ai_generated=True, confidence=0.9),
+            ),
+            RoutingSettings(),
+            SpecialCategory.AI_GENERATED,
+            "AI-Generated",
+        ),
+        (
+            FileClassification(
+                ai_generated=_ai(is_ai_generated=True, confidence=0.6),
+            ),
+            RoutingSettings(),
+            SpecialCategory.REVIEW,
+            "Review",
+        ),
+        (
+            FileClassification(
+                screenshot=_screenshot(is_screenshot=True, confidence=1.0),
+                ai_generated=_ai(is_ai_generated=True, confidence=0.8),
+            ),
+            RoutingSettings(),
+            SpecialCategory.AI_GENERATED,
+            "AI-Generated",
         ),
         (
             FileClassification(
@@ -187,6 +237,9 @@ def _content(
     ids=[
         "disabled",
         "live_photo",
+        "confident_ai_generated",
+        "low_confidence_ai_generated_review",
+        "ai_generated_outranks_screenshot",
         "confident_screenshot",
         "confident_graphic",
         "low_confidence_screenshot_review",
@@ -295,6 +348,7 @@ def test_classify_image_flags_screenshot_named_png(make_image: ImageFactory) -> 
         PhotoGraphicClassification,
     )
     assert_that(_present(classification.screenshot).is_screenshot).is_true()
+    assert_that(_present(classification.ai_generated).is_ai_generated).is_false()
     assert_that(classification.live_photo).is_false()
 
 

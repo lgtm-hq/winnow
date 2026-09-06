@@ -45,6 +45,7 @@ _ROUTING_FOLDER_FIELDS: tuple[str, ...] = (
     "screenshots",
     "graphics",
     "live_photos",
+    "ai_generated",
     "review",
     "duplicates",
 )
@@ -63,6 +64,7 @@ class RoutingSettings(BaseModel):
     screenshots: str = "Screenshots"
     graphics: str = "Graphics"
     live_photos: str = "LivePhotos"
+    ai_generated: str = "AI-Generated"
     review: str = "Review"
     duplicates: str = "Duplicates"
     min_confidence: float = Field(default=0.75, ge=0.0, le=1.0)

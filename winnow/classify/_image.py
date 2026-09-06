@@ -3,7 +3,8 @@
 The classifiers in :mod:`winnow.classify` keep their decision logic in pure,
 standard-library functions that operate on already-extracted signals. This module
 provides the Pillow bridge that reads those signals (dimensions, EXIF tags, alpha
-channel, and color histograms) from image files on disk.
+channel, color histograms, PNG text chunks, and XMP packets) from image files on
+disk.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from PIL import ExifTags, Image, UnidentifiedImageError
 from winnow.exceptions import MediaError
 
 _ALPHA_MODES = frozenset({"RGBA", "LA", "PA", "RGBa", "La"})
+_PNG_XMP_TEXT_KEY = "XML:com.adobe.xmp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,45 @@ def extract_exif(image: Image.Image) -> Mapping[str, str]:
         if stringified:
             tags.setdefault(name, stringified)
     return tags
+
+
+def extract_text_chunks(image: Image.Image) -> Mapping[str, str]:
+    """Return an image's textual metadata chunks.
+
+    Only PNG exposes these (``tEXt``/``zTXt``/``iTXt`` chunks via the ``text``
+    attribute); other formats yield an empty mapping.
+
+    Args:
+        image: Open Pillow image.
+
+    Returns:
+        Mapping of chunk keyword to decoded text; empty when unavailable.
+    """
+    text = getattr(image, "text", None)
+    if not isinstance(text, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in text.items()}
+
+
+def extract_xmp(image: Image.Image) -> str | None:
+    """Return an image's raw XMP packet as text, if present.
+
+    Reads ``image.info["xmp"]`` (JPEG, TIFF, WebP, and PNG when Pillow surfaces
+    it) or the PNG ``XML:com.adobe.xmp`` text chunk. The packet is returned as
+    is; no XML parsing is performed.
+
+    Args:
+        image: Open Pillow image.
+
+    Returns:
+        The XMP text, or ``None`` when the image has no XMP metadata.
+    """
+    raw = image.info.get("xmp")
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        return raw
+    return extract_text_chunks(image).get(_PNG_XMP_TEXT_KEY)
 
 
 def count_colors(

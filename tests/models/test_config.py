@@ -109,6 +109,7 @@ def test_routing_settings_defaults() -> None:
     assert_that(settings.screenshots).is_equal_to("Screenshots")
     assert_that(settings.graphics).is_equal_to("Graphics")
     assert_that(settings.live_photos).is_equal_to("LivePhotos")
+    assert_that(settings.ai_generated).is_equal_to("AI-Generated")
     assert_that(settings.review).is_equal_to("Review")
     assert_that(settings.duplicates).is_equal_to("Duplicates")
     assert_that(settings.min_confidence).is_equal_to(0.75)
@@ -129,6 +130,7 @@ def test_routing_settings_accepts_renamed_folder() -> None:
         ({"review": ""}, "routing.review"),
         ({"graphics": " Graphics"}, "routing.graphics"),
         ({"live_photos": "a\\b"}, "routing.live_photos"),
+        ({"ai_generated": "Review"}, "routing.ai_generated"),
         ({"duplicates": ".."}, "routing.duplicates"),
         ({"review": "Re\x00view"}, "routing.review"),
         ({"screenshots": "2024"}, "routing.screenshots"),
@@ -139,6 +141,7 @@ def test_routing_settings_accepts_renamed_folder() -> None:
         "empty",
         "padded",
         "backslash",
+        "ai_generated_duplicate",
         "dot_dot",
         "nul",
         "year_like",
