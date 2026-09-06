@@ -99,22 +99,39 @@ class DefaultMetadataService:
 
         Raises:
             MediaError: When the path is not a regular file, is empty, cannot
-                be classified, or the processor fails.
+                be inspected, cannot be classified, has no processor, or the
+                processor fails.
         """
-        if not path.is_file():
+        try:
+            is_file = path.is_file()
+            size = path.stat().st_size if is_file else None
+        except OSError as exc:
+            raise MediaError(
+                "cannot inspect file",
+                operation="extract_metadata",
+                file_path=path,
+            ) from exc
+        if not is_file:
             raise MediaError(
                 "not a regular file",
                 operation="extract_metadata",
                 file_path=path,
             )
-        if path.stat().st_size == 0:
+        if size == 0:
             raise MediaError(
                 "empty file",
                 operation="extract_metadata",
                 file_path=path,
             )
         media_type = self.detect(path)
-        extractor = _EXTRACTORS[media_type]
+        extractor = _EXTRACTORS.get(media_type)
+        if extractor is None:
+            raise MediaError(
+                "no metadata processor for media type",
+                operation="extract_metadata",
+                file_path=path,
+                details={"media_type": media_type.value},
+            )
         try:
             return extractor(path)
         except MediaError:
@@ -141,7 +158,10 @@ def create_metadata_service(
         config: Optional application configuration; reserved for future use.
 
     Returns:
-        A ``DefaultMetadataService`` backed by the default format registry.
+        A ``DefaultMetadataService`` backed by an isolated copy of the built-in
+        formats (``create_default_format_registry()``), not the process-wide
+        ``DEFAULT_FORMAT_REGISTRY``; registrations made on the shared registry
+        are not visible to it.
     """
     del config
     return DefaultMetadataService(registry=create_default_format_registry())

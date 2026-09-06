@@ -185,15 +185,87 @@ def test_detect_returns_media_type(
     )
 
 
-def test_create_metadata_service_returns_default() -> None:
-    """The factory returns a ``DefaultMetadataService``."""
+def test_extract_rejects_missing_file(
+    service: DefaultMetadataService,
+    tmp_path: Path,
+) -> None:
+    """A path that does not exist is reported as ``extract_metadata``."""
+    with pytest.raises(MediaError, match="not a regular file") as error:
+        service.extract(tmp_path / "missing.jpg")
+
+    assert_that(error.value.context.operation).is_equal_to("extract_metadata")
+
+
+def test_extract_wraps_filesystem_errors(
+    service: DefaultMetadataService,
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``OSError`` while inspecting the path becomes a ``MediaError``."""
+
+    def _denied(_self: Path) -> bool:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "is_file", _denied)
+
+    with pytest.raises(MediaError, match="cannot inspect file") as error:
+        service.extract(fixtures_dir / "sample.jpg")
+
+    assert_that(error.value.context.operation).is_equal_to("extract_metadata")
+    assert_that(error.value.__cause__).is_instance_of(PermissionError)
+
+
+def test_extract_rejects_media_type_without_processor(
+    service: DefaultMetadataService,
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A media type with no registered processor raises instead of ``KeyError``."""
+    monkeypatch.setattr(service_module, "_EXTRACTORS", {})
+
+    with pytest.raises(MediaError, match="no metadata processor") as error:
+        service.extract(fixtures_dir / "sample.jpg")
+
+    assert_that(error.value.context.details).is_equal_to({"media_type": "image"})
+
+
+def test_detect_honours_injected_registry(fixtures_dir: Path) -> None:
+    """An override registered on the injected registry wins over sniffing."""
+    registry = FormatRegistry()
+    registry.register(extension=".jpg", media_type=MediaType.AUDIO)
+    custom = DefaultMetadataService(registry=registry)
+
+    assert_that(custom.detect(fixtures_dir / "sample.jpg")).is_equal_to(
+        MediaType.AUDIO,
+    )
+    assert_that(
+        DefaultMetadataService().detect(fixtures_dir / "sample.jpg")
+    ).is_equal_to(
+        MediaType.IMAGE,
+    )
+
+
+def test_create_metadata_service_uses_isolated_registry(fixtures_dir: Path) -> None:
+    """The factory's registry is a copy: shared-registry registrations do not leak."""
     created = create_metadata_service()
+    shared = FormatRegistry()
+    shared.register(extension=".jpg", media_type=MediaType.AUDIO)
+    other = DefaultMetadataService(registry=shared)
 
     assert_that(created).is_instance_of(DefaultMetadataService)
+    assert_that(created.detect(fixtures_dir / "sample.jpg")).is_equal_to(
+        MediaType.IMAGE,
+    )
+    assert_that(other.detect(fixtures_dir / "sample.jpg")).is_equal_to(
+        MediaType.AUDIO,
+    )
 
 
-def test_create_metadata_service_accepts_config() -> None:
-    """The factory accepts a config object without consulting it yet."""
+def test_create_metadata_service_accepts_config(fixtures_dir: Path) -> None:
+    """The factory accepts a config object and still extracts normally."""
     created = create_metadata_service(config=WinnowConfig())
 
     assert_that(created).is_instance_of(DefaultMetadataService)
+    assert_that(created.extract(fixtures_dir / "sample.mp3")).is_instance_of(
+        MediaMetadata,
+    )
