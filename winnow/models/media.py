@@ -47,3 +47,4 @@ class MediaFile(BaseModel):
     extension: str
     size_bytes: int = Field(ge=0)
     metadata: MediaMetadata | None = None
+    live_photo_id: str | None = None

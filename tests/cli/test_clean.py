@@ -1,18 +1,17 @@
-"""Tests for the ``winnow clean`` command and its helpers."""
+"""Tests for the ``winnow clean`` command."""
 
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 
+import pytest
 from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
-from winnow.cli.clean import (
-    clean,
-    find_empty_directories,
-    remove_empty_directories,
-)
+from winnow.cli.clean import clean
+from winnow.fs.errors import FileSystemOperationError
 
 
 def _make_tree(root: Path) -> None:
@@ -27,71 +26,6 @@ def _make_tree(root: Path) -> None:
     (root / "empty2").mkdir()
 
 
-def test_find_empty_directories_cascades_bottom_up(tmp_path: Path) -> None:
-    """Nested empty directories are reported children-before-parents."""
-    _make_tree(tmp_path)
-
-    result = find_empty_directories(tmp_path)
-
-    assert_that(result).contains_only(
-        tmp_path / "empty" / "nested" / "leaf",
-        tmp_path / "empty" / "nested",
-        tmp_path / "empty",
-        tmp_path / "empty2",
-    )
-    # os.walk guarantees children before parents but not sibling order, so
-    # assert only the child-before-parent invariant.
-    for index, path in enumerate(result):
-        for descendant in result[index + 1 :]:
-            assert_that(descendant.is_relative_to(path)).is_false()
-
-
-def test_find_empty_directories_preserves_populated_and_root(tmp_path: Path) -> None:
-    """Directories containing files and the root itself are never returned."""
-    _make_tree(tmp_path)
-
-    result = find_empty_directories(tmp_path)
-
-    assert_that(result).does_not_contain(tmp_path)
-    assert_that(result).does_not_contain(tmp_path / "photos")
-    assert_that(result).does_not_contain(tmp_path / "photos" / "2020")
-
-
-def test_find_empty_directories_honors_exclude_patterns(tmp_path: Path) -> None:
-    """An excluded directory and its ancestors are preserved."""
-    (tmp_path / "keep" / ".git").mkdir(parents=True)
-    (tmp_path / "gone").mkdir()
-
-    result = find_empty_directories(tmp_path, exclude_patterns=[".git"])
-
-    assert_that(result).contains(tmp_path / "gone")
-    assert_that(result).does_not_contain(tmp_path / "keep" / ".git")
-    assert_that(result).does_not_contain(tmp_path / "keep")
-
-
-def test_find_empty_directories_matches_relative_pattern(tmp_path: Path) -> None:
-    """Exclude patterns match paths relative to the root."""
-    (tmp_path / "cache" / "tmp").mkdir(parents=True)
-
-    result = find_empty_directories(tmp_path, exclude_patterns=["cache/*"])
-
-    assert_that(result).does_not_contain(tmp_path / "cache" / "tmp")
-    assert_that(result).does_not_contain(tmp_path / "cache")
-
-
-def test_remove_empty_directories_deletes_in_order(tmp_path: Path) -> None:
-    """Removal deletes each reported directory."""
-    _make_tree(tmp_path)
-    candidates = find_empty_directories(tmp_path)
-
-    removed = remove_empty_directories(candidates)
-
-    assert_that(removed).is_equal_to(candidates)
-    assert_that((tmp_path / "empty").exists()).is_false()
-    assert_that((tmp_path / "empty2").exists()).is_false()
-    assert_that((tmp_path / "photos" / "2020" / "pic.jpg").exists()).is_true()
-
-
 def test_clean_dry_run_reports_without_deleting(tmp_path: Path) -> None:
     """A dry run lists candidates and leaves the tree intact."""
     _make_tree(tmp_path)
@@ -101,6 +35,18 @@ def test_clean_dry_run_reports_without_deleting(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains("4 empty directories to remove (dry run)")
     assert_that((tmp_path / "empty").exists()).is_true()
+
+
+def test_clean_dry_run_prints_markup_like_names_verbatim(tmp_path: Path) -> None:
+    """Paths that look like Rich markup are printed literally."""
+    # ``/`` splits the name into two nested directories, so the leaf path
+    # ends in the literal ``[bold]x[/bold]``.
+    (tmp_path / "[bold]x[/bold]").mkdir(parents=True)
+
+    result = CliRunner().invoke(main, ["clean", str(tmp_path), "--dry-run"])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("[bold]x[/bold]")
 
 
 def test_clean_removes_directories_with_yes_flag(tmp_path: Path) -> None:
@@ -164,10 +110,28 @@ def test_clean_rejects_missing_directory(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_not_equal_to(0)
 
 
-def test_find_empty_directories_preserves_excluded_subtree(tmp_path: Path) -> None:
-    """Directories nested inside an excluded subtree are preserved."""
-    (tmp_path / ".git" / "refs" / "tags").mkdir(parents=True)
+def test_clean_reports_removal_failure_as_click_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filesystem failure during removal surfaces as a Click error."""
+    (tmp_path / "solo").mkdir()
 
-    result = find_empty_directories(tmp_path, exclude_patterns=[".git"])
+    def failing_remove(root: Path, **kwargs: object) -> list[Path]:
+        raise FileSystemOperationError(
+            "failed to remove empty directory",
+            operation="remove_empty_tree",
+            file_path=root / "solo",
+        )
 
-    assert_that(result).is_empty()
+    monkeypatch.setattr(
+        import_module("winnow.cli.clean"),
+        "remove_empty_tree",
+        failing_remove,
+    )
+
+    result = CliRunner().invoke(main, ["clean", str(tmp_path), "--yes"])
+
+    assert_that(result.exit_code).is_equal_to(1)
+    assert_that(result.output).contains("failed to remove empty directory")
+    assert_that((tmp_path / "solo").exists()).is_true()
