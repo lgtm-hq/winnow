@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.29.0] - 2026-09-06
+
+### Added
+
+- **pipeline**: SQLite session log + user_data_dir (#49 PR A) (#223) (b57f9c9)
+
 ## [0.28.0] - 2026-09-06
 
 ### Added
