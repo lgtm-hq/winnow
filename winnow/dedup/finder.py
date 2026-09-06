@@ -27,8 +27,8 @@ from typing import Self
 
 from winnow.dedup._band_index import candidate_pairs
 from winnow.dedup._union_find import UnionFind
-from winnow.dedup.hashing import HashFormat, parse_hash
-from winnow.exceptions import DuplicateError
+from winnow.exceptions import DuplicateError, HashError
+from winnow.hash.digest import parse_digest
 from winnow.models.config import WinnowConfig
 from winnow.models.duplicates import DuplicateGroup, DuplicatePair
 from winnow.models.media import MediaType
@@ -42,7 +42,8 @@ class HashedFile:
 
     Attributes:
         path: Absolute or relative path to the media file.
-        perceptual_hash: Hex or bitstring perceptual hash of the file.
+        perceptual_hash: Perceptual hash of the file, either the bare hex
+            digest or a ``PerceptualHash.serialize()`` string.
         media_type: Media type used to partition comparisons.
     """
 
@@ -66,19 +67,17 @@ class DuplicateFinder:
     Args:
         threshold: Maximum Hamming distance (inclusive) for two hashes to be
             considered duplicates.
-        hash_format: Encoding used to decode perceptual-hash strings.
 
     Raises:
         DuplicateError: If ``threshold`` is negative.
     """
 
-    __slots__ = ("hash_format", "threshold")
+    __slots__ = ("threshold",)
 
     def __init__(
         self,
         *,
         threshold: int = DEFAULT_HASH_DISTANCE_THRESHOLD,
-        hash_format: HashFormat = HashFormat.AUTO,
     ) -> None:
         if threshold < 0:
             raise DuplicateError(
@@ -87,14 +86,11 @@ class DuplicateFinder:
                 details={"threshold": threshold},
             )
         self.threshold = threshold
-        self.hash_format = hash_format
 
     @classmethod
     def from_config(
         cls,
         config: WinnowConfig | None = None,
-        *,
-        hash_format: HashFormat = HashFormat.AUTO,
     ) -> Self:
         """Build a finder from a :class:`WinnowConfig`.
 
@@ -102,7 +98,6 @@ class DuplicateFinder:
             config: Configuration providing
                 ``perceptual_hash_distance_threshold``. When ``None`` the module
                 default of ``10`` is used.
-            hash_format: Encoding used to decode perceptual-hash strings.
 
         Returns:
             Configured duplicate finder.
@@ -112,7 +107,7 @@ class DuplicateFinder:
             if config is None
             else config.perceptual_hash_distance_threshold
         )
-        return cls(threshold=threshold, hash_format=hash_format)
+        return cls(threshold=threshold)
 
     def find(self, files: Iterable[HashedFile]) -> list[DuplicateGroup]:
         """Group similar files into duplicate groups sorted by size.
@@ -164,10 +159,8 @@ class DuplicateFinder:
         decoded: list[tuple[int, int]] = []
         for item in items:
             try:
-                decoded.append(
-                    parse_hash(item.perceptual_hash, hash_format=self.hash_format),
-                )
-            except DuplicateError as error:
+                decoded.append(parse_digest(item.perceptual_hash))
+            except HashError as error:
                 raise DuplicateError(
                     "failed to parse perceptual hash",
                     operation="DuplicateFinder.find",
@@ -276,19 +269,17 @@ def find_duplicates(
     files: Iterable[HashedFile],
     *,
     threshold: int = DEFAULT_HASH_DISTANCE_THRESHOLD,
-    hash_format: HashFormat = HashFormat.AUTO,
 ) -> list[DuplicateGroup]:
     """Group similar files using a one-off :class:`DuplicateFinder`.
 
     Args:
         files: Media files paired with their perceptual hashes.
         threshold: Maximum Hamming distance (inclusive) for a match.
-        hash_format: Encoding used to decode perceptual-hash strings.
 
     Returns:
         Duplicate groups ordered by member count descending.
     """
-    finder = DuplicateFinder(threshold=threshold, hash_format=hash_format)
+    finder = DuplicateFinder(threshold=threshold)
     return finder.find(files)
 
 

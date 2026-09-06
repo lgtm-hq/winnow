@@ -16,6 +16,7 @@ from winnow.report.records import (
     ReportRun,
 )
 from winnow.report.schema import (
+    MIGRATIONS,
     SCHEMA_STATEMENTS,
     SCHEMA_VERSION,
     TERMINAL_RUN_STATUSES,
@@ -23,6 +24,7 @@ from winnow.report.schema import (
 )
 
 __all__ = [
+    "MIGRATIONS",
     "SCHEMA_STATEMENTS",
     "SCHEMA_VERSION",
     "TERMINAL_RUN_STATUSES",

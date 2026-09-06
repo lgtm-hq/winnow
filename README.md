@@ -40,8 +40,8 @@ uv add winnow-media
 uv run winnow --version
 ```
 
-Optional dependency groups (`face`, `cv`, `ai-detect`) are declared in `pyproject.toml`
-but not wired to features yet.
+Optional dependency groups (`face`, `ai-detect`) are declared in `pyproject.toml` but
+not wired to features yet.
 
 ### From source
 
@@ -137,7 +137,7 @@ make setup          # install dev dependencies (uv sync --dev)
 make lint           # uv run lintro chk
 make fmt            # uv run lintro fmt
 make test           # pytest with 85% coverage gate
-make test-integration  # opt-in integration tests
+make test-integration  # run integration tests explicitly (CI always runs them)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, signed commits, and PR

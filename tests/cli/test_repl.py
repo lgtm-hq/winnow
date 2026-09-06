@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import subprocess  # nosec B404 - fixed interpreter invocation, no untrusted input
 import sys
+from collections.abc import Iterator
 
 import click
 import pytest
@@ -13,7 +14,9 @@ from click.testing import CliRunner
 
 from winnow import __version__
 from winnow.cli import main
-from winnow.cli.repl import run_repl
+from winnow.cli.errors import WinnowGroup
+from winnow.cli.repl import _dispatch, run_repl
+from winnow.exceptions import MediaError
 
 
 def test_bare_invocation_shows_tip_without_tty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,6 +61,59 @@ def test_repl_exits_on_end_of_input(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains("Goodbye.")
+
+
+@pytest.fixture
+def failing_command() -> Iterator[str]:
+    """Register a throwaway command on ``main`` that raises a ``WinnowError``.
+
+    Yields:
+        The registered command name; it is removed again on teardown.
+    """
+    name = "boom"
+
+    @click.command(name=name)
+    def boom() -> None:
+        """Raise a domain error."""
+        raise MediaError("unreadable", operation="probe", file_path="/f.jpg")
+
+    main.add_command(boom)
+    yield name
+    main.commands.pop(name)
+
+
+def test_repl_survives_winnow_error(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_command: str,
+) -> None:
+    """A ``WinnowError`` raised by a command prints the panel and the REPL goes on."""
+    monkeypatch.setattr("winnow.cli.repl.stdin_is_interactive", lambda: True)
+    result = CliRunner().invoke(main, [], input=f"{failing_command}\nexit\n")
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.stderr).contains("unreadable")
+    assert_that(result.stderr).contains("operation: probe")
+    assert_that(result.stderr).contains("Check that /f.jpg is a readable media file.")
+    assert_that(result.output).contains("Goodbye.")
+
+
+def test_dispatch_prints_panel_and_returns_on_winnow_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``_dispatch`` renders a ``WinnowError`` through the root handler and returns."""
+    group = WinnowGroup(name="root")
+
+    @group.command(name="boom")
+    def boom() -> None:
+        """Raise a domain error."""
+        raise MediaError("unreadable", file_path="/f.jpg")
+
+    _dispatch(main=group, args=["boom"], context_obj={})
+
+    captured = capsys.readouterr()
+    assert_that(captured.err).contains("Error")
+    assert_that(captured.err).contains("unreadable (path: /f.jpg)")
+    assert_that(captured.out).is_empty()
 
 
 def test_run_repl_help_command_lists_subcommands(

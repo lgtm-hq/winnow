@@ -8,7 +8,14 @@ import pytest
 from assertpy import assert_that
 
 from winnow.exceptions import CacheError
-from winnow.hash import CacheEntry, CacheKey, CacheStats, HashCache, _db
+from winnow.hash import (
+    CacheEntry,
+    CacheKey,
+    CacheStats,
+    HashCache,
+    _db,
+    open_hash_cache,
+)
 from winnow.models.config import CacheSettings
 from winnow.models.enums import HashAlgorithm
 
@@ -49,6 +56,74 @@ def test_default_db_path_under_cache_settings_directory(
 
     assert_that(str(expected)).starts_with(str(tmp_path))
     assert_that(expected.is_file()).is_true()
+
+
+def test_default_db_path_uses_cache_settings_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``default_db_path()`` resolves ``cache.db`` under the default directory."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert_that(_db.default_db_path()).is_equal_to(
+        CacheSettings().directory / _db.CACHE_DB_FILENAME,
+    )
+
+
+def test_default_db_path_honours_settings_directory(tmp_path: Path) -> None:
+    """``default_db_path(settings)`` places ``cache.db`` under the directory."""
+    settings = CacheSettings(directory=tmp_path)
+
+    assert_that(_db.default_db_path(settings)).is_equal_to(
+        tmp_path / _db.CACHE_DB_FILENAME,
+    )
+
+
+def test_open_hash_cache_returns_none_when_disabled(tmp_path: Path) -> None:
+    """A disabled cache yields ``None`` and touches no files."""
+    settings = CacheSettings(enabled=False, directory=tmp_path)
+
+    result = open_hash_cache(settings)
+
+    assert_that(result).is_none()
+    assert_that(list(tmp_path.iterdir())).is_empty()
+
+
+def test_open_hash_cache_creates_db_under_settings_directory(
+    tmp_path: Path,
+) -> None:
+    """An enabled cache opens ``cache.db`` under ``settings.directory``."""
+    cache = open_hash_cache(CacheSettings(directory=tmp_path))
+
+    assert_that(cache).is_instance_of(HashCache)
+    if cache is not None:
+        cache.close()
+    assert_that((tmp_path / _db.CACHE_DB_FILENAME).is_file()).is_true()
+
+
+def test_open_hash_cache_directory_override_wins(tmp_path: Path) -> None:
+    """An explicit ``directory`` overrides ``settings.directory``."""
+    settings = CacheSettings(directory=tmp_path / "a")
+
+    cache = open_hash_cache(settings, directory=tmp_path / "b")
+
+    assert_that(cache).is_instance_of(HashCache)
+    if cache is not None:
+        cache.close()
+    assert_that((tmp_path / "b" / _db.CACHE_DB_FILENAME).is_file()).is_true()
+    assert_that((tmp_path / "a").exists()).is_false()
+
+
+def test_open_hash_cache_disabled_ignores_directory_override(
+    tmp_path: Path,
+) -> None:
+    """A disabled cache returns ``None`` even when a directory is given."""
+    settings = CacheSettings(enabled=False, directory=tmp_path / "a")
+
+    result = open_hash_cache(settings, directory=tmp_path / "b")
+
+    assert_that(result).is_none()
+    assert_that(list(tmp_path.iterdir())).is_empty()
 
 
 def test_init_creates_parent_directories(tmp_path: Path) -> None:

@@ -14,8 +14,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from winnow.exceptions import ReportError
-from winnow.report.schema import SCHEMA_STATEMENTS, SCHEMA_VERSION
+from winnow.exceptions import ReportError, StorageError
+from winnow.report.schema import MIGRATIONS, SCHEMA_STATEMENTS, SCHEMA_VERSION
+from winnow.storage import apply_schema, read_schema_version
+from winnow.storage.migrations import MSG_MIGRATION_GAP, MSG_NEWER_THAN_BUILD
 
 MSG_OPEN_FAILED = "could not open report database"
 MSG_NOT_CONNECTED = "report database is not connected"
@@ -24,6 +26,8 @@ MSG_PROVISION_FAILED = "could not provision report schema"
 MSG_WRITE_FAILED = "report database write failed"
 MSG_QUERY_FAILED = "report database query failed"
 MSG_NO_ROW_ID = "insert did not produce a row id"
+
+_VERSION_MISMATCH_MESSAGES = frozenset({MSG_NEWER_THAN_BUILD, MSG_MIGRATION_GAP})
 
 
 class ConnectionManager:
@@ -138,62 +142,34 @@ class ConnectionManager:
         return self._connection
 
     def _initialize_schema(self) -> None:
-        """Provision the schema or validate an existing version.
+        """Provision the schema or migrate an existing database to it.
+
+        Delegates to :func:`winnow.storage.apply_schema` and maps its
+        :class:`StorageError` onto the :class:`ReportError` contract.
 
         Raises:
-            ReportError: If the stored schema version is unsupported.
-        """
-        current = self._read_schema_version()
-        if current == SCHEMA_VERSION:
-            return
-        if current == 0:
-            self._apply_schema()
-            return
-        raise ReportError(
-            MSG_UNSUPPORTED_VERSION,
-            operation="initialize_schema",
-            details={"found": current, "expected": SCHEMA_VERSION},
-        )
-
-    def _read_schema_version(self) -> int:
-        """Return the persisted schema version, or ``0`` if unprovisioned.
-
-        Returns:
-            The highest recorded schema version, or ``0`` when the schema has
-            not been created yet.
-        """
-        connection = self._require_connection()
-        table = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'schema_version';",
-        ).fetchone()
-        if table is None:
-            return 0
-        row = connection.execute(
-            "SELECT MAX(version) AS version FROM schema_version;",
-        ).fetchone()
-        version = row["version"]
-        return int(version) if version is not None else 0
-
-    def _apply_schema(self) -> None:
-        """Create all tables, indexes, and the FTS index, then record version.
-
-        Raises:
-            ReportError: If any DDL statement fails.
+            ReportError: If the stored schema version is unsupported (newer
+                than this build, or no migration path) or provisioning fails.
         """
         connection = self._require_connection()
         try:
-            with connection:
-                for statement in SCHEMA_STATEMENTS:
-                    connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO schema_version (version) VALUES (?);",
-                    (SCHEMA_VERSION,),
-                )
-        except sqlite3.Error as error:
+            apply_schema(
+                connection,
+                baseline=SCHEMA_STATEMENTS,
+                migrations=MIGRATIONS,
+                target_version=SCHEMA_VERSION,
+            )
+        except StorageError as error:
+            if error.message in _VERSION_MISMATCH_MESSAGES:
+                raise ReportError(
+                    MSG_UNSUPPORTED_VERSION,
+                    operation="initialize_schema",
+                    details=error.context.details,
+                ) from error
             raise ReportError(
                 MSG_PROVISION_FAILED,
                 operation="apply_schema",
+                details=error.context.details,
             ) from error
 
     def schema_version(self) -> int:
@@ -202,7 +178,7 @@ class ConnectionManager:
         Returns:
             The persisted schema version.
         """
-        return self._read_schema_version()
+        return read_schema_version(self._require_connection())
 
     def _write(self, sql: str, params: Sequence[object]) -> sqlite3.Cursor:
         """Execute a write statement inside a transaction.
