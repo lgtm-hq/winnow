@@ -11,10 +11,16 @@ from winnow.models.enums import (
     SortOrder,
     SymlinkPolicy,
 )
-from winnow.models.media import MediaFile, MediaMetadata, MediaType
+from winnow.models.media import (
+    MEDIA_METADATA_SCHEMA_VERSION,
+    MediaFile,
+    MediaMetadata,
+    MediaType,
+)
 from winnow.models.pipeline import PipelineResult, PipelineStep, RunMetadata
 
 __all__ = [
+    "MEDIA_METADATA_SCHEMA_VERSION",
     "CacheSettings",
     "DuplicateGroup",
     "DuplicatePair",
