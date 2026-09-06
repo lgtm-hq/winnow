@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from winnow.cli.standards import config_path_option
+from winnow.cli.standards import config_path_option, yes_option
 from winnow.config import (
     cwd_config_path,
     generate_default_config,
@@ -22,16 +22,11 @@ _SORT_CHOICES = tuple(order.value for order in SortOrder)
 
 
 @click.command(name="init")
-@click.option(
-    "--force",
-    is_flag=True,
-    default=False,
-    help="Overwrite an existing configuration without prompting.",
-)
+@yes_option()
 @config_path_option()
 def init(
     *,
-    force: bool,
+    yes: bool,
     config_path: Path | None,
 ) -> None:
     """Create a configuration file through guided prompts.
@@ -39,14 +34,14 @@ def init(
     \f
 
     Args:
-        force: Overwrite an existing configuration file without prompting.
+        yes: Overwrite an existing configuration file without prompting.
         config_path: Explicit configuration file path.
 
     Raises:
         ClickException: If the configuration cannot be created.
     """
     target = config_path if config_path is not None else cwd_config_path()
-    if target.exists() and not force:
+    if target.exists() and not yes:
         click.confirm(
             f"{target} already exists. Overwrite?",
             abort=True,

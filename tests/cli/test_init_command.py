@@ -64,14 +64,14 @@ def test_init_aborts_when_overwrite_declined(tmp_path: Path) -> None:
     assert_that(config_path.read_text(encoding="utf-8")).contains("workers: 7")
 
 
-def test_init_force_overwrites_existing_config(tmp_path: Path) -> None:
-    """``init --force`` overwrites an existing config without prompting."""
+def test_init_yes_overwrites_existing_config(tmp_path: Path) -> None:
+    """``init --yes`` overwrites an existing config without prompting."""
     config_path = tmp_path / CONFIG_FILE_NAME
     config_path.write_text("workers: 7\n", encoding="utf-8")
 
     result = CliRunner().invoke(
         main,
-        ["init", "--force", "--config", str(config_path)],
+        ["init", "--yes", "--config", str(config_path)],
         input="/data/media" + _ACCEPT_DEFAULTS,
     )
 
