@@ -137,7 +137,7 @@ make setup          # install dev dependencies (uv sync --dev)
 make lint           # uv run lintro chk
 make fmt            # uv run lintro fmt
 make test           # pytest with 85% coverage gate
-make test-integration  # opt-in integration tests
+make test-integration  # excluded by default locally, always run in CI
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, signed commits, and PR

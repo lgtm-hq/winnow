@@ -79,7 +79,7 @@ packages = ["winnow"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "-m", "not integration"]
 markers = [
-  "integration: end-to-end tests that build artifacts or spawn external tools (opt-in)",
+  "integration: slow end-to-end tests (wheel build, external tools); excluded by default locally, always run in CI",
 ]
 
 [tool.coverage.run]
