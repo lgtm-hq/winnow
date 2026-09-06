@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from winnow.models.config import CacheSettings, PathSettings, WinnowConfig
+from winnow.models.config import (
+    CacheSettings,
+    PathSettings,
+    RoutingSettings,
+    WinnowConfig,
+)
 from winnow.models.duplicates import DuplicateGroup, DuplicatePair, QualityScore
 from winnow.models.enums import (
     FileAction,
     HashAlgorithm,
     MediaCategory,
     SortOrder,
+    SpecialCategory,
     SymlinkPolicy,
 )
 from winnow.models.media import MediaFile, MediaMetadata, MediaType
@@ -28,8 +34,10 @@ __all__ = [
     "PipelineResult",
     "PipelineStep",
     "QualityScore",
+    "RoutingSettings",
     "RunMetadata",
     "SortOrder",
+    "SpecialCategory",
     "SymlinkPolicy",
     "WinnowConfig",
 ]

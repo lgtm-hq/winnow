@@ -60,6 +60,20 @@ def test_load_config_reads_working_directory_file(tmp_path: Path) -> None:
     assert_that(config.paths.output_dir).is_equal_to(output_dir)
 
 
+def test_load_config_reads_routing_settings(tmp_path: Path) -> None:
+    """Verify a routing mapping in YAML round-trips into RoutingSettings."""
+    (tmp_path / CONFIG_FILE_NAME).write_text(
+        "routing:\n  screenshots: Shots\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that(config.routing.screenshots).is_equal_to("Shots")
+    assert_that(config.routing.graphics).is_equal_to("Graphics")
+    assert_that(config.routing.enabled).is_true()
+
+
 def test_load_config_prefers_working_directory_over_user_file(
     tmp_path: Path,
 ) -> None:

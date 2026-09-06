@@ -34,6 +34,15 @@ class MediaCategory(StrEnum):
     AUDIO = auto()
 
 
+class SpecialCategory(StrEnum):
+    """Special-folder categories a classified file can route to."""
+
+    SCREENSHOT = auto()
+    GRAPHIC = auto()
+    LIVE_PHOTO = auto()
+    REVIEW = auto()
+
+
 class FileAction(StrEnum):
     """Actions that can be taken on duplicate or candidate files."""
 
