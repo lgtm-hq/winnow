@@ -42,6 +42,21 @@ The version shown is illustrative; the CLI prints the installed `winnow-media` v
 
 ---
 
+## Environment
+
+Winnow resolves its per-user directories from the environment at call time, in the order
+listed. Relative overrides are taken as given; `~` is expanded.
+
+| Variable            | Purpose                                           | Fallback                                              |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------------- |
+| `WINNOW_CONFIG_DIR` | Per-user config directory (`.winnow-config.yaml`) | `$XDG_CONFIG_HOME/winnow`, then `~/.config/winnow`    |
+| `WINNOW_DATA_DIR`   | Per-user data directory (`sessions.db` saga log)  | `$XDG_DATA_HOME/winnow`, then `~/.local/share/winnow` |
+
+`WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
+onto configuration fields, not directories.
+
+---
+
 ## Standard Flag Conventions
 
 `winnow/cli/standards.py` defines reusable Click option factories that every upcoming
