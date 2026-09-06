@@ -245,3 +245,26 @@ def test_apply_at_target_is_a_no_op(v2_connection: sqlite3.Connection) -> None:
 
     assert_that(reached).is_equal_to(2)
     assert_that(_versions(v2_connection)).is_equal_to([2])
+
+
+def test_open_transaction_is_rejected_before_execution(
+    v2_connection: sqlite3.Connection,
+) -> None:
+    """A caller's open transaction is neither committed nor rolled back."""
+    v2_connection.execute("INSERT INTO t (a) VALUES (1);")
+    assert_that(v2_connection.in_transaction).is_true()
+
+    with pytest.raises(StorageError, match="no open transaction"):
+        apply_schema(
+            v2_connection,
+            baseline=BASELINE,
+            migrations=(ADD_B,),
+            target_version=3,
+        )
+
+    assert_that(v2_connection.in_transaction).is_true()
+    assert_that(_versions(v2_connection)).is_equal_to([2])
+    v2_connection.rollback()
+    assert_that(
+        v2_connection.execute("SELECT COUNT(*) FROM t;").fetchone()[0]
+    ).is_equal_to(0)

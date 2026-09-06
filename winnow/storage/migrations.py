@@ -22,6 +22,7 @@ MSG_MIGRATIONS_NOT_ASCENDING = "migration versions must be strictly ascending"
 MSG_MIGRATION_GAP = "no migration for schema version"
 MSG_MIGRATION_FAILED = "failed to apply schema migration"
 MSG_BASELINE_FAILED = "failed to apply schema baseline"
+MSG_TRANSACTION_OPEN = "apply_schema requires no open transaction"
 
 _INSERT_VERSION = "INSERT INTO schema_version (version) VALUES (?);"
 
@@ -82,9 +83,12 @@ def apply_schema(
     - ``current > target_version``: raise.
 
     Migration ordering and coverage are validated before anything executes.
+    The connection must not have a transaction open: every step commits or
+    rolls back on its own, so an outer transaction would be committed or
+    rolled back together with the step.
 
     Args:
-        connection: Open SQLite connection.
+        connection: Open SQLite connection with no transaction in progress.
         baseline: Ordered DDL that provisions the full current schema.
         migrations: Upgrade steps, strictly ascending by ``version``.
         target_version: Schema version this build expects.
@@ -93,11 +97,14 @@ def apply_schema(
         The schema version recorded in the database after the call.
 
     Raises:
-        StorageError: If the stored version is newer than ``target_version``,
-            if ``migrations`` is not strictly ascending or misses a version in
+        StorageError: If ``connection`` has a transaction open, if the stored
+            version is newer than ``target_version``, if ``migrations`` is not
+            strictly ascending or misses a version in
             ``current + 1 .. target_version``, or if a statement fails (the
             failing migration's ``version`` is in ``details``).
     """
+    if connection.in_transaction:
+        raise StorageError(MSG_TRANSACTION_OPEN, operation=OPERATION)
     _validate_ordering(migrations)
     current = read_schema_version(connection)
     if current == target_version:
@@ -211,8 +218,7 @@ def _run_step(
     """
     try:
         with connection:
-            if not connection.in_transaction:
-                connection.execute("BEGIN;")
+            connection.execute("BEGIN;")
             for statement in statements:
                 connection.execute(statement)
             connection.execute(_INSERT_VERSION, (version,))
