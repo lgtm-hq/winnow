@@ -32,6 +32,14 @@ class PathSettings(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=list)
 
 
+class OrganizeSettings(BaseModel):
+    """Settings for the organize pipeline (discovery and later steps)."""
+
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+
+    max_depth: int | None = Field(default=None, ge=0)
+
+
 class WinnowConfig(BaseModel):
     """Application configuration loaded from files and environment overrides."""
 
@@ -54,6 +62,7 @@ class WinnowConfig(BaseModel):
     workers: int = Field(default=1, ge=1)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
+    organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
 
     @model_validator(mode="after")
     def _reject_conflicting_symlink_settings(self) -> Self:
