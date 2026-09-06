@@ -28,18 +28,6 @@ from winnow.hash.cache_stats import CacheStats
 from winnow.models.config import CacheSettings
 
 
-def _default_db_path() -> Path:
-    """Return the default on-disk location for the cache database.
-
-    The location is derived from the :class:`CacheSettings` default cache
-    directory so the cache-directory default is defined exactly once.
-
-    Returns:
-        Path to ``cache.db`` under the default cache directory.
-    """
-    return CacheSettings().directory / "cache.db"
-
-
 class HashCache:
     """Persistent perceptual-hash cache backed by SQLite.
 
@@ -56,7 +44,7 @@ class HashCache:
         """Open the cache database, creating its schema if necessary."""
         self._in_memory = db_path == _db.IN_MEMORY
         if db_path is None:
-            self._db_path: Path = _default_db_path()
+            self._db_path: Path = _db.default_db_path()
         else:
             self._db_path = Path(db_path)
         self._hits = 0
@@ -297,3 +285,31 @@ class HashCache:
     ) -> None:
         """Close the connection when leaving a context manager scope."""
         self.close()
+
+
+def open_hash_cache(
+    settings: CacheSettings,
+    *,
+    directory: Path | None = None,
+) -> HashCache | None:
+    """Open the hash cache described by ``settings``.
+
+    This is the single place that turns cache configuration into a
+    :class:`HashCache`, so ``cache.enabled`` and ``cache.directory`` are
+    honoured the same way by every command.
+
+    Args:
+        settings: Cache settings, typically ``config.cache``.
+        directory: Cache directory override (the CLI's ``--cache-path``).
+            When given it wins over ``settings.directory``.
+
+    Returns:
+        An open cache, or ``None`` when ``settings.enabled`` is false. The
+        parent directory is created by :func:`winnow.hash._db.connect`.
+
+    Raises:
+        CacheError: If the database cannot be opened.
+    """
+    if not settings.enabled:
+        return None
+    return HashCache(db_path=(directory or settings.directory) / _db.CACHE_DB_FILENAME)
