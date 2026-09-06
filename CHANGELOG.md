@@ -21,6 +21,43 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.20.1] - 2026-09-06
+
+### Changed
+
+- **deps**: remove the empty cv optional extra and its doctor probe (#205) (054359c)
+
+### Fixed
+
+- **config**: drop dead cache TTL/size settings and open the hash cache from config
+  (#206) (76129ab)
+
+## [0.20.0] - 2026-09-06
+
+### Added
+
+- **report**: add a stepwise SQLite schema migration runner shared by all stores (#203)
+  (94971aa)
+
+## [0.19.1] - 2026-09-06
+
+### Changed
+
+- **ci**: state that integration tests are opt-in locally and always run in CI (#198)
+  (7fc2ef5)
+- **hash**: one hamming_distance and one perceptual-digest parser across hash and dedup
+  (#204) (c6cafd5)
+- **typing**: remove the four type: ignore comments and guard against new ones (#199)
+  (3f4bfa2)
+- **core**: keep one SymlinkPolicy enum shared by config and PathValidator (#201)
+  (2f20760)
+- **ci**: adopt latest lgtm-ci (v0.69.x) — core workflows pinned to v0.52.3 (#202)
+  (994eb9b)
+
+### Fixed
+
+- **cli**: stop --help from printing docstring Args/Raises sections (#200) (fcabdfe)
+
 ## [0.19.0] - 2026-08-26
 
 ### Added

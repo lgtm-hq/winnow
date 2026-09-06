@@ -88,6 +88,8 @@ def _render_command_help(
 def help_command(ctx: click.Context, command_name: str | None) -> None:
     """Show Rich-formatted help for Winnow or a specific command.
 
+    \f
+
     Args:
         ctx: Active Click context carrying root option state.
         command_name: Optional command to describe. When omitted, an overview of

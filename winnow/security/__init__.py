@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from winnow.security.enums import SymlinkPolicy
+from winnow.models.enums import SymlinkPolicy
 from winnow.security.filenames import DEFAULT_MAX_LENGTH, sanitize_filename
 from winnow.security.path_validator import PathValidator
 

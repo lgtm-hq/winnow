@@ -135,9 +135,19 @@ def test_standard_option_factories_expose_conventional_flags() -> None:
     assert_that(result.output).contains("--enable-cache")
     assert_that(result.output).contains("--no-cache")
     assert_that(result.output).contains("--cache-path")
-    assert_that(result.output).contains("--cache-ttl")
+    assert_that(result.output).does_not_contain("--cache-ttl")
     assert_that(result.output).does_not_contain("--force")
     assert_that(result.output).does_not_contain("--disable-cache")
+
+
+def test_cache_options_reject_removed_cache_ttl_flag() -> None:
+    """The removed ``--cache-ttl`` flag is a usage error, not a silent no-op."""
+    command = _command_with_options([cache_options()])
+
+    result = CliRunner().invoke(command, ["--cache-ttl", "60"])
+
+    assert_that(result.exit_code).is_not_equal_to(0)
+    assert_that(result.output).contains("--cache-ttl")
 
 
 def test_standard_option_factories_parse_canonical_parameter_names() -> None:
@@ -171,14 +181,11 @@ def test_standard_option_factories_parse_canonical_parameter_names() -> None:
             "--no-cache",
             "--cache-path",
             ".winnow-cache",
-            "--cache-ttl",
-            "60",
         ],
     )
 
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains("cache_path=.winnow-cache")
-    assert_that(result.output).contains("cache_ttl=60")
     assert_that(result.output).contains("config_path=winnow.yml")
     assert_that(result.output).contains("dry_run=True")
     assert_that(result.output).contains("enable_cache=False")
@@ -280,18 +287,3 @@ def test_workers_option_accepts_custom_default() -> None:
 
     assert_that(help_result.output).contains("default: 8")
     assert_that(parse_result.output).contains("workers=8")
-
-
-def test_cache_ttl_rejects_negative_values() -> None:
-    """A negative cache TTL fails at parse time."""
-
-    @click.command()
-    @cache_options()
-    def cached(**kwargs: object) -> None:
-        """Accept cache options for assertions."""
-        del kwargs
-
-    runner = CliRunner()
-    result = runner.invoke(cached, ["--cache-ttl", "-5"])
-
-    assert_that(result.exit_code).is_not_equal_to(0)

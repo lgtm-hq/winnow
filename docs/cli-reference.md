@@ -67,11 +67,10 @@ across the CLI.
 
 The cache group is applied as a unit via `cache_options()`:
 
-| Flag                            | Type    | Default | Description                    |
-| ------------------------------- | ------- | ------- | ------------------------------ |
-| `--enable-cache` / `--no-cache` | flag    | `true`  | Enable or disable caching.     |
-| `--cache-path`                  | path    | none    | Cache directory path.          |
-| `--cache-ttl`                   | int ≥ 0 | none    | Cache time-to-live in seconds. |
+| Flag                            | Type | Default | Description                |
+| ------------------------------- | ---- | ------- | -------------------------- |
+| `--enable-cache` / `--no-cache` | flag | `true`  | Enable or disable caching. |
+| `--cache-path`                  | path | none    | Cache directory path.      |
 
 ### Composite option groups
 

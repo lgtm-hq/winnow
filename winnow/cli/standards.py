@@ -195,7 +195,7 @@ def cache_options() -> OptionDecorator:
     """Create the standard cache options decorator.
 
     Returns:
-        A decorator that adds cache toggle, path, and TTL options.
+        A decorator that adds cache toggle and path options.
     """
 
     def decorator(command: ClickCallback) -> ClickCallback:
@@ -223,15 +223,6 @@ def cache_options() -> OptionDecorator:
                 type=click.Path(path_type=Path),
                 default=None,
                 help="Cache directory path.",
-            ),
-        )
-        command = _apply_option(
-            command,
-            _option(
-                "--cache-ttl",
-                type=click.IntRange(min=0),
-                default=None,
-                help="Cache time-to-live in seconds.",
             ),
         )
         return command

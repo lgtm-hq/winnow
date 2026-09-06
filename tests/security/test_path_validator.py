@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 from assertpy import assert_that
-from loguru import logger
 
+import winnow.models.enums
+import winnow.security
 from winnow.exceptions import SecurityError
-from winnow.security.enums import SymlinkPolicy
+from winnow.models.enums import SymlinkPolicy
 from winnow.security.path_validator import PathValidator
 
 
@@ -102,25 +103,25 @@ def test_validate_path_accepts_unicode_long_and_special_names(
     assert_that(validator.validate_path(target)).is_equal_to(target.resolve())
 
 
-def test_validate_path_rejects_symlink_under_reject_policy(root: Path) -> None:
-    """Under REJECT policy, a symlink inside the root is rejected."""
+def test_validate_path_rejects_symlink_under_skip_policy(root: Path) -> None:
+    """Under SKIP policy, a symlink inside the root is rejected."""
     real = root / "real.jpg"
     real.touch()
     link = root / "link.jpg"
     link.symlink_to(real)
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
         validator.validate_path(link)
 
 
-def test_validate_path_rejects_symlinked_parent_under_reject_policy(
+def test_validate_path_rejects_symlinked_parent_under_skip_policy(
     root: Path,
 ) -> None:
-    """A symlinked intermediate directory is rejected under REJECT policy."""
+    """A symlinked intermediate directory is rejected under SKIP policy."""
     real_dir = root / "real_dir"
     real_dir.mkdir()
     (real_dir / "photo.jpg").touch()
@@ -128,17 +129,17 @@ def test_validate_path_rejects_symlinked_parent_under_reject_policy(
     link_dir.symlink_to(real_dir)
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
         validator.validate_path(link_dir / "photo.jpg")
 
 
-def test_validate_path_rejects_symlink_followed_by_dotdot_under_reject_policy(
+def test_validate_path_rejects_symlink_followed_by_dotdot_under_skip_policy(
     root: Path,
 ) -> None:
-    """A symlink neutralized by a later ``..`` is still rejected under REJECT."""
+    """A symlink neutralized by a later ``..`` is still rejected under SKIP."""
     real_sub = root / "real_sub"
     real_sub.mkdir()
     link_dir = root / "link_dir"
@@ -146,7 +147,7 @@ def test_validate_path_rejects_symlink_followed_by_dotdot_under_reject_policy(
     (root / "photo.jpg").touch()
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
@@ -165,7 +166,7 @@ def test_validate_path_rejects_external_alias_to_root_subdirectory(
     external_link.symlink_to(subdir)
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
@@ -180,7 +181,7 @@ def test_validate_path_rejects_external_symlink_navigating_into_root_via_dotdot(
 
     ``<ext_link>/../root/file`` resolves back inside the root, so the trusted
     boundary lands on the ``../root`` prefix. The leading ``ext_link`` symlink
-    precedes that boundary and must still be detected under REJECT.
+    precedes that boundary and must still be detected under SKIP.
     """
     sibling = tmp_path / "sibling"
     sibling.mkdir()
@@ -189,7 +190,7 @@ def test_validate_path_rejects_external_symlink_navigating_into_root_via_dotdot(
     (root / "file.jpg").touch()
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
     candidate = ext_link / ".." / root.name / "file.jpg"
 
@@ -198,8 +199,21 @@ def test_validate_path_rejects_external_symlink_navigating_into_root_via_dotdot(
         validator.validate_path(candidate)
 
 
-def test_validate_path_warns_for_every_traversed_symlink(root: Path) -> None:
-    """Under WARN policy, each traversed symlink emits its own warning."""
+@pytest.mark.parametrize(
+    "policy",
+    [SymlinkPolicy.SKIP, SymlinkPolicy.ERROR],
+    ids=["policy=skip", "policy=error"],
+)
+def test_validate_path_rejects_every_traversed_symlink_unless_follow(
+    root: Path,
+    policy: SymlinkPolicy,
+) -> None:
+    """Under SKIP and ERROR alike, a symlink component raises SecurityError.
+
+    Args:
+        root: The allowed root directory.
+        policy: The non-FOLLOW symlink policy under test.
+    """
     real_dir = root / "real_dir"
     real_dir.mkdir()
     inner_real = real_dir / "inner_real"
@@ -209,27 +223,22 @@ def test_validate_path_warns_for_every_traversed_symlink(root: Path) -> None:
     inner_link.symlink_to(inner_real)
     outer_link = root / "outer_link"
     outer_link.symlink_to(real_dir)
-    validator = PathValidator(
-        allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.WARN,
+    validator = PathValidator(allowed_roots=[root], symlink_policy=policy)
+
+    with pytest.raises(
+        SecurityError, match="symlink traversal is not permitted"
+    ) as exc:
+        validator.validate_path(outer_link / "inner_link" / "photo.jpg")
+
+    assert_that(exc.value.context.details["symlinks"]).is_equal_to(
+        [str(outer_link), str(outer_link / "inner_link")],
     )
-    messages: list[str] = []
-    sink_id = logger.add(messages.append, level="WARNING")
-
-    try:
-        result = validator.validate_path(outer_link / "inner_link" / "photo.jpg")
-    finally:
-        logger.remove(sink_id)
-
-    assert_that(result).is_equal_to((inner_real / "photo.jpg").resolve())
-    assert_that(messages).is_length(2)
-    assert_that(all("Traversing symlink" in message for message in messages)).is_true()
 
 
 def test_validate_path_accepts_path_under_symlinked_root_alias(
     tmp_path: Path,
 ) -> None:
-    """A path using a symlinked root alias is accepted under REJECT policy."""
+    """A path using a symlinked root alias is accepted under SKIP policy."""
     real_root = tmp_path / "real"
     real_root.mkdir()
     real_root = real_root.resolve()
@@ -237,7 +246,7 @@ def test_validate_path_accepts_path_under_symlinked_root_alias(
     alias_root.symlink_to(real_root)
     validator = PathValidator(
         allowed_roots=[real_root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     result = validator.validate_path(alias_root / "photo.jpg")
@@ -256,7 +265,7 @@ def test_validate_path_reports_escape_for_out_of_root_symlinked_ancestor(
     link_outside.symlink_to(real_outside)
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.REJECT,
+        symlink_policy=SymlinkPolicy.SKIP,
     )
 
     with pytest.raises(SecurityError, match="escapes the allowed roots"):
@@ -295,29 +304,6 @@ def test_validate_path_rejects_symlink_escaping_root_under_follow(
         validator.validate_path(link)
 
 
-def test_validate_path_warns_and_follows_under_warn_policy(root: Path) -> None:
-    """Under WARN policy, symlinks are followed but a warning is emitted."""
-    real = root / "real.jpg"
-    real.touch()
-    link = root / "link.jpg"
-    link.symlink_to(real)
-    validator = PathValidator(
-        allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.WARN,
-    )
-    messages: list[str] = []
-    sink_id = logger.add(messages.append, level="WARNING")
-
-    try:
-        result = validator.validate_path(link)
-    finally:
-        logger.remove(sink_id)
-
-    assert_that(result).is_equal_to(real.resolve())
-    assert_that(messages).is_length(1)
-    assert_that(messages[0]).contains("Traversing symlink")
-
-
 def test_is_within_roots_reports_containment(root: Path, tmp_path: Path) -> None:
     """is_within_roots reflects whether a path resolves inside a root."""
     validator = PathValidator(allowed_roots=[root])
@@ -338,8 +324,22 @@ def test_allowed_roots_and_policy_are_exposed(root: Path) -> None:
     """The validator exposes its resolved roots and symlink policy."""
     validator = PathValidator(
         allowed_roots=[root],
-        symlink_policy=SymlinkPolicy.WARN,
+        symlink_policy=SymlinkPolicy.ERROR,
     )
 
     assert_that(validator.allowed_roots).is_equal_to((root,))
-    assert_that(validator.symlink_policy).is_equal_to(SymlinkPolicy.WARN)
+    assert_that(validator.symlink_policy).is_equal_to(SymlinkPolicy.ERROR)
+
+
+def test_validator_defaults_to_skip_policy(root: Path) -> None:
+    """The default symlink policy is SKIP."""
+    validator = PathValidator(allowed_roots=[root])
+
+    assert_that(validator.symlink_policy).is_same_as(SymlinkPolicy.SKIP)
+
+
+def test_security_symlink_policy_is_models_enum() -> None:
+    """winnow.security re-exports the single SymlinkPolicy from winnow.models."""
+    assert_that(winnow.security.SymlinkPolicy).is_same_as(
+        winnow.models.enums.SymlinkPolicy,
+    )

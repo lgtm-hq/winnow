@@ -60,6 +60,8 @@ def show(
 ) -> None:
     """Show the effective configuration, merging defaults and overrides.
 
+    \f
+
     Args:
         output_format: Rendering format for the configuration.
         config_path: Explicit configuration file path.
@@ -86,6 +88,8 @@ def set_value(
     config_path: Path | None,
 ) -> None:
     """Set a dotted configuration key and persist the validated result.
+
+    \f
 
     Args:
         key: Dotted configuration key, such as ``cache.enabled``.
@@ -115,6 +119,8 @@ def reset(
 ) -> None:
     """Reset the configuration file to validated defaults.
 
+    \f
+
     Args:
         yes: Skip the confirmation prompt when true.
         config_path: Explicit configuration file path.
@@ -140,6 +146,8 @@ def validate(
     config_path: Path | None,
 ) -> None:
     """Validate a configuration source and report the result.
+
+    \f
 
     Args:
         config_path: Explicit configuration file path.

@@ -6,7 +6,7 @@ across arbitrary inputs: paths composed of safe components that stay within the 
 root are accepted and their resolved form remains within that root; paths that traverse
 above the root via ``..`` segments are unconditionally rejected with
 :class:`~winnow.exceptions.SecurityError`; and the configured
-:class:`~winnow.security.enums.SymlinkPolicy` is enforced as documented.
+:class:`~winnow.models.enums.SymlinkPolicy` is enforced as documented.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from winnow.exceptions import SecurityError
-from winnow.security.enums import SymlinkPolicy
+from winnow.models.enums import SymlinkPolicy
 from winnow.security.path_validator import PathValidator
 
 _MAX_EXAMPLES = 50
@@ -72,8 +72,8 @@ def test_prop_dotdot_escape_raises_security_error(components: list[str]) -> None
 
 @given(filename=st.from_regex(r"[a-zA-Z0-9_-]{1,10}\.txt", fullmatch=True))
 @settings(max_examples=_MAX_EXAMPLES, deadline=None)
-def test_prop_symlink_policy_reject_raises_for_any_symlink(filename: str) -> None:
-    """Under SymlinkPolicy.REJECT, any symlink component raises SecurityError."""
+def test_prop_symlink_policy_skip_raises_for_any_symlink(filename: str) -> None:
+    """Under SymlinkPolicy.SKIP, any symlink component raises SecurityError."""
     with tempfile.TemporaryDirectory() as tmpdir:
         root = (Path(tmpdir) / "root").resolve()
         root.mkdir()
@@ -83,7 +83,7 @@ def test_prop_symlink_policy_reject_raises_for_any_symlink(filename: str) -> Non
         link_file.symlink_to(real_file)
         validator = PathValidator(
             allowed_roots=[root],
-            symlink_policy=SymlinkPolicy.REJECT,
+            symlink_policy=SymlinkPolicy.SKIP,
         )
         with pytest.raises(SecurityError, match="symlink traversal is not permitted"):
             validator.validate_path(link_file)

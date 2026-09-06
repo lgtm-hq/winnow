@@ -35,6 +35,8 @@ def init(
 ) -> None:
     """Create a configuration file through guided prompts.
 
+    \f
+
     Args:
         force: Overwrite an existing configuration file without prompting.
         config_path: Explicit configuration file path.
