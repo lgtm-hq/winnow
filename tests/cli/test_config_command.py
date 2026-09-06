@@ -10,6 +10,7 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
+from winnow.cli.errors import ExitCode
 from winnow.config import CONFIG_FILE_NAME, cwd_config_path, load_config
 
 
@@ -63,8 +64,10 @@ def test_config_set_rejects_unknown_key(tmp_path: Path) -> None:
         ["config", "set", "bogus", "1", "--config", str(config_path)],
     )
 
-    assert_that(result.exit_code).is_not_equal_to(0)
-    assert_that(result.output).contains("Invalid Winnow configuration")
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("Invalid Winnow configuration")
+    assert_that(result.stderr).contains("winnow config validate")
+    assert_that(result.stdout).is_empty()
 
 
 def test_config_reset_requires_confirmation(tmp_path: Path) -> None:
@@ -78,7 +81,7 @@ def test_config_reset_requires_confirmation(tmp_path: Path) -> None:
         input="n\n",
     )
 
-    assert_that(result.exit_code).is_not_equal_to(0)
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
     assert_that(config_path.read_text(encoding="utf-8")).contains("workers: 9")
 
 
@@ -157,5 +160,8 @@ def test_config_validate_reports_invalid_file(tmp_path: Path) -> None:
         ["config", "validate", "--config", str(config_path)],
     )
 
-    assert_that(result.exit_code).is_not_equal_to(0)
-    assert_that(result.output).contains("Invalid Winnow configuration")
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("Invalid Winnow configuration")
+    assert_that(result.stderr).contains("operation: validate_config")
+    assert_that(result.stderr).contains("path:")
+    assert_that(result.stdout).is_empty()
