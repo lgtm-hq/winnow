@@ -40,8 +40,8 @@ uv add winnow-media
 uv run winnow --version
 ```
 
-Optional dependency groups (`face`, `cv`, `ai-detect`) are declared in `pyproject.toml`
-but not wired to features yet.
+Optional dependency groups (`face`, `ai-detect`) are declared in `pyproject.toml` but
+not wired to features yet.
 
 ### From source
 

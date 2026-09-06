@@ -13,6 +13,7 @@ from winnow.fs.operations import FileOperation, OperationStatus
 from winnow.models.media import MediaType
 from winnow.report import ReportDatabase, RunStatus
 from winnow.report.schema import SCHEMA_VERSION
+from winnow.storage import Migration
 
 
 def test_connect_initializes_schema_version(report_db: ReportDatabase) -> None:
@@ -91,6 +92,55 @@ def test_unsupported_schema_version_raises(tmp_path: Path) -> None:
 
     assert_that(exc_info.value.context.details).contains_key("found")
     assert_that(database.is_connected).is_false()
+
+
+def test_existing_v2_database_upgrades_in_place(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A v2 database migrates to a newer build and keeps its rows."""
+    db_path = tmp_path / "report.db"
+    seeded = ReportDatabase(db_path).connect()
+    run_id = seeded.create_run(root_path="/library", notes="before upgrade")
+    seeded.close()
+
+    monkeypatch.setattr(
+        "winnow.report._connection.MIGRATIONS",
+        (
+            Migration(
+                version=3,
+                statements=("ALTER TABLE report_runs ADD COLUMN session_id TEXT;",),
+            ),
+        ),
+    )
+    monkeypatch.setattr("winnow.report._connection.SCHEMA_VERSION", 3)
+
+    upgraded = ReportDatabase(db_path).connect()
+    try:
+        assert_that(upgraded.schema_version()).is_equal_to(3)
+        run = upgraded.get_run(run_id)
+        assert_that(run).is_not_none()
+        if run is None:
+            pytest.fail("expected run to survive the upgrade")
+        assert_that(run.notes).is_equal_to("before upgrade")
+    finally:
+        upgraded.close()
+
+    connection = sqlite3.connect(db_path)
+    try:
+        columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(report_runs);")
+        ]
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_version ORDER BY version;",
+            )
+        ]
+    finally:
+        connection.close()
+    assert_that(columns).contains("session_id")
+    assert_that(versions).is_equal_to([2, 3])
 
 
 def test_schema_version_rejects_duplicate_rows(tmp_path: Path) -> None:

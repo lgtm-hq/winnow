@@ -15,12 +15,14 @@ FastAPI.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from winnow.exceptions import PipelineError
 from winnow.models.config import WinnowConfig
 
-MetadataService = object
+if TYPE_CHECKING:
+    from winnow.media.service import MetadataService
+
 Hasher = object
 Cache = object
 Saga = object

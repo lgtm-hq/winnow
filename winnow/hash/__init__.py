@@ -14,7 +14,7 @@ Writers emit one of these two forms; every reader goes through
 
 from __future__ import annotations
 
-from winnow.hash.cache import HashCache
+from winnow.hash.cache import HashCache, open_hash_cache
 from winnow.hash.cache_entry import CacheEntry
 from winnow.hash.cache_key import CacheKey
 from winnow.hash.cache_stats import CacheStats
@@ -38,5 +38,6 @@ __all__ = [
     "PerceptualHash",
     "hamming_distance",
     "hash_image",
+    "open_hash_cache",
     "parse_digest",
 ]

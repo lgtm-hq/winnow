@@ -1610,7 +1610,7 @@ wheels = [
 
 [[package]]
 name = "winnow-media"
-version = "0.19.0"
+version = "0.23.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -1654,7 +1654,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.0" },
     { name = "tinytag", specifier = ">=2.0" },
 ]
-provides-extras = ["face", "cv", "ai-detect"]
+provides-extras = ["face", "ai-detect"]
 
 [package.metadata.requires-dev]
 dev = [

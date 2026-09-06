@@ -103,6 +103,18 @@ def test_clean_dry_run_reports_without_deleting(tmp_path: Path) -> None:
     assert_that((tmp_path / "empty").exists()).is_true()
 
 
+def test_clean_dry_run_prints_markup_like_names_verbatim(tmp_path: Path) -> None:
+    """Paths that look like Rich markup are printed literally."""
+    # ``/`` splits the name into two nested directories, so the leaf path
+    # ends in the literal ``[bold]x[/bold]``.
+    (tmp_path / "[bold]x[/bold]").mkdir(parents=True)
+
+    result = CliRunner().invoke(main, ["clean", str(tmp_path), "--dry-run"])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("[bold]x[/bold]")
+
+
 def test_clean_removes_directories_with_yes_flag(tmp_path: Path) -> None:
     """The --yes flag skips confirmation and removes empty directories."""
     _make_tree(tmp_path)

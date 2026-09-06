@@ -12,11 +12,15 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Final
 
 from winnow.exceptions import CacheError
 from winnow.hash.cache_key import CacheKey
+from winnow.models.config import CacheSettings
 
 IN_MEMORY = ":memory:"
+
+CACHE_DB_FILENAME: Final[str] = "cache.db"
 
 # Keep parameter counts comfortably below SQLite's compiled variable limit
 # (``SQLITE_MAX_VARIABLE_NUMBER``, historically 999) so batched IN clauses stay
@@ -35,6 +39,20 @@ CREATE TABLE IF NOT EXISTS hash_cache (
     PRIMARY KEY (path, algorithm)
 )
 """
+
+
+def default_db_path(settings: CacheSettings | None = None) -> Path:
+    """Return the on-disk location of the cache database for ``settings``.
+
+    Args:
+        settings: Cache settings whose ``directory`` hosts the database. When
+            ``None``, the :class:`CacheSettings` defaults are used so the
+            cache-directory default is defined exactly once.
+
+    Returns:
+        ``settings.directory / "cache.db"``.
+    """
+    return (settings or CacheSettings()).directory / CACHE_DB_FILENAME
 
 
 def chunked(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:
