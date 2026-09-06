@@ -8,6 +8,7 @@ from winnow import __version__
 from winnow.cli.clean import clean
 from winnow.cli.commands import doctor_command, help_command
 from winnow.cli.config import config as config_command
+from winnow.cli.errors import WinnowGroup
 from winnow.cli.info import info
 from winnow.cli.init import init as init_command
 from winnow.cli.standards import no_color_option
@@ -16,7 +17,7 @@ from winnow.cli.stats import stats
 __all__ = ["main"]
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=WinnowGroup, invoke_without_command=True)
 @click.version_option(version=__version__, prog_name="winnow")
 @no_color_option()
 @click.pass_context
