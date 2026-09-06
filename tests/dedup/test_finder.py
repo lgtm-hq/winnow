@@ -16,8 +16,10 @@ from winnow.dedup.finder import (
     HashedFile,
     find_duplicates,
 )
-from winnow.exceptions import DuplicateError
+from winnow.exceptions import DuplicateError, HashError
+from winnow.hash import PerceptualHash
 from winnow.models.config import WinnowConfig
+from winnow.models.enums import HashAlgorithm
 from winnow.models.media import MediaType
 
 
@@ -210,6 +212,33 @@ def test_invalid_hash_reports_offending_path() -> None:
         find_duplicates([_image("/bad.jpg", "xyz")])
 
     assert_that(str(error.value.context.file_path)).is_equal_to("/bad.jpg")
+    assert_that(error.value.__cause__).is_instance_of(HashError)
+
+
+def test_serialized_hashes_group_like_bare_digests() -> None:
+    """``PerceptualHash.serialize()`` strings group identical files together."""
+    digest = "8000000000000000"
+    serialized = PerceptualHash(
+        algorithm=HashAlgorithm.PHASH,
+        hash_size=8,
+        digest=digest,
+    ).serialize()
+
+    groups = find_duplicates(
+        [
+            _image("/a.jpg", serialized),
+            _image("/b.jpg", serialized),
+            _image("/c.jpg", digest),
+        ],
+        threshold=0,
+    )
+
+    assert_that(groups).is_length(1)
+    assert_that(groups[0].files).contains_only(
+        Path("/a.jpg"),
+        Path("/b.jpg"),
+        Path("/c.jpg"),
+    )
 
 
 def test_negative_threshold_is_rejected() -> None:
