@@ -126,3 +126,20 @@ def test_hamming_distance_rejects_mismatched_bit_lengths() -> None:
     assert_that(error.value.context.operation).is_equal_to("hamming_distance")
     assert_that(error.value.context.details["left_bits"]).is_equal_to(8)
     assert_that(error.value.context.details["right_bits"]).is_equal_to(16)
+
+
+def test_hamming_distance_rejects_mismatched_algorithms() -> None:
+    """Two self-describing digests naming different algorithms do not compare."""
+    with pytest.raises(HashError, match="different algorithms") as error:
+        hamming_distance("ahash:8:8000000000000000", "phash:8:8000000000000000")
+
+    assert_that(error.value.context.operation).is_equal_to("hamming_distance")
+    assert_that(error.value.context.details["left_algorithm"]).is_equal_to("ahash")
+    assert_that(error.value.context.details["right_algorithm"]).is_equal_to("phash")
+
+
+def test_hamming_distance_compares_bare_digest_with_any_algorithm() -> None:
+    """A bare digest carries no algorithm, so it compares on bit length alone."""
+    assert_that(
+        hamming_distance("ahash:8:8000000000000000", "0000000000000000"),
+    ).is_equal_to(1)
