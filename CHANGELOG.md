@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.21.0] - 2026-09-06
+
+### Added
+
+- **cli**: one exit-code table and a root handler for WinnowError and Ctrl-C (#209)
+  (83d9937)
+
 ## [0.20.1] - 2026-09-06
 
 ### Changed
