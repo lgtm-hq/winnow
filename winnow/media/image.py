@@ -8,6 +8,7 @@ recovered from embedded EXIF tags where possible.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
@@ -16,6 +17,7 @@ from loguru import logger
 from PIL import Image, UnidentifiedImageError
 
 from winnow.exceptions import MediaError
+from winnow.media._dates import parse_exif_datetime
 from winnow.models.media import MediaMetadata
 
 _HEIF_AVAILABLE: bool = False
@@ -36,6 +38,10 @@ _EXIF_WIDTH_TAGS: Final[tuple[str, ...]] = (
 _EXIF_HEIGHT_TAGS: Final[tuple[str, ...]] = (
     "EXIF ExifImageLength",
     "Image ImageLength",
+)
+_EXIF_CAPTURED_AT_TAGS: Final[tuple[str, ...]] = (
+    "EXIF DateTimeOriginal",
+    "Image DateTime",
 )
 
 _MODE_BIT_DEPTH: Final[dict[str, int]] = {
@@ -78,9 +84,10 @@ def extract_image_metadata(path: Path) -> MediaMetadata:
         path: Filesystem path to the image.
 
     Returns:
-        Metadata populated with dimensions, format, color mode, bit depth, and
-        alpha presence. RAW files that Pillow cannot decode return partial
-        metadata recovered from EXIF when available.
+        Metadata populated with dimensions, format, color mode, bit depth,
+        alpha presence, and the EXIF capture time when present. RAW files that
+        Pillow cannot decode return partial metadata recovered from EXIF when
+        available.
 
     Raises:
         MediaError: If the file is missing, unreadable, or cannot be decoded and
@@ -93,6 +100,8 @@ def extract_image_metadata(path: Path) -> MediaMetadata:
             file_path=path,
         )
 
+    tags = read_exif(path)
+    captured_at = _captured_at_from_exif(tags=tags)
     try:
         with Image.open(path) as image:
             width, height = image.size
@@ -103,10 +112,11 @@ def extract_image_metadata(path: Path) -> MediaMetadata:
                 color_mode=image.mode,
                 bit_depth=_mode_bit_depth(image.mode),
                 has_alpha=_mode_has_alpha(image=image),
+                captured_at=captured_at,
             )
     except UnidentifiedImageError:
         logger.debug("Pillow could not identify {}; trying EXIF fallback", path)
-        return _metadata_from_exif(path=path)
+        return _metadata_from_exif(path=path, tags=tags)
     except (OSError, ValueError) as exc:
         raise MediaError(
             "failed to read image",
@@ -182,19 +192,20 @@ def generate_thumbnail(
     return destination
 
 
-def _metadata_from_exif(path: Path) -> MediaMetadata:
+def _metadata_from_exif(*, path: Path, tags: dict[str, str]) -> MediaMetadata:
     """Recover partial image metadata from EXIF when decoding fails.
 
     Args:
         path: Filesystem path to the image.
+        tags: Stringified EXIF tag mapping already read from ``path``.
 
     Returns:
-        Metadata with dimensions filled from EXIF where present.
+        Metadata with dimensions and capture time filled from EXIF where
+        present.
 
     Raises:
         MediaError: If no usable EXIF dimensions are available.
     """
-    tags = read_exif(path)
     width = _first_int_tag(tags=tags, names=_EXIF_WIDTH_TAGS)
     height = _first_int_tag(tags=tags, names=_EXIF_HEIGHT_TAGS)
     if width is None and height is None:
@@ -207,6 +218,30 @@ def _metadata_from_exif(path: Path) -> MediaMetadata:
         width=width,
         height=height,
         image_format=_format_from_suffix(path),
+        captured_at=_captured_at_from_exif(tags=tags),
+    )
+
+
+def _captured_at_from_exif(*, tags: dict[str, str]) -> datetime | None:
+    """Resolve the capture time from EXIF date tags.
+
+    This is the single place image capture dates are read from EXIF; the
+    candidate order is ``EXIF DateTimeOriginal`` then ``Image DateTime``.
+
+    Args:
+        tags: Stringified EXIF tag mapping.
+
+    Returns:
+        Naive capture datetime, or ``None`` when no candidate tag parses.
+    """
+    return next(
+        (
+            parsed
+            for name in _EXIF_CAPTURED_AT_TAGS
+            if (raw := tags.get(name)) is not None
+            and (parsed := parse_exif_datetime(raw)) is not None
+        ),
+        None,
     )
 
 

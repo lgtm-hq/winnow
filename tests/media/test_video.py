@@ -7,6 +7,7 @@ A single opt-in check exercises the real ffprobe path when it is installed.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import (  # nosec B404 - test builds fake results; no process launched
     CompletedProcess,
@@ -358,3 +359,35 @@ def test_extract_video_metadata_falls_back_past_na_stream_values() -> None:
 
     assert_that(metadata.duration_seconds).is_equal_to(12.5)
     assert_that(metadata.bitrate).is_equal_to(800000)
+
+
+@pytest.mark.parametrize(
+    ("format_block", "expected"),
+    [
+        (
+            {"tags": {"creation_time": "2024-03-01T12:34:56.000000Z"}},
+            datetime(2024, 3, 1, 12, 34, 56, tzinfo=UTC),
+        ),
+        ({"tags": {"encoder": "Lavf60"}}, None),
+        ({}, None),
+        ({"tags": {"creation_time": "not-a-date"}}, None),
+        ({"tags": "unexpected"}, None),
+    ],
+    ids=[
+        "creation_time_utc",
+        "tags_without_creation_time",
+        "no_tags_block",
+        "unparseable_creation_time",
+        "tags_not_a_mapping",
+    ],
+)
+def test_parse_ffprobe_output_captured_at(
+    format_block: dict[str, object],
+    expected: datetime | None,
+) -> None:
+    """format.tags.creation_time populates captured_at when parseable."""
+    payload = json.dumps({"streams": [], "format": format_block})
+
+    metadata = _parse_ffprobe_output(payload=payload, path=Path("clip.mp4"))
+
+    assert_that(metadata.captured_at).is_equal_to(expected)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,118 @@ def test_read_exif_swallows_struct_error(
 
     monkeypatch.setattr("winnow.media.image.exifread.process_file", boom)
     assert_that(read_exif(path)).is_equal_to({})
+
+
+def _write_jpeg_with_exif(path: Path, tags: dict[int, str]) -> None:
+    """Save a tiny JPEG carrying the given ExifIFD string tags.
+
+    Args:
+        path: Destination path for the JPEG.
+        tags: Mapping of ExifIFD tag id to string value.
+    """
+    exif = Image.Exif()
+    exif_ifd = exif.get_ifd(0x8769)
+    for tag_id, value in tags.items():
+        exif_ifd[tag_id] = value
+    Image.new("RGB", (4, 4)).save(path, exif=exif)
+
+
+def test_extract_image_metadata_reads_date_time_original(tmp_path: Path) -> None:
+    """ExifIFD DateTimeOriginal populates a naive captured_at."""
+    jpeg = tmp_path / "dated.jpg"
+    _write_jpeg_with_exif(jpeg, {0x9003: "2024:03:01 12:34:56"})
+
+    metadata = extract_image_metadata(jpeg)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
+
+
+def test_extract_image_metadata_captured_at_none_without_exif(
+    fixtures_dir: Path,
+) -> None:
+    """An image with no EXIF reports no capture time."""
+    metadata = extract_image_metadata(fixtures_dir / "sample.png")
+
+    assert_that(metadata.captured_at).is_none()
+
+
+def test_extract_image_metadata_ignores_zero_date_time_original(
+    tmp_path: Path,
+) -> None:
+    """The EXIF all-zero placeholder does not become a capture time."""
+    jpeg = tmp_path / "zeroed.jpg"
+    _write_jpeg_with_exif(jpeg, {0x9003: "0000:00:00 00:00:00"})
+
+    metadata = extract_image_metadata(jpeg)
+
+    assert_that(metadata.captured_at).is_none()
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        (
+            {
+                "EXIF DateTimeOriginal": "2024:03:01 12:34:56",
+                "Image DateTime": "2025:01:01 00:00:00",
+            },
+            datetime(2024, 3, 1, 12, 34, 56),
+        ),
+        (
+            {"Image DateTime": "2025:01:01 00:00:00"},
+            datetime(2025, 1, 1, 0, 0, 0),
+        ),
+        (
+            {
+                "EXIF DateTimeOriginal": "garbage",
+                "Image DateTime": "2025:01:01 00:00:00",
+            },
+            datetime(2025, 1, 1, 0, 0, 0),
+        ),
+        ({}, None),
+    ],
+    ids=[
+        "prefers_date_time_original",
+        "falls_back_to_image_date_time",
+        "skips_unparseable_candidate",
+        "no_date_tags",
+    ],
+)
+def test_exif_fallback_resolves_captured_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tags: dict[str, str],
+    expected: datetime | None,
+) -> None:
+    """The EXIF-only fallback path resolves captured_at in candidate order."""
+    raw_path = tmp_path / "capture.dng"
+    raw_path.write_bytes(b"not-decodable")
+    monkeypatch.setattr(
+        image_module,
+        "read_exif",
+        lambda path: {"EXIF ExifImageWidth": "6000", **tags},
+    )
+
+    metadata = extract_image_metadata(raw_path)
+
+    assert_that(metadata.captured_at).is_equal_to(expected)
+
+
+def test_extract_image_metadata_reads_exif_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXIF is read a single time even when the Pillow path fails."""
+    raw_path = tmp_path / "capture.dng"
+    raw_path.write_bytes(b"not-decodable")
+    calls: list[Path] = []
+
+    def counting_read_exif(path: Path) -> dict[str, str]:
+        calls.append(path)
+        return {"EXIF ExifImageWidth": "6000"}
+
+    monkeypatch.setattr(image_module, "read_exif", counting_read_exif)
+
+    extract_image_metadata(raw_path)
+
+    assert_that(calls).is_length(1)
