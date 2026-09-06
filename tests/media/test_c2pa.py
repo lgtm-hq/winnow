@@ -93,6 +93,42 @@ def test_read_c2pa_manifest_ignores_app11_without_c2pa(tmp_path: Path) -> None:
     assert_that(read_c2pa_manifest(path)).is_none()
 
 
+def test_read_c2pa_manifest_keeps_app11_continuation_segments(
+    tmp_path: Path,
+) -> None:
+    """A source type carried only by a continuation APP11 fragment is kept."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="JPEG")
+    jpeg = buffer.getvalue()
+    segments = b""
+    for sequence, payload in enumerate(
+        (_JUMBF_BOX, b"trainedAlgorithmicMedia"),
+        start=1,
+    ):
+        body = b"JP" + b"\x00\x01" + struct.pack(">I", sequence) + payload
+        segments += b"\xff\xeb" + struct.pack(">H", len(body) + 2) + body
+    path = tmp_path / "split.jpg"
+    path.write_bytes(jpeg[:_JPEG_SOI_LENGTH] + segments + jpeg[_JPEG_SOI_LENGTH:])
+
+    manifest = read_c2pa_manifest(path)
+
+    assert_that(manifest).is_not_none()
+    if manifest is None:  # pragma: no cover - guarded above
+        pytest.fail("expected a manifest")
+    assert_that(manifest_declares_ai_source(manifest)).is_true()
+
+
+def test_read_c2pa_manifest_rejects_cabx_without_crc(tmp_path: Path) -> None:
+    """A trailing caBX chunk missing its CRC is treated as truncated."""
+    payload = _jumbf_payload(b"trainedAlgorithmicMedia")
+    path = tmp_path / "nocrc.png"
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I4s", len(payload), b"caBX") + payload,
+    )
+
+    assert_that(read_c2pa_manifest(path)).is_none()
+
+
 def test_read_c2pa_manifest_returns_png_cabx_data(tmp_path: Path) -> None:
     """A caBX chunk is returned from a PNG."""
     payload = _jumbf_payload(b"compositeWithTrainedAlgorithmicMedia")

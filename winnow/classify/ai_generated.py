@@ -58,7 +58,7 @@ DEFAULT_GENERATOR_MARKERS: frozenset[str] = frozenset(
         "novelai",
         "leonardo.ai",
         "ideogram",
-        "imagen",
+        "google imagen",
         "flux.1",
         "comfyui",
         "automatic1111",
@@ -266,6 +266,10 @@ def _matching_generator_marker(
     if not haystack:
         return None
     return next(
-        (marker for marker in sorted(config.generator_markers) if marker in haystack),
+        (
+            marker
+            for marker in sorted(config.generator_markers)
+            if marker.casefold() in haystack
+        ),
         None,
     )

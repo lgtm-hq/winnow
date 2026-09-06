@@ -118,6 +118,23 @@ def test_signals_sum_and_clamp_to_one() -> None:
     assert_that(result.confidence).is_equal_to(1.0)
 
 
+def test_configured_markers_match_case_insensitively() -> None:
+    """A mixed-case configured marker still matches casefolded metadata."""
+    config = AiGeneratedConfig(generator_markers=frozenset({"MyGen"}))
+
+    matched = classify_ai_generated(software="rendered by mygen 2", config=config)
+
+    assert_that(matched.signals.generator_marker).is_equal_to("MyGen")
+
+
+def test_generic_words_do_not_trigger_generator_marker() -> None:
+    """Ordinary text containing ``imagen`` is not treated as a generator name."""
+    result = classify_ai_generated(description="Imagen de vacaciones", xmp="ImageName")
+
+    assert_that(result.signals.generator_marker).is_none()
+    assert_that(result.is_ai_generated).is_false()
+
+
 def test_custom_config_changes_weights_and_markers() -> None:
     """Custom weights, threshold, and markers are honoured."""
     config = AiGeneratedConfig(

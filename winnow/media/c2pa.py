@@ -73,25 +73,29 @@ def manifest_declares_ai_source(manifest: bytes) -> bool:
 
 
 def _read_jpeg_manifest(path: Path) -> bytes | None:
-    """Concatenate the JUMBF/C2PA ``APP11`` payloads of a JPEG file.
+    """Concatenate the ``APP11`` payloads of a JPEG file when they carry C2PA.
+
+    A C2PA JUMBF box may span several contiguous ``APP11`` segments, and only
+    the first fragment carries the ``jumb``/``c2pa`` markers. All ``APP11``
+    payloads are therefore concatenated in file order before the markers are
+    checked, so continuation fragments are kept.
 
     Args:
         path: Filesystem path to the JPEG.
 
     Returns:
-        Concatenated segment payloads, or ``None`` when none qualify.
+        Concatenated segment payloads, or ``None`` when the file has no
+        ``APP11`` segments or they do not contain a C2PA JUMBF box.
     """
     try:
         with Image.open(path) as image:
             applist: list[tuple[str, bytes]] = list(getattr(image, "applist", ()))
     except (OSError, UnidentifiedImageError, ValueError):
         return None
-    payloads = [
-        data
-        for segment, data in applist
-        if segment == "APP11" and _JUMBF_MARKER in data and _C2PA_MARKER in data
-    ]
-    return b"".join(payloads) if payloads else None
+    manifest = b"".join(data for segment, data in applist if segment == "APP11")
+    if _JUMBF_MARKER not in manifest or _C2PA_MARKER not in manifest:
+        return None
+    return manifest
 
 
 def _read_png_manifest(path: Path) -> bytes | None:
@@ -117,7 +121,7 @@ def _read_png_manifest(path: Path) -> bytes | None:
         length, chunk_type = _PNG_CHUNK_HEADER.unpack_from(data, offset)
         start = offset + _PNG_CHUNK_HEADER.size
         end = start + length
-        if end > len(data):
+        if end + _PNG_CRC_LENGTH > len(data):
             break
         if chunk_type == _PNG_C2PA_CHUNK:
             payloads.append(data[start:end])
