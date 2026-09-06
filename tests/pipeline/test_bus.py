@@ -134,6 +134,34 @@ def test_handler_exception_is_isolated_and_recorded() -> None:
     assert_that(records[0]).contains(_explode.__qualname__, "StepStarted", "boom")
 
 
+class _HostileHandler:
+    """Callable instance (no ``__qualname__``) whose ``repr`` raises."""
+
+    def __call__(self, _event: object) -> None:
+        raise RuntimeError("boom")
+
+    def __repr__(self) -> str:
+        raise ValueError("no repr for you")
+
+
+def test_handler_name_fallback_never_raises() -> None:
+    """A handler whose diagnostics raise still cannot interrupt delivery."""
+    bus = EventBus()
+    calls: list[str] = []
+    sink_id = logger.add(lambda _msg: None, level="WARNING")
+    bus.subscribe(StepStarted, _HostileHandler())
+    bus.subscribe(StepStarted, lambda _event: calls.append("after"))
+
+    try:
+        bus.emit(_STARTED)
+    finally:
+        logger.remove(sink_id)
+
+    assert_that(calls).is_equal_to(["after"])
+    assert_that(bus.handler_errors).is_length(1)
+    assert_that(bus.handler_errors[0].handler).is_equal_to("_HostileHandler")
+
+
 def test_handler_errors_is_an_immutable_snapshot() -> None:
     """handler_errors returns a tuple that later failures do not mutate."""
     bus = EventBus()

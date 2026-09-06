@@ -88,7 +88,7 @@ class EventBus:
             try:
                 handler(event)
             except Exception as exc:  # noqa: BLE001 - isolate subscriber failures
-                name = getattr(handler, "__qualname__", repr(handler))
+                name = _handler_name(handler)
                 logger.warning(
                     "event handler {handler} failed on {event}: {error}",
                     handler=name,
@@ -105,6 +105,24 @@ class EventBus:
             One :class:`HandlerError` per handler exception.
         """
         return tuple(self._errors)
+
+
+def _handler_name(handler: Handler) -> str:
+    """Return a diagnostic name for a handler without ever raising.
+
+    Args:
+        handler: The callable that failed.
+
+    Returns:
+        ``__qualname__`` when present, else ``repr()``, else the type name.
+    """
+    qualname = getattr(handler, "__qualname__", None)
+    if isinstance(qualname, str):
+        return qualname
+    try:
+        return repr(handler)
+    except Exception:  # noqa: BLE001 - diagnostics must not break delivery
+        return type(handler).__name__
 
 
 __all__ = ["EventBus", "HandlerError"]
