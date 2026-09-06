@@ -348,6 +348,36 @@ def test_prune_stale_removes_entries_for_deleted_files(
     assert_that(cache.stats().entry_count).is_equal_to(1)
 
 
+def test_stale_paths_lists_missing_files_without_deleting(
+    cache: HashCache,
+    tmp_path: Path,
+) -> None:
+    """``stale_paths()`` names exactly the deleted files and removes nothing."""
+    kept = tmp_path / "kept.jpg"
+    removed = tmp_path / "removed.jpg"
+    _write_media(kept)
+    _write_media(removed)
+    kept_key = CacheKey.from_file(path=kept, algorithm=HashAlgorithm.PHASH)
+    removed_key = CacheKey.from_file(path=removed, algorithm=HashAlgorithm.PHASH)
+    cache.set(key=kept_key, digest="kept")
+    cache.set(key=removed_key, digest="removed")
+
+    removed.unlink()
+    stale = cache.stale_paths()
+
+    assert_that(stale).is_equal_to([str(removed_key.path)])
+    assert_that(cache.stats().entry_count).is_equal_to(2)
+    assert_that(cache.prune_stale()).is_equal_to(1)
+
+
+def test_stale_paths_failure_raises_cache_error(cache: HashCache) -> None:
+    """A stale scan against a closed connection surfaces as a cache error."""
+    cache.close()
+
+    with pytest.raises(CacheError):
+        cache.stale_paths()
+
+
 def test_prune_stale_returns_zero_when_all_present(
     cache: HashCache,
     tmp_path: Path,
