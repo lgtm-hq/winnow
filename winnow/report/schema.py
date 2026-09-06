@@ -13,11 +13,20 @@ constraints restrict the ``status`` columns to their enum value sets.
 
 The statements are intentionally idempotent (``IF NOT EXISTS``) so that
 initializing an already-provisioned database is a safe no-op.
+
+Versioning rule: bumping :data:`SCHEMA_VERSION` requires **both** (a) updating
+the baseline DDL in :data:`SCHEMA_STATEMENTS` to the new shape, so fresh
+databases are created current, and (b) appending a
+:class:`~winnow.storage.Migration` to :data:`MIGRATIONS` that takes the
+previous version to the new one, so existing databases upgrade in place.
+``tests/report/test_report_schema.py`` enforces (b) mechanically.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum, auto
+
+from winnow.storage import Migration
 
 SCHEMA_VERSION = 2
 """Current report schema version persisted in the ``schema_version`` table."""
@@ -180,9 +189,23 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
 )
 """Ordered DDL statements that provision the full report schema."""
 
+MIGRATIONS: tuple[Migration, ...] = ()
+"""Stepwise upgrades from schema version 2 to :data:`SCHEMA_VERSION`.
+
+Empty until the first change after v2. Each entry upgrades **to** its
+``version``; versions must be exactly ``3, 4, ..., SCHEMA_VERSION``. The first
+entry will look like::
+
+    Migration(
+        version=3,
+        statements=("ALTER TABLE report_runs ADD COLUMN session_id TEXT;",),
+    )
+"""
+
 
 __all__ = [
     "CREATE_INDEXES",
+    "MIGRATIONS",
     "SCHEMA_STATEMENTS",
     "SCHEMA_VERSION",
     "TERMINAL_RUN_STATUSES",

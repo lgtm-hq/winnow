@@ -12,7 +12,7 @@ setup:
 install: setup
 
 test:
-	@echo "Running unit tests with coverage (integration tests excluded)..."
+	@echo "Running unit tests with coverage (integration tests excluded by default locally, always run in CI)..."
 	uv run pytest --cov=winnow --cov-report=term-missing --cov-report=xml --cov-report=html
 	@echo "Coverage reports: htmlcov/index.html, coverage.xml"
 
@@ -20,6 +20,7 @@ test-integration:
 	@echo "Running integration tests..."
 	uv run pytest -m integration
 
+# test-all runs unit + integration tests locally, i.e. what CI always runs.
 test-all: test test-integration
 
 lint:

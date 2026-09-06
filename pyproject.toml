@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "winnow-media"
-version = "0.19.0"
+version = "0.21.0"
 description = "Winnow your media library — organize photos and videos, detect duplicates, and keep the best copies."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,7 +49,6 @@ dependencies = [
 
 [project.optional-dependencies]
 face = []
-cv = []
 ai-detect = []
 
 [project.scripts]
@@ -79,7 +78,7 @@ packages = ["winnow"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "-m", "not integration"]
 markers = [
-  "integration: end-to-end tests that build artifacts or spawn external tools (opt-in)",
+  "integration: slow end-to-end tests (wheel build, external tools); excluded by default locally, always run in CI",
 ]
 
 [tool.coverage.run]

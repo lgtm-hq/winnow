@@ -12,7 +12,6 @@ from winnow.config import (
     generate_default_config,
     set_config_value,
 )
-from winnow.exceptions import ConfigError
 from winnow.models.enums import HashAlgorithm, SortOrder
 
 __all__ = ["init"]
@@ -36,12 +35,14 @@ def init(
 ) -> None:
     """Create a configuration file through guided prompts.
 
+    \f
+
     Args:
         force: Overwrite an existing configuration file without prompting.
         config_path: Explicit configuration file path.
 
     Raises:
-        ClickException: If the configuration cannot be created.
+        ConfigError: If the configuration cannot be created.
     """
     target = config_path if config_path is not None else cwd_config_path()
     if target.exists() and not force:
@@ -85,11 +86,8 @@ def init(
     if source_dir:
         overrides["source_dirs"] = [source_dir]
 
-    try:
-        generate_default_config(config_path=target, overwrite=True)
-        for key, value in overrides.items():
-            set_config_value(key=key, value=value, config_path=target)
-    except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+    generate_default_config(config_path=target, overwrite=True)
+    for key, value in overrides.items():
+        set_config_value(key=key, value=value, config_path=target)
 
     click.echo(f"Created configuration at {target}")
