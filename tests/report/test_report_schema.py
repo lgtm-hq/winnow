@@ -10,6 +10,7 @@ from __future__ import annotations
 from assertpy import assert_that
 
 from winnow.report.schema import (
+    MIGRATIONS,
     SCHEMA_VERSION,
     TERMINAL_RUN_STATUSES,
     RunStatus,
@@ -19,6 +20,14 @@ from winnow.report.schema import (
 def test_schema_version_is_two() -> None:
     """The current report schema is version 2 (fixed external contract)."""
     assert_that(SCHEMA_VERSION).is_equal_to(2)
+
+
+def test_every_version_bump_has_a_migration() -> None:
+    """Each version after the v2 baseline is reachable by exactly one step."""
+    assert_that(SCHEMA_VERSION).is_equal_to(2 + len(MIGRATIONS))
+    assert_that([m.version for m in MIGRATIONS]).is_equal_to(
+        list(range(3, SCHEMA_VERSION + 1)),
+    )
 
 
 def test_run_status_values() -> None:
