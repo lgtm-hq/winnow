@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.27.0] - 2026-09-06
+
+### Added
+
+- **cli**: shared option decorators and cross-command flag conventions (#221) (2416dcb)
+
 ## [0.26.0] - 2026-09-06
 
 ### Added
