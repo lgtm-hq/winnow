@@ -3,6 +3,7 @@
 This package groups heuristic classifiers used during scanning:
 
 - Screenshot detection (:mod:`winnow.classify.screenshot`).
+- AI-generated detection from metadata (:mod:`winnow.classify.ai_generated`).
 - Photograph vs. graphic classification (:mod:`winnow.classify.photo_graphic`).
 - Apple Live Photo pair detection (:mod:`winnow.classify.livephoto`).
 - Special-folder route resolution (:mod:`winnow.classify.routing`), which maps
@@ -16,6 +17,15 @@ signals from an image file.
 from __future__ import annotations
 
 from winnow.classify._image import ColorCounts
+from winnow.classify.ai_generated import (
+    DEFAULT_GENERATOR_MARKERS,
+    DEFAULT_PROMPT_CHUNK_KEYS,
+    AiGeneratedClassification,
+    AiGeneratedConfig,
+    AiGeneratedSignals,
+    classify_ai_generated,
+    detect_ai_generated,
+)
 from winnow.classify.livephoto import (
     APPLE_CONTENT_IDENTIFIER_TAG,
     QUICKTIME_CONTENT_IDENTIFIER_KEY,
@@ -60,11 +70,16 @@ __all__ = [
     "APPLE_CONTENT_IDENTIFIER_TAG",
     "DEFAULT_CAMERA_EXIF_TAGS",
     "DEFAULT_DISPLAY_ASPECT_RATIOS",
+    "DEFAULT_GENERATOR_MARKERS",
+    "DEFAULT_PROMPT_CHUNK_KEYS",
     "DEFAULT_SCREENSHOT_SOFTWARE_MARKERS",
     "QUICKTIME_CONTENT_IDENTIFIER_KEY",
     "SCREENSHOT_FILENAME_PATTERNS",
     "STILL_SUFFIXES",
     "VIDEO_SUFFIXES",
+    "AiGeneratedClassification",
+    "AiGeneratedConfig",
+    "AiGeneratedSignals",
     "ColorCounts",
     "FileClassification",
     "IdentifierReader",
@@ -78,9 +93,11 @@ __all__ = [
     "ScreenshotClassification",
     "ScreenshotConfig",
     "ScreenshotSignals",
+    "classify_ai_generated",
     "classify_image",
     "classify_photo_or_graphic",
     "classify_screenshot",
+    "detect_ai_generated",
     "detect_live_photos",
     "detect_photo_or_graphic",
     "detect_screenshot",
