@@ -116,7 +116,7 @@ def scan_to_dict(scan: LivePhotoScan) -> dict[str, Any]:
     "--unpaired",
     is_flag=True,
     default=False,
-    help="List unpaired stills and videos instead of pairs.",
+    help="List unpaired stills and videos instead of pairs (table output only).",
 )
 @format_option()
 @click.pass_context
@@ -130,13 +130,18 @@ def live_photos(
 ) -> None:
     """Report Apple Live Photo pairs under DIRECTORY.
 
+    Only the ``table`` and ``json`` output formats are supported. JSON always
+    emits the full scan (pairs and unpaired files); ``--unpaired`` selects
+    which table is printed.
+
     \f
 
     Args:
         ctx: Active Click context carrying shared options.
         directory: Directory to scan.
         recursive: When set, include files in subdirectories.
-        unpaired: When set, list orphans instead of pairs.
+        unpaired: When set, print the unpaired table instead of the pairs
+            table; ignored for JSON output.
         format: Output format; only ``table`` and ``json`` are supported.
 
     Raises:
