@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from winnow.models.config import (
     CacheSettings,
+    OrganizeSettings,
     PathSettings,
     RoutingSettings,
     WinnowConfig,
@@ -30,6 +31,8 @@ def test_winnow_config_defaults() -> None:
     assert_that(config.cache).is_instance_of(CacheSettings)
     assert_that(config.cache.directory).is_equal_to(Path.home() / ".cache" / "winnow")
     assert_that(config.paths).is_instance_of(PathSettings)
+    assert_that(config.organize).is_instance_of(OrganizeSettings)
+    assert_that(config.organize.max_depth).is_none()
     assert_that(config.routing).is_instance_of(RoutingSettings)
 
 
@@ -77,6 +80,25 @@ def test_winnow_config_rejects_conflicting_symlink_settings() -> None:
 
     with pytest.raises(ValidationError):
         WinnowConfig(follow_symlinks=False, symlink_policy=SymlinkPolicy.FOLLOW)
+
+
+def test_organize_settings_accepts_non_negative_max_depth() -> None:
+    """OrganizeSettings accepts zero and positive depth limits."""
+    config = WinnowConfig.model_validate({"organize": {"max_depth": 0}})
+
+    assert_that(config.organize.max_depth).is_equal_to(0)
+
+
+def test_winnow_config_rejects_negative_max_depth() -> None:
+    """WinnowConfig rejects a negative organize.max_depth."""
+    with pytest.raises(ValidationError):
+        WinnowConfig.model_validate({"organize": {"max_depth": -1}})
+
+
+def test_organize_settings_rejects_unknown_fields() -> None:
+    """OrganizeSettings forbids unknown keys."""
+    with pytest.raises(ValidationError):
+        OrganizeSettings.model_validate({"unknown": 1})
 
 
 def test_routing_settings_defaults() -> None:

@@ -31,6 +31,14 @@ class PathSettings(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=list)
 
 
+class OrganizeSettings(BaseModel):
+    """Settings for the organize pipeline (discovery and later steps)."""
+
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+
+    max_depth: int | None = Field(default=None, ge=0)
+
+
 _MIN_PRINTABLE_CODEPOINT = 0x20
 _YEAR_FOLDER_PATTERN = re.compile(r"^\d{4}$")
 _ROUTING_FOLDER_FIELDS: tuple[str, ...] = (
@@ -130,6 +138,7 @@ class WinnowConfig(BaseModel):
     workers: int = Field(default=1, ge=1)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
+    organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
     routing: RoutingSettings = Field(default_factory=RoutingSettings)
 
     @model_validator(mode="after")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from winnow.models.config import (
     CacheSettings,
+    OrganizeSettings,
     PathSettings,
     RoutingSettings,
     WinnowConfig,
@@ -30,6 +31,7 @@ __all__ = [
     "MediaFile",
     "MediaMetadata",
     "MediaType",
+    "OrganizeSettings",
     "PathSettings",
     "PipelineResult",
     "PipelineStep",
