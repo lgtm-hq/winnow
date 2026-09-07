@@ -89,8 +89,15 @@ def _paths_from(value: object) -> tuple[Path, ...]:
         value: JSON list of path strings, or ``None`` when absent.
 
     Returns:
-        The paths as a tuple; empty when ``value`` is not a list.
+        The paths as a tuple; empty when ``value`` is ``None``.
+
+    Raises:
+        ValueError: When ``value`` is present but not a list of strings.
     """
-    if not isinstance(value, list | tuple):
+    if value is None:
         return ()
-    return tuple(Path(str(item)) for item in value)
+    if not isinstance(value, list | tuple) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError("operation log path list must be a list of strings")
+    return tuple(Path(item) for item in value)

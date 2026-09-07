@@ -50,6 +50,22 @@ def test_from_dict_defaults_missing_optional_keys() -> None:
     assert_that(log.created_paths).is_empty()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("not-a-list", id="string"),
+        pytest.param({"a": 1}, id="mapping"),
+        pytest.param([1, 2], id="non_string_items"),
+    ],
+)
+def test_from_dict_rejects_malformed_path_lists(value: object) -> None:
+    """Malformed ``backups`` or ``created_paths`` values are rejected."""
+    with pytest.raises(ValueError, match="list of strings"):
+        OperationLog.from_dict({"operation": "move", "backups": value})
+    with pytest.raises(ValueError, match="list of strings"):
+        OperationLog.from_dict({"operation": "move", "created_paths": value})
+
+
 def test_from_dict_without_operation_raises() -> None:
     """A payload lacking ``operation`` is rejected."""
     with pytest.raises(ValueError, match="operation"):

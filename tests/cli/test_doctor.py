@@ -287,6 +287,19 @@ def test_check_data_dir_passes_for_writable_override(
     assert_that(result.detail).contains(str(tmp_path), "WINNOW_DATA_DIR")
 
 
+def test_check_data_dir_warns_when_path_is_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A data directory override pointing at a regular file warns."""
+    target = tmp_path / "data"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(target))
+    result = check_data_dir()
+    assert_that(result.status).is_equal_to(CheckStatus.WARN)
+    assert_that(result.detail).contains("not a directory")
+
+
 def test_check_data_dir_warns_when_uncreatable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

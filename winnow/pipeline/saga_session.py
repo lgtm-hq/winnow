@@ -75,8 +75,10 @@ class SagaSession:
         except PipelineError:
             self._log.mark_command(seq=seq, status=CommandStatus.FAILED)
             raise
-        self._log.mark_done(seq=seq, log=op_log)
+        # Track before marking done: if the log write fails, the command's
+        # effects are on disk and must still be covered by rollback().
         self._executed.append((seq, command))
+        self._log.mark_done(seq=seq, log=op_log)
         return op_log
 
     def commit(self) -> None:
@@ -98,14 +100,21 @@ class SagaSession:
 
         Each ``undo()`` failure is collected and the remaining commands are
         still attempted. Calling this again returns the stored errors without
-        touching the filesystem.
+        touching the filesystem. If finishing the durable session fails, the
+        result is not cached and a later call retries the remaining commands
+        and the session update.
 
         Returns:
             Errors raised while undoing, in the order they occurred; empty
             when every command was reverted.
+
+        Raises:
+            SagaError: When the session has already been committed, or the
+                log cannot be written.
         """
         if self._rollback_errors is not None:
             return self._rollback_errors
+        self._require_open("rollback")
         errors: list[Exception] = []
         remaining: list[tuple[int, Command]] = []
         for seq, command in reversed(self._executed):
@@ -116,12 +125,12 @@ class SagaSession:
                 errors.append(error)
                 remaining.append((seq, command))
         self._executed = remaining[::-1]
-        self._rollback_errors = tuple(errors)
-        self._finished = True
         self._log.finish_session(
             session_id=self.session_id,
             status=SessionStatus.FAILED if errors else SessionStatus.ROLLED_BACK,
         )
+        self._rollback_errors = tuple(errors)
+        self._finished = True
         return self._rollback_errors
 
     def __enter__(self) -> Self:

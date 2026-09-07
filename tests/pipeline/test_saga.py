@@ -216,6 +216,66 @@ def test_rollback_is_idempotent(saga: Saga, workspace: tuple[Path, Path]) -> Non
     assert_that((source / "a.txt").exists()).is_false()
 
 
+def test_rollback_after_commit_raises(saga: Saga, workspace: tuple[Path, Path]) -> None:
+    """A committed session cannot be rolled back afterwards."""
+    source, destination = workspace
+    session = _begin(saga, workspace)
+    session.execute(_move(source, destination, "a.txt"))
+    session.commit()
+    with pytest.raises(SagaError, match="already finished"):
+        session.rollback()
+    assert_that((destination / "a.txt").exists()).is_true()
+    assert_that(_session_status(saga.log, session.session_id)).is_equal_to(
+        SessionStatus.COMPLETED
+    )
+
+
+def test_failed_mark_done_still_rolls_back_command(
+    saga: Saga,
+    workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command whose ``done`` write fails is still reverted on exit."""
+    source, destination = workspace
+
+    def _boom(**_: object) -> None:
+        raise SagaError("locked", operation="saga.log.mark_done")
+
+    monkeypatch.setattr(saga.log, "mark_done", _boom)
+    with pytest.raises(SagaError, match="locked"), _begin(saga, workspace) as session:
+        session.execute(_move(source, destination, "a.txt"))
+
+    assert_that((source / "a.txt").exists()).is_true()
+    assert_that((destination / "a.txt").exists()).is_false()
+    assert_that(session.executed).is_empty()
+
+
+def test_rollback_retries_when_finish_session_fails(
+    saga: Saga,
+    workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed session update is retried by the next ``rollback()`` call."""
+    source, destination = workspace
+    session = _begin(saga, workspace)
+    session.execute(_move(source, destination, "a.txt"))
+    original = saga.log.finish_session
+
+    def _boom(**_: object) -> None:
+        raise SagaError("locked", operation="saga.log.finish_session")
+
+    monkeypatch.setattr(saga.log, "finish_session", _boom)
+    with pytest.raises(SagaError, match="locked"):
+        session.rollback()
+    monkeypatch.setattr(saga.log, "finish_session", original)
+
+    assert_that(session.rollback()).is_empty()
+    assert_that((source / "a.txt").exists()).is_true()
+    assert_that(_session_status(saga.log, session.session_id)).is_equal_to(
+        SessionStatus.ROLLED_BACK
+    )
+
+
 def test_execute_after_finish_raises(saga: Saga, workspace: tuple[Path, Path]) -> None:
     """A committed session refuses further commands and a second commit."""
     source, destination = workspace
