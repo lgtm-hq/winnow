@@ -1,17 +1,19 @@
 """Special-folder route resolution for classified media.
 
-Maps the existing classifier results (screenshot, photograph vs. graphic) plus
-the Live Photo signal to a :class:`~winnow.models.enums.SpecialCategory` and
-the folder name configured in :class:`~winnow.models.config.RoutingSettings`.
+Maps the existing classifier results (screenshot, photograph vs. graphic,
+AI-generated) plus the Live Photo signal to a
+:class:`~winnow.models.enums.SpecialCategory` and the folder name configured in
+:class:`~winnow.models.config.RoutingSettings`.
 
 Resolution order (the first match wins):
 
 1. Routing disabled -> no route.
 2. Live Photo -> ``LIVE_PHOTO``.
-3. Screenshot at or above ``min_confidence`` -> ``SCREENSHOT``.
-4. Graphic at or above ``min_confidence`` -> ``GRAPHIC``.
-5. Screenshot or graphic below ``min_confidence`` -> ``REVIEW``.
-6. Otherwise -> no route (dated layout).
+3. AI-generated at or above ``min_confidence`` -> ``AI_GENERATED``.
+4. Screenshot at or above ``min_confidence`` -> ``SCREENSHOT``.
+5. Graphic at or above ``min_confidence`` -> ``GRAPHIC``.
+6. AI-generated, screenshot, or graphic below ``min_confidence`` -> ``REVIEW``.
+7. Otherwise -> no route (dated layout).
 
 ``PHOTO`` and ``UNKNOWN`` content never route. ``Duplicates/`` is produced by
 the dedup step after execution and is never a route.
@@ -25,6 +27,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+from winnow.classify.ai_generated import (
+    AiGeneratedClassification,
+    AiGeneratedConfig,
+    detect_ai_generated,
+)
 from winnow.classify.photo_graphic import (
     ImageContentType,
     PhotoGraphicClassification,
@@ -48,11 +55,13 @@ class FileClassification:
         screenshot: Screenshot detection result, or ``None`` when not run.
         photo_graphic: Photo vs. graphic result, or ``None`` when not run.
         live_photo: Whether the file is part of a verified Live Photo pair.
+        ai_generated: AI-generated detection result, or ``None`` when not run.
     """
 
     screenshot: ScreenshotClassification | None = None
     photo_graphic: PhotoGraphicClassification | None = None
     live_photo: bool = False
+    ai_generated: AiGeneratedClassification | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,16 +84,18 @@ def classify_image(
     *,
     screenshot_config: ScreenshotConfig | None = None,
     photo_graphic_config: PhotoGraphicConfig | None = None,
+    ai_generated_config: AiGeneratedConfig | None = None,
 ) -> FileClassification:
-    """Run the screenshot and photo-vs-graphic detectors on an image file.
+    """Run the screenshot, photo-vs-graphic, and AI-generated detectors.
 
     Args:
         path: Filesystem path to the image.
         screenshot_config: Screenshot detection weights and threshold.
         photo_graphic_config: Photo vs. graphic weights and thresholds.
+        ai_generated_config: AI-generated detection weights and threshold.
 
     Returns:
-        A :class:`FileClassification` with both detector results and
+        A :class:`FileClassification` with all detector results and
         ``live_photo=False``; Live Photo pairing is decided by the caller.
 
     Raises:
@@ -93,6 +104,7 @@ def classify_image(
     return FileClassification(
         screenshot=detect_screenshot(path, config=screenshot_config),
         photo_graphic=detect_photo_or_graphic(path, config=photo_graphic_config),
+        ai_generated=detect_ai_generated(path, config=ai_generated_config),
     )
 
 
@@ -156,16 +168,46 @@ def _resolve_category(
     """
     if not settings.enabled:
         return None
-    if classification.live_photo:
-        return SpecialCategory.LIVE_PHOTO
     threshold = settings.min_confidence
-    if _is_confident_screenshot(classification.screenshot, threshold=threshold):
-        return SpecialCategory.SCREENSHOT
-    if _is_confident_graphic(classification.photo_graphic, threshold=threshold):
-        return SpecialCategory.GRAPHIC
-    if _needs_review(classification):
-        return SpecialCategory.REVIEW
-    return None
+    table = (
+        (classification.live_photo, SpecialCategory.LIVE_PHOTO),
+        (
+            _is_confident_ai_generated(
+                classification.ai_generated,
+                threshold=threshold,
+            ),
+            SpecialCategory.AI_GENERATED,
+        ),
+        (
+            _is_confident_screenshot(classification.screenshot, threshold=threshold),
+            SpecialCategory.SCREENSHOT,
+        ),
+        (
+            _is_confident_graphic(classification.photo_graphic, threshold=threshold),
+            SpecialCategory.GRAPHIC,
+        ),
+        (_needs_review(classification), SpecialCategory.REVIEW),
+    )
+    return next((category for matched, category in table if matched), None)
+
+
+def _is_confident_ai_generated(
+    result: AiGeneratedClassification | None,
+    *,
+    threshold: float,
+) -> bool:
+    """Return whether the AI-generated result is positive and confident enough.
+
+    Args:
+        result: AI-generated detection result.
+        threshold: Minimum confidence required.
+
+    Returns:
+        ``True`` when flagged as AI-generated at or above ``threshold``.
+    """
+    return (
+        result is not None and result.is_ai_generated and result.confidence >= threshold
+    )
 
 
 def _is_confident_screenshot(
@@ -209,23 +251,25 @@ def _is_confident_graphic(
 
 
 def _needs_review(classification: FileClassification) -> bool:
-    """Return whether a low-confidence screenshot or graphic signal fired.
+    """Return whether a low-confidence AI, screenshot, or graphic signal fired.
 
     Args:
         classification: Classifier outputs for the file.
 
     Returns:
-        ``True`` when the file is flagged as a screenshot or graphic at any
-        confidence; callers check the confident cases first.
+        ``True`` when the file is flagged as AI-generated, a screenshot, or a
+        graphic at any confidence; callers check the confident cases first.
     """
+    ai_generated = classification.ai_generated
     screenshot = classification.screenshot
     photo_graphic = classification.photo_graphic
+    flagged_ai = ai_generated is not None and ai_generated.is_ai_generated
     flagged_screenshot = screenshot is not None and screenshot.is_screenshot
     flagged_graphic = (
         photo_graphic is not None
         and photo_graphic.content_type is ImageContentType.GRAPHIC
     )
-    return flagged_screenshot or flagged_graphic
+    return flagged_ai or flagged_screenshot or flagged_graphic
 
 
 def _folder_for(
@@ -246,6 +290,7 @@ def _folder_for(
         SpecialCategory.SCREENSHOT: settings.screenshots,
         SpecialCategory.GRAPHIC: settings.graphics,
         SpecialCategory.LIVE_PHOTO: settings.live_photos,
+        SpecialCategory.AI_GENERATED: settings.ai_generated,
         SpecialCategory.REVIEW: settings.review,
     }
     return folders[category]

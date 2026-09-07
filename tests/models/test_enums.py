@@ -6,7 +6,13 @@ import json
 
 from assertpy import assert_that
 
-from winnow.models.enums import FileAction, HashAlgorithm, MediaCategory, SortOrder
+from winnow.models.enums import (
+    FileAction,
+    HashAlgorithm,
+    MediaCategory,
+    MoveKind,
+    SortOrder,
+)
 
 
 def test_hash_algorithm_values_and_serialization() -> None:
@@ -36,3 +42,9 @@ def test_file_action_from_string() -> None:
     """FileAction can be constructed from serialized values."""
     assert_that(FileAction("keep")).is_equal_to(FileAction.KEEP)
     assert_that(FileAction.MOVE.value).is_equal_to("move")
+
+
+def test_move_kind_members_are_strings() -> None:
+    """MoveKind members are lower-case strings usable as plain values."""
+    assert_that([kind.value for kind in MoveKind]).is_equal_to(["dated", "duplicate"])
+    assert_that(MoveKind("duplicate")).is_equal_to(MoveKind.DUPLICATE)
