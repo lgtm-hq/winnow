@@ -41,6 +41,7 @@ class SpecialCategory(StrEnum):
     GRAPHIC = auto()
     LIVE_PHOTO = auto()
     REVIEW = auto()
+    AI_GENERATED = auto()
 
 
 class FileAction(StrEnum):
