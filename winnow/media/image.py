@@ -4,6 +4,11 @@ Covers common raster formats (JPEG, PNG, WEBP, TIFF, GIF, BMP) plus HEIF/HEIC
 when the optional ``pillow-heif`` codec can be loaded. RAW formats are handled on
 a best-effort basis: when Pillow cannot decode the pixels, dimensions are
 recovered from embedded EXIF tags where possible.
+
+Capture dates are read through Pillow's ``Image.getexif()`` for every format
+Pillow can open (including HEIF/HEIC via ``pillow-heif``); ``exifread`` is only
+consulted for files Pillow cannot decode. Only the naive ``DateTimeOriginal`` /
+``DateTime`` strings are read; the ``OffsetTimeOriginal`` timezone tag is not.
 """
 
 from __future__ import annotations
@@ -42,6 +47,16 @@ _EXIF_HEIGHT_TAGS: Final[tuple[str, ...]] = (
 _EXIF_CAPTURED_AT_TAGS: Final[tuple[str, ...]] = (
     "EXIF DateTimeOriginal",
     "Image DateTime",
+)
+_EXIF_IFD_POINTER: Final[int] = 0x8769
+_EXIF_TAG_DATETIME_ORIGINAL: Final[int] = 0x9003
+_EXIF_TAG_DATETIME: Final[int] = 0x0132
+_EXIF_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
+    OSError,
+    ValueError,
+    SyntaxError,
+    KeyError,
+    TypeError,
 )
 
 _MODE_BIT_DEPTH: Final[dict[str, int]] = {
@@ -100,8 +115,6 @@ def extract_image_metadata(path: Path) -> MediaMetadata:
             file_path=path,
         )
 
-    tags = read_exif(path)
-    captured_at = _captured_at_from_exif(tags=tags)
     try:
         with Image.open(path) as image:
             width, height = image.size
@@ -112,11 +125,11 @@ def extract_image_metadata(path: Path) -> MediaMetadata:
                 color_mode=image.mode,
                 bit_depth=_mode_bit_depth(image.mode),
                 has_alpha=_mode_has_alpha(image=image),
-                captured_at=captured_at,
+                captured_at=_captured_at_from_pillow(image),
             )
     except UnidentifiedImageError:
         logger.debug("Pillow could not identify {}; trying EXIF fallback", path)
-        return _metadata_from_exif(path=path, tags=tags)
+        return _metadata_from_exif(path=path, tags=read_exif(path))
     except (OSError, ValueError) as exc:
         raise MediaError(
             "failed to read image",
@@ -131,6 +144,10 @@ def read_exif(path: Path) -> dict[str, str]:
     Thumbnail and MakerNote binary blobs are skipped to keep the result
     JSON-friendly. Failures degrade to an empty mapping rather than raising, so
     callers can treat missing EXIF as a normal, expected outcome.
+
+    HEIF/HEIC: exifread's HEIF support is best-effort and may fail on files
+    Pillow reads fine; prefer Pillow's ``getexif()`` (see
+    :func:`_captured_at_from_pillow`) for anything Pillow can open.
 
     Args:
         path: Filesystem path to the image.
@@ -256,11 +273,46 @@ def _metadata_from_exif(*, path: Path, tags: dict[str, str]) -> MediaMetadata:
     )
 
 
-def _captured_at_from_exif(*, tags: dict[str, str]) -> datetime | None:
-    """Resolve the capture time from EXIF date tags.
+def _captured_at_from_pillow(image: Image.Image) -> datetime | None:
+    """Resolve the capture time from an opened Pillow image's EXIF.
 
-    This is the single place image capture dates are read from EXIF; the
-    candidate order is ``EXIF DateTimeOriginal`` then ``Image DateTime``.
+    Reads ``DateTimeOriginal`` (ExifIFD ``0x9003``), falling back to IFD0
+    ``DateTime`` (``0x0132``) when the former is absent or does not parse, via
+    ``image.getexif()``. This is the capture date read point for every format
+    Pillow can open, HEIF/HEIC included.
+
+    Args:
+        image: Opened Pillow image.
+
+    Returns:
+        Naive capture datetime, or ``None`` when neither tag is present, the
+        value is not a parseable string, or the EXIF block is malformed.
+    """
+    try:
+        exif = image.getexif()
+    except _EXIF_READ_ERRORS:
+        return None
+    try:
+        original = exif.get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_DATETIME_ORIGINAL)
+    except _EXIF_READ_ERRORS:
+        # A malformed ExifIFD must not hide a still-valid IFD0 ``DateTime``.
+        original = None
+    candidates = (original, exif.get(_EXIF_TAG_DATETIME))
+    return next(
+        (
+            parsed
+            for raw in candidates
+            if isinstance(raw, str) and (parsed := parse_exif_datetime(raw)) is not None
+        ),
+        None,
+    )
+
+
+def _captured_at_from_exif(*, tags: dict[str, str]) -> datetime | None:
+    """Resolve the capture time from exifread date tags.
+
+    Used only by the RAW fallback for files Pillow cannot open; the candidate
+    order is ``EXIF DateTimeOriginal`` then ``Image DateTime``.
 
     Args:
         tags: Stringified EXIF tag mapping.
