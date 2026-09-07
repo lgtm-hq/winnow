@@ -9,6 +9,7 @@ import pytest
 from assertpy import assert_that
 from pydantic import ValidationError
 
+from winnow.models import MEDIA_METADATA_SCHEMA_VERSION
 from winnow.models.media import MediaFile, MediaMetadata, MediaType
 
 
@@ -89,6 +90,30 @@ def test_media_metadata_rejects_negative_stream_fields() -> None:
     """MediaMetadata rejects negative frame rate, sample rate, and channels."""
     with pytest.raises(ValidationError):
         MediaMetadata(frame_rate=-1, sample_rate=-1, channels=-1)
+
+
+def test_media_metadata_schema_version_is_one() -> None:
+    """The metadata schema version constant is exported and starts at 1."""
+    assert_that(MEDIA_METADATA_SCHEMA_VERSION).is_equal_to(1)
+
+
+def test_media_metadata_captured_at_defaults_to_none() -> None:
+    """captured_at is a declared field that defaults to None."""
+    assert_that(MediaMetadata.model_fields).contains_key("captured_at")
+    assert_that(MediaMetadata().captured_at).is_none()
+
+
+def test_media_metadata_captured_at_round_trips_naive_and_aware() -> None:
+    """captured_at accepts naive and aware datetimes and survives JSON."""
+    naive = MediaMetadata(captured_at=datetime(2024, 3, 1, 12, 34, 56))
+    aware = MediaMetadata(captured_at=datetime(2024, 3, 1, 12, 34, 56, tzinfo=UTC))
+
+    assert_that(MediaMetadata.model_validate_json(naive.model_dump_json())).is_equal_to(
+        naive
+    )
+    assert_that(MediaMetadata.model_validate_json(aware.model_dump_json())).is_equal_to(
+        aware
+    )
 
 
 def test_media_file_live_photo_id_defaults_to_none() -> None:

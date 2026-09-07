@@ -8,6 +8,7 @@ from winnow.config.defaults import (
     cwd_config_path,
     user_config_dir,
     user_config_path,
+    user_data_dir,
 )
 from winnow.config.loader import (
     find_config_path,
@@ -20,6 +21,7 @@ from winnow.config.loader import (
     validate_config_data,
 )
 from winnow.config.schema import (
+    config_digest,
     config_json_schema,
     default_config,
     default_config_data,
@@ -29,6 +31,7 @@ from winnow.config.schema import (
 __all__ = [
     "CONFIG_FILE_NAME",
     "ENVVAR_PREFIX",
+    "config_digest",
     "config_json_schema",
     "cwd_config_path",
     "default_config",
@@ -42,6 +45,7 @@ __all__ = [
     "show_config",
     "user_config_dir",
     "user_config_path",
+    "user_data_dir",
     "validate_config",
     "validate_config_data",
 ]

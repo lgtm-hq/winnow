@@ -40,6 +40,33 @@ winnow --help       # show available options
 
 The version shown is illustrative; the CLI prints the installed `winnow-media` version.
 
+### `winnow live-photos`
+
+Reports Apple Live Photo pairs (a HEIC/JPEG still and a MOV clip sharing a content
+identifier) under a directory. Read-only; always exits 0 on a successful scan.
+
+```text
+winnow live-photos [OPTIONS] DIRECTORY
+```
+
+| Flag                             | Default | Description                              |
+| -------------------------------- | ------- | ---------------------------------------- |
+| `--recursive` / `--no-recursive` | `true`  | Include files in subdirectories.         |
+| `--unpaired`                     | `false` | List unpaired stills and videos instead. |
+| `--format`, `-f`                 | `table` | `table` or `json`; other choices exit 2. |
+
+The default table lists Still, Video, Verified, and Content Identifier per pair;
+`--unpaired` lists Path and Kind (`still` or `video`) for orphans. `--format json` emits
+the whole scan (`pairs`, `unpaired_stills`, `unpaired_videos`) with string paths
+regardless of `--unpaired`. `csv` and `markdown` are accepted by the shared `--format`
+option but raise a usage error (`format not supported by live-photos`).
+
+```bash
+winnow live-photos ~/Pictures                  # table of pairs
+winnow live-photos --unpaired ~/Pictures       # orphans only
+winnow live-photos -f json ~/Pictures | jq .   # machine-readable scan
+```
+
 ### `winnow init`
 
 Creates a configuration file through guided prompts.
@@ -108,6 +135,21 @@ Removes entries whose source files no longer exist.
 No stale entries prints `No stale entries.`; a declined prompt prints `Aborted.` and
 exits 0; success prints `Pruned N entries.` (`N` counts rows, so a path cached under
 several algorithms removes more rows than the prompt's path count).
+
+---
+
+## Environment
+
+Winnow resolves its per-user directories from the environment at call time, in the order
+listed. Relative overrides are taken as given; `~` is expanded.
+
+| Variable            | Purpose                                           | Fallback                                              |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------------- |
+| `WINNOW_CONFIG_DIR` | Per-user config directory (`.winnow-config.yaml`) | `$XDG_CONFIG_HOME/winnow`, then `~/.config/winnow`    |
+| `WINNOW_DATA_DIR`   | Per-user data directory (`sessions.db` saga log)  | `$XDG_DATA_HOME/winnow`, then `~/.local/share/winnow` |
+
+`WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
+onto configuration fields, not directories.
 
 ---
 
