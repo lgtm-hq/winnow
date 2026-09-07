@@ -343,15 +343,20 @@ def test_read_exif_dated_heic_does_not_raise(dated_images_dir: Path) -> None:
     assert_that(read_exif(path)).is_instance_of(dict)
 
 
-def test_captured_at_from_pillow_swallows_malformed_exif() -> None:
+def test_captured_at_from_pillow_swallows_malformed_exif(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A malformed EXIF block yields no capture time instead of raising."""
     from winnow.media.image import _captured_at_from_pillow
 
-    class _BrokenImage(Image.Image):
-        def getexif(self) -> Image.Exif:
-            raise SyntaxError("not a TIFF header")
+    image = Image.new("RGB", (1, 1))
 
-    result = _captured_at_from_pillow(_BrokenImage())
+    def _broken_getexif() -> Image.Exif:
+        raise SyntaxError("not a TIFF header")
+
+    monkeypatch.setattr(image, "getexif", _broken_getexif)
+
+    result = _captured_at_from_pillow(image)
 
     assert_that(result).is_none()
 
