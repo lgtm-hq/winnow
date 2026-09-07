@@ -9,7 +9,8 @@ shared by the per-entity stores that compose
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -179,6 +180,45 @@ class ConnectionManager:
             The persisted schema version.
         """
         return read_schema_version(self._require_connection())
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Cursor]:
+        """Run a block of statements inside one explicit transaction.
+
+        Opens a ``BEGIN IMMEDIATE`` transaction, yields a cursor bound to it,
+        commits when the block exits normally, and rolls back when the block
+        raises. Callers issue every statement through the yielded cursor so
+        the whole block is persisted or discarded as a unit.
+
+        Yields:
+            A cursor on the open transaction.
+
+        Raises:
+            ReportError: If the transaction cannot be started or committed, or
+                if a statement inside the block fails; the transaction is
+                rolled back before the error propagates.
+        """
+        connection = self._require_connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE;")
+        except sqlite3.Error as error:
+            raise ReportError(
+                MSG_WRITE_FAILED,
+                operation="transaction",
+                details={"phase": "begin"},
+            ) from error
+        try:
+            yield connection.cursor()
+            connection.execute("COMMIT;")
+        except sqlite3.Error as error:
+            connection.rollback()
+            raise ReportError(
+                MSG_WRITE_FAILED,
+                operation="transaction",
+            ) from error
+        except BaseException:
+            connection.rollback()
+            raise
 
     def _write(self, sql: str, params: Sequence[object]) -> sqlite3.Cursor:
         """Execute a write statement inside a transaction.

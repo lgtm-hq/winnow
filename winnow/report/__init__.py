@@ -9,6 +9,7 @@ FTS5 full-text index over media file paths, filenames, and metadata.
 from __future__ import annotations
 
 from winnow.report.database import ReportDatabase
+from winnow.report.export import RunExport, export_run
 from winnow.report.records import (
     DuplicateGroupRecord,
     MediaFileRecord,
@@ -33,5 +34,7 @@ __all__ = [
     "OperationRecord",
     "ReportDatabase",
     "ReportRun",
+    "RunExport",
     "RunStatus",
+    "export_run",
 ]
