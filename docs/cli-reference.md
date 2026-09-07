@@ -101,7 +101,7 @@ Removes entries whose source files no longer exist.
 
 | Flag            | Description                                                   |
 | --------------- | ------------------------------------------------------------- |
-| `--dry-run`     | List each stale path, then `N stale entries (dry run).`       |
+| `--dry-run`     | List each stale path, then `N stale paths (dry run).`       |
 | `--yes`, `-y`   | Skip the `Prune N stale entries?` prompt.                     |
 | `--config FILE` | Path to configuration file.                                   |
 

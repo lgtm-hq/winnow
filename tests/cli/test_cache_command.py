@@ -187,7 +187,7 @@ def test_prune_dry_run_lists_stale_path(seeded: SeededCache) -> None:
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains(
         str(seeded.stale_path),
-        "1 stale entries (dry run).",
+        "1 stale paths (dry run).",
     )
     assert_that(_entry_count(seeded.db_path)).is_equal_to(2)
 
@@ -197,7 +197,7 @@ def test_prune_declined_prompt_aborts(seeded: SeededCache) -> None:
     result = _invoke(seeded.config_path, "prune", input="n\n")
 
     assert_that(result.exit_code).is_equal_to(0)
-    assert_that(result.output).contains("Prune 1 stale entries?", "Aborted.")
+    assert_that(result.output).contains("Prune 1 stale paths?", "Aborted.")
     assert_that(_entry_count(seeded.db_path)).is_equal_to(2)
 
 
