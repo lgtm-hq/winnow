@@ -14,7 +14,6 @@ import click
 from winnow.cli.console import console_from_context
 from winnow.cli.standards import dry_run_option, yes_option
 from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
-from winnow.fs.errors import FileSystemOperationError
 
 __all__ = ["clean"]
 
@@ -54,7 +53,8 @@ def clean(
         yes: When set, skip the interactive confirmation prompt.
 
     Raises:
-        click.ClickException: If a candidate directory cannot be removed.
+        FileSystemOperationError: If a candidate directory cannot be removed; the
+            root handler renders it and exits with ``ExitCode.FAILURE``.
     """
     console = console_from_context(ctx)
     candidates = find_empty_directories(directory, exclude_patterns=exclude_patterns)
@@ -79,14 +79,11 @@ def clean(
         console.print("Aborted.")
         return
 
-    try:
-        removed = remove_empty_tree(
-            directory,
-            exclude_patterns=exclude_patterns,
-            include_root=False,
-        )
-    except FileSystemOperationError as exc:
-        raise click.ClickException(str(exc)) from exc
+    removed = remove_empty_tree(
+        directory,
+        exclude_patterns=exclude_patterns,
+        include_root=False,
+    )
     console.print(
         f"Removed {len(removed)} empty director{'y' if len(removed) == 1 else 'ies'}.",
     )

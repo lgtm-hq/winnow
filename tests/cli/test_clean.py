@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from winnow.cli import main
 from winnow.cli.clean import clean
+from winnow.cli.errors import ExitCode
 from winnow.fs.errors import FileSystemOperationError
 
 
@@ -110,11 +111,11 @@ def test_clean_rejects_missing_directory(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_not_equal_to(0)
 
 
-def test_clean_reports_removal_failure_as_click_error(
+def test_clean_removal_failure_renders_error_panel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A filesystem failure during removal surfaces as a Click error."""
+    """A filesystem failure during removal reaches the root error panel."""
     (tmp_path / "solo").mkdir()
 
     def failing_remove(root: Path, **kwargs: object) -> list[Path]:
@@ -132,6 +133,11 @@ def test_clean_reports_removal_failure_as_click_error(
 
     result = CliRunner().invoke(main, ["clean", str(tmp_path), "--yes"])
 
-    assert_that(result.exit_code).is_equal_to(1)
-    assert_that(result.output).contains("failed to remove empty directory")
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("Error")
+    assert_that(result.stderr).contains("failed to remove empty directory")
+    assert_that(result.stderr).contains("operation: remove_empty_tree")
+    assert_that(result.stderr).contains("path:")
+    assert_that(result.stderr).contains("solo")
+    assert_that(result.stdout).is_empty()
     assert_that((tmp_path / "solo").exists()).is_true()
