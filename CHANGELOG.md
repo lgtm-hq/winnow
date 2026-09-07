@@ -21,6 +21,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.0] - 2026-09-07
+
+### Added
+
+- **cli**: cache show/clear/prune over the hash cache (#48 PR A) (#239) (9e9bd64)
+
+## [0.36.1] - 2026-09-07
+
+### Fixed
+
+- **media**: read EXIF capture dates via Pillow so HEIC photos are dated (#246)
+  (036167c)
+
 ## [0.36.0] - 2026-09-07
 
 ### Added
