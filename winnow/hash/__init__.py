@@ -18,6 +18,13 @@ from winnow.hash.cache import HashCache, open_hash_cache
 from winnow.hash.cache_entry import CacheEntry
 from winnow.hash.cache_key import CacheKey
 from winnow.hash.cache_stats import CacheStats
+from winnow.hash.content import (
+    CONTENT_ALGORITHMS,
+    DEFAULT_CHUNK_SIZE,
+    ContentHash,
+    ContentHasher,
+    ContentHasherProtocol,
+)
 from winnow.hash.digest import hamming_distance, parse_digest
 from winnow.hash.image_hasher import (
     DEFAULT_HASH_SIZE,
@@ -42,4 +49,9 @@ __all__ = [
     "hash_image",
     "open_hash_cache",
     "parse_digest",
+    "CONTENT_ALGORITHMS",
+    "DEFAULT_CHUNK_SIZE",
+    "ContentHash",
+    "ContentHasher",
+    "ContentHasherProtocol",
 ]
