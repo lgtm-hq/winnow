@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from assertpy import assert_that
-from PIL import ExifTags, Image
+from PIL import ExifTags, Image, UnidentifiedImageError
 
 from winnow.exceptions import MediaError
 from winnow.media import image as image_module
@@ -209,13 +209,136 @@ def test_extract_image_metadata_reads_date_time_original(tmp_path: Path) -> None
     assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
 
 
+@pytest.mark.parametrize("filename", ["sample.png", "sample.heic"])
 def test_extract_image_metadata_captured_at_none_without_exif(
     fixtures_dir: Path,
+    filename: str,
 ) -> None:
     """An image with no EXIF reports no capture time."""
-    metadata = extract_image_metadata(fixtures_dir / "sample.png")
+    if filename.endswith(".heic") and not heif_supported():
+        pytest.skip("pillow-heif not available")
+
+    metadata = extract_image_metadata(fixtures_dir / filename)
 
     assert_that(metadata.captured_at).is_none()
+
+
+def _require_dated(directory: Path, filename: str) -> Path:
+    """Return a dated fixture path, skipping when the HEIC could not be built.
+
+    Args:
+        directory: Directory expected to hold the dated fixtures.
+        filename: Fixture file name.
+
+    Returns:
+        Path to the fixture.
+    """
+    path = directory / filename
+    if not path.exists():
+        pytest.skip(f"{filename} unavailable: pillow-heif cannot encode HEIF here")
+    return path
+
+
+@pytest.mark.parametrize("filename", ["dated.heic", "dated.jpg"])
+def test_extract_image_metadata_dated_fixtures_round_trip(
+    dated_images_dir: Path,
+    filename: str,
+) -> None:
+    """Dated fixtures built at test time read DateTimeOriginal via Pillow."""
+    path = _require_dated(dated_images_dir, filename)
+
+    metadata = extract_image_metadata(path)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
+
+
+@pytest.mark.parametrize("filename", ["dated.heic", "dated.jpg"])
+def test_extract_image_metadata_committed_dated_fixtures(
+    fixtures_dir: Path,
+    filename: str,
+) -> None:
+    """The committed dated fixtures carry the expected capture date."""
+    if filename.endswith(".heic") and not heif_supported():
+        pytest.skip("pillow-heif not available")
+
+    metadata = extract_image_metadata(fixtures_dir / filename)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
+
+
+def test_extract_image_metadata_falls_back_to_ifd0_date_time(tmp_path: Path) -> None:
+    """IFD0 DateTime is used when the ExifIFD has no DateTimeOriginal."""
+    jpeg = tmp_path / "ifd0.jpg"
+    exif = Image.Exif()
+    exif[0x0132] = "2024:03:02 00:00:00"
+    Image.new("RGB", (4, 4)).save(jpeg, exif=exif)
+
+    metadata = extract_image_metadata(jpeg)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 2, 0, 0, 0))
+
+
+def test_extract_image_metadata_skips_exifread_for_decodable_images(
+    dated_images_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Images Pillow can open never touch exifread."""
+    path = _require_dated(dated_images_dir, "dated.heic")
+    calls: list[Path] = []
+
+    def counting_read_exif(path: Path) -> dict[str, str]:
+        calls.append(path)
+        return {}
+
+    monkeypatch.setattr(image_module, "read_exif", counting_read_exif)
+
+    metadata = extract_image_metadata(path)
+
+    assert_that(calls).is_empty()
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
+
+
+def test_extract_image_metadata_uses_exifread_when_pillow_cannot_open(
+    dated_images_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exifread is consulted exactly once when Pillow cannot identify a file."""
+    path = _require_dated(dated_images_dir, "dated.jpg")
+    calls: list[Path] = []
+
+    def counting_read_exif(path: Path) -> dict[str, str]:
+        calls.append(path)
+        return {"EXIF ExifImageWidth": "32"}
+
+    def failing_open(*args: object, **kwargs: object) -> None:
+        raise UnidentifiedImageError("cannot identify")
+
+    monkeypatch.setattr(image_module, "read_exif", counting_read_exif)
+    monkeypatch.setattr(Image, "open", failing_open)
+
+    extract_image_metadata(path)
+
+    assert_that(calls).is_length(1)
+
+
+def test_read_exif_dated_heic_does_not_raise(dated_images_dir: Path) -> None:
+    """exifread's best-effort HEIF path degrades to a mapping, never raises."""
+    path = _require_dated(dated_images_dir, "dated.heic")
+
+    assert_that(read_exif(path)).is_instance_of(dict)
+
+
+def test_captured_at_from_pillow_swallows_malformed_exif() -> None:
+    """A malformed EXIF block yields no capture time instead of raising."""
+    from winnow.media.image import _captured_at_from_pillow
+
+    class _BrokenImage(Image.Image):
+        def getexif(self) -> Image.Exif:
+            raise SyntaxError("not a TIFF header")
+
+    result = _captured_at_from_pillow(_BrokenImage())
+
+    assert_that(result).is_none()
 
 
 def test_extract_image_metadata_ignores_zero_date_time_original(

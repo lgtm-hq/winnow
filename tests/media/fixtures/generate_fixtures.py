@@ -14,13 +14,52 @@ from pathlib import Path
 from PIL import Image
 
 FIXTURE_DIR = Path(__file__).resolve().parent
+DATED_DATETIME_ORIGINAL = "2024:03:01 12:34:56"
+DATED_DATETIME = "2024:03:02 00:00:00"
 AUDIO_TITLE = "Winnow Sample"
 AUDIO_ARTIST = "Winnow"
 AUDIO_ALBUM = "Fixtures"
 
 
+def write_dated_images(directory: Path) -> list[Path]:
+    """Write ``dated.jpg`` and ``dated.heic`` carrying known EXIF capture dates.
+
+    Both files are 32x32 RGB red with ExifIFD ``DateTimeOriginal`` set to
+    :data:`DATED_DATETIME_ORIGINAL` and IFD0 ``DateTime`` set to
+    :data:`DATED_DATETIME`. The HEIC is skipped when ``pillow-heif`` cannot
+    encode on this platform.
+
+    Args:
+        directory: Existing directory to write the fixtures into.
+
+    Returns:
+        Paths that were written; ``dated.heic`` is absent when HEIF encoding
+        is unavailable.
+    """
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[0x9003] = DATED_DATETIME_ORIGINAL
+    exif[0x0132] = DATED_DATETIME
+    red = Image.new("RGB", (32, 32), (255, 0, 0))
+
+    jpeg = directory / "dated.jpg"
+    red.save(jpeg, exif=exif.tobytes())
+    written = [jpeg]
+
+    try:
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+        heic = directory / "dated.heic"
+        red.save(heic, format="HEIF", exif=exif.tobytes())
+        written.append(heic)
+    except Exception as exc:  # noqa: BLE001 - optional codec
+        print(f"skipping dated HEIC fixture: {exc}")
+    return written
+
+
 def _generate_images() -> None:
     """Write small raster fixtures across the common image formats."""
+    write_dated_images(FIXTURE_DIR)
     rgb = Image.new("RGB", (8, 6), (120, 60, 30))
     rgba = Image.new("RGBA", (8, 6), (10, 20, 30, 128))
 
