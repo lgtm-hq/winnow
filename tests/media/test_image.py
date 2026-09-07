@@ -529,7 +529,10 @@ def test_read_maker_note_tags_reads_apple_note(tmp_path: Path) -> None:
     assert_that(read_exif(path)).does_not_contain_key("MakerNote Tag 0x0011")
 
 
-@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+@pytest.mark.skipif(
+    not heif_encoding_supported(),
+    reason="pillow-heif HEIF encoder unavailable",
+)
 def test_read_maker_note_tags_reads_apple_note_from_heic(tmp_path: Path) -> None:
     """A HEIC still carrying an Apple MakerNote yields the content identifier."""
     uuid = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
@@ -540,7 +543,10 @@ def test_read_maker_note_tags_reads_apple_note_from_heic(tmp_path: Path) -> None
     assert_that(read_maker_note_tags(path)["Tag 0x0011"]).is_equal_to(uuid)
 
 
-@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+@pytest.mark.skipif(
+    not heif_encoding_supported(),
+    reason="pillow-heif HEIF encoder unavailable",
+)
 def test_read_maker_note_tags_empty_for_heic_without_maker_note(
     tmp_path: Path,
 ) -> None:
@@ -558,14 +564,12 @@ def test_read_maker_note_tags_empty_for_heic_without_maker_note(
         b"Apple iOS\x00\x00\x01MM" + struct.pack(">H", 1),
         _apple_maker_note("A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF")[:-8],
         b"Apple iOS\x00\x00\x01XX" + struct.pack(">H", 0),
-        b"Canon\x00\x00\x01MM" + struct.pack(">H", 0),
     ],
     ids=[
         "truncated_count",
         "truncated_entry",
         "truncated_value",
         "unknown_byte_order",
-        "not_apple",
     ],
 )
 def test_read_maker_note_tags_empty_for_malformed_note(
@@ -575,14 +579,37 @@ def test_read_maker_note_tags_empty_for_malformed_note(
 ) -> None:
     """Truncated or foreign MakerNote bytes degrade to an empty mapping.
 
-    exifread is stubbed out so the assertion isolates the Pillow parser; on a
-    JPEG the exifread fallback would otherwise run on the same bytes.
+    exifread is stubbed to a distinctive rescue value so the assertion proves
+    the Pillow parser, not the fallback, produced the empty result.
     """
-    monkeypatch.setattr(exifread, "process_file", lambda *a, **k: {})
+    monkeypatch.setattr(
+        exifread,
+        "process_file",
+        lambda *a, **k: {"MakerNote Tag 0x0011": "EXIFREAD-RESCUE"},
+    )
     path = tmp_path / "broken.jpg"
     Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
 
     assert_that(read_maker_note_tags(path)).is_equal_to({})
+
+
+def test_non_apple_maker_note_uses_exifread_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A MakerNote from another vendor is left to the exifread reader."""
+    monkeypatch.setattr(
+        exifread,
+        "process_file",
+        lambda *a, **k: {"MakerNote Tag 0x0011": "EXIFREAD-RESCUE"},
+    )
+    path = tmp_path / "canon.jpg"
+    note = b"Canon\x00\x00\x01MM" + struct.pack(">H", 0)
+    Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
+
+    assert_that(read_maker_note_tags(path)).is_equal_to(
+        {"Tag 0x0011": "EXIFREAD-RESCUE"},
+    )
 
 
 def test_malformed_apple_note_never_falls_back_to_exifread(
@@ -630,10 +657,16 @@ def test_heif_encoding_supported_matches_a_real_encode() -> None:
 )
 def test_read_maker_note_tags_skips_non_string_entries(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     order: bytes,
     endian: str,
 ) -> None:
     """Inline values decode in either byte order; non-string entries are skipped."""
+    monkeypatch.setattr(
+        exifread,
+        "process_file",
+        lambda *a, **k: {"MakerNote Tag 0x0011": "EXIFREAD-RESCUE"},
+    )
     entries = (
         struct.pack(f"{endian}HHI", 0x0001, 9, 1) + struct.pack(f"{endian}I", 7),
         struct.pack(f"{endian}HHI", 0x0003, 7, 4) + b"\xff\xfe\x00\x01",
