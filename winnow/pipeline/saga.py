@@ -163,7 +163,7 @@ class Saga:
         try:
             command = _rebuild(record)
             self._log.mark_command(seq=record.seq, status=CommandStatus.IN_PROGRESS)
-        except SagaError as error:
+        except (PipelineError, SagaError) as error:
             skipped.append((record, str(error)))
             return 0
         try:
@@ -202,6 +202,7 @@ def _rebuild(record: CommandRecord) -> Command:
 
     Raises:
         SagaError: When the row has no log or the log cannot be decoded.
+        PipelineError: When ``args`` names a missing or unknown command type.
     """
     if record.log is None:
         raise SagaError(

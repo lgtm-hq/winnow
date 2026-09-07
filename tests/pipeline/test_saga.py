@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -504,6 +505,49 @@ def test_undo_session_collects_undo_failures(
     )
 
 
+def _corrupt_row(db_path: Path, *, column: str, value: str | None, seq: int) -> None:
+    """Overwrite one persisted column of a command row, bypassing SagaLog.
+
+    Simulates on-disk corruption that the public log API never produces.
+
+    Args:
+        db_path: Database file behind the log under test.
+        column: ``log_json`` or ``args_json``.
+        value: New raw column value, or ``None`` for SQL ``NULL``.
+        seq: Row to modify.
+    """
+    statements = {
+        "log_json": "UPDATE commands SET log_json = ? WHERE seq = ?;",
+        "args_json": "UPDATE commands SET args_json = ? WHERE seq = ?;",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(statements[column], (value, seq))
+
+
+def test_undo_session_skips_unknown_command_type_and_reverts_the_rest(
+    saga: Saga,
+    db_path: Path,
+    workspace: tuple[Path, Path],
+) -> None:
+    """A ``done`` row whose args name an unknown command is skipped, not fatal."""
+    source, destination = workspace
+    session_id = _run_two_moves(saga, workspace)
+    seq_b = saga.log.list_commands(session_id)[1].seq
+    _corrupt_row(db_path, column="args_json", value='{"command": "nope"}', seq=seq_b)
+
+    report = saga.undo_session(session_id)
+
+    assert_that(report.reverted).is_equal_to(1)
+    assert_that(report.skipped).is_length(1)
+    assert_that(report.skipped[0][1]).contains("unknown pipeline command type")
+    assert_that((source / "a.txt").exists()).is_true()
+    assert_that((destination / "b.txt").exists()).is_true()
+    assert_that(_statuses(saga, session_id)).is_equal_to(
+        [CommandStatus.UNDONE, CommandStatus.DONE],
+    )
+    assert_that(_session_status(saga.log, session_id)).is_equal_to(SessionStatus.FAILED)
+
+
 @pytest.mark.parametrize(
     ("log_json", "match"),
     [(None, "has no operation log"), ('{"status": "applied"}', "malformed")],
@@ -511,6 +555,7 @@ def test_undo_session_collects_undo_failures(
 )
 def test_undo_session_skips_unusable_log_and_reverts_the_rest(
     saga: Saga,
+    db_path: Path,
     workspace: tuple[Path, Path],
     log_json: str | None,
     match: str,
@@ -519,11 +564,7 @@ def test_undo_session_skips_unusable_log_and_reverts_the_rest(
     source, destination = workspace
     session_id = _run_two_moves(saga, workspace)
     seq_b = saga.log.list_commands(session_id)[1].seq
-    with saga.log._store.transaction("corrupt") as connection:
-        connection.execute(
-            "UPDATE commands SET log_json = ? WHERE seq = ?;",
-            (log_json, seq_b),
-        )
+    _corrupt_row(db_path, column="log_json", value=log_json, seq=seq_b)
 
     report = saga.undo_session(session_id)
 
