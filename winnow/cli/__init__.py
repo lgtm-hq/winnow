@@ -12,6 +12,7 @@ from winnow.cli.errors import WinnowGroup
 from winnow.cli.info import info
 from winnow.cli.init import init as init_command
 from winnow.cli.live_photos import live_photos
+from winnow.cli.prune import prune
 from winnow.cli.standards import no_color_option
 from winnow.cli.stats import stats
 
@@ -43,6 +44,7 @@ main.add_command(help_command)
 main.add_command(info)
 main.add_command(init_command)
 main.add_command(live_photos)
+main.add_command(prune)
 main.add_command(stats)
 
 
