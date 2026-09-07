@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.3] - 2026-09-07
+
+### Fixed
+
+- **pipeline**: Discovery must skip non-regular files and not inventory a symlink target
+  twice (#263) (072b003)
+
 ## [0.37.2] - 2026-09-07
 
 ### Fixed
