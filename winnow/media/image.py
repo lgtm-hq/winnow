@@ -74,10 +74,6 @@ _EXIF_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
     KeyError,
     TypeError,
 )
-_PILLOW_OPEN_ERRORS: Final[tuple[type[Exception], ...]] = (
-    UnidentifiedImageError,
-    *_EXIF_READ_ERRORS,
-)
 
 _MODE_BIT_DEPTH: Final[dict[str, int]] = {
     "1": 1,
@@ -215,7 +211,7 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
     try:
         with Image.open(path) as image:
             tags = _maker_note_tags_from_pillow(image)
-    except _PILLOW_OPEN_ERRORS as exc:
+    except Exception as exc:  # noqa: BLE001 - codec plugins may raise anything
         logger.debug("Pillow MakerNote read failed for {}: {}", path, exc)
         tags = {}
     if tags:

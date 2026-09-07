@@ -620,12 +620,28 @@ def test_read_maker_note_tags_falls_back_to_exifread(
     monkeypatch.setattr(
         exifread,
         "process_file",
-        lambda handle, details: {
-            "MakerNote Tag 0x0011": "from-exifread",
-            "Image Make": "X",
-        },
+        lambda handle, details: (
+            {"MakerNote Tag 0x0011": "from-exifread", "Image Make": "X"}
+            if details
+            else {}
+        ),
     )
 
     tags = read_maker_note_tags(fixtures_dir / "sample.jpg")
 
     assert_that(tags).is_equal_to({"Tag 0x0011": "from-exifread"})
+
+
+def test_read_maker_note_tags_swallows_unexpected_pillow_error(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlisted codec exception from Pillow degrades to the exifread path."""
+
+    def _boom(*args: object, **kwargs: object) -> Image.Image:
+        raise RuntimeError("codec exploded")
+
+    monkeypatch.setattr(Image, "open", _boom)
+    monkeypatch.setattr(exifread, "process_file", lambda *a, **k: {})
+
+    assert_that(read_maker_note_tags(fixtures_dir / "sample.jpg")).is_equal_to({})
