@@ -14,6 +14,7 @@ Writers emit one of these two forms; every reader goes through
 
 from __future__ import annotations
 
+from winnow.hash.batch import BatchHashResult, hash_media_files
 from winnow.hash.cache import HashCache, open_hash_cache
 from winnow.hash.cache_entry import CacheEntry
 from winnow.hash.cache_key import CacheKey
@@ -26,6 +27,8 @@ from winnow.hash.content import (
     ContentHasherProtocol,
 )
 from winnow.hash.digest import hamming_distance, parse_digest
+from winnow.hash.hash_failure import HashFailure
+from winnow.hash.hashed_media import HashedMedia
 from winnow.hash.image_hasher import (
     DEFAULT_HASH_SIZE,
     PERCEPTUAL_ALGORITHMS,
@@ -49,6 +52,10 @@ __all__ = [
     "hash_image",
     "open_hash_cache",
     "parse_digest",
+    "BatchHashResult",
+    "HashFailure",
+    "HashedMedia",
+    "hash_media_files",
     "CONTENT_ALGORITHMS",
     "DEFAULT_CHUNK_SIZE",
     "ContentHash",
