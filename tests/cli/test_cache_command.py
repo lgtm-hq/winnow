@@ -140,6 +140,7 @@ def test_show_without_database_reports_zeros(config_path: Path) -> None:
 
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains("hash", "0", "no cache database at")
+    assert_that((config_path.parent / "cache" / "cache.db").exists()).is_false()
 
 
 def test_clear_dry_run_changes_nothing(seeded: SeededCache) -> None:
@@ -187,7 +188,7 @@ def test_prune_dry_run_lists_stale_path(seeded: SeededCache) -> None:
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains(
         str(seeded.stale_path),
-        "1 stale paths (dry run).",
+        "1 stale path (dry run).",
     )
     assert_that(_entry_count(seeded.db_path)).is_equal_to(2)
 
@@ -197,8 +198,30 @@ def test_prune_declined_prompt_aborts(seeded: SeededCache) -> None:
     result = _invoke(seeded.config_path, "prune", input="n\n")
 
     assert_that(result.exit_code).is_equal_to(0)
-    assert_that(result.output).contains("Prune 1 stale paths?", "Aborted.")
+    assert_that(result.output).contains("Prune 1 stale path?", "Aborted.")
     assert_that(_entry_count(seeded.db_path)).is_equal_to(2)
+
+
+def test_prune_counts_paths_in_prompt_and_rows_in_result(
+    seeded: SeededCache,
+) -> None:
+    """One stale path cached under two algorithms prompts for 1 and prunes 2."""
+    with HashCache(db_path=seeded.db_path) as hash_cache:
+        hash_cache.set(
+            key=CacheKey(
+                path=seeded.stale_path,
+                algorithm=HashAlgorithm.DHASH,
+                mtime=0.0,
+                size=0,
+            ),
+            digest="removed-dhash",
+        )
+
+    result = _invoke(seeded.config_path, "prune", input="y\n")
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("Prune 1 stale path?", "Pruned 2 entries.")
+    assert_that(_entry_count(seeded.db_path)).is_equal_to(1)
 
 
 def test_prune_with_yes_removes_only_stale_entry(seeded: SeededCache) -> None:

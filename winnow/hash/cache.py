@@ -207,7 +207,14 @@ class HashCache:
         Raises:
             CacheError: If the scan or deletion fails.
         """
-        missing = self.stale_paths()
+        try:
+            missing = self.stale_paths()
+        except CacheError as exc:
+            raise CacheError(
+                "Hash cache prune failed",
+                operation="cache.prune_stale",
+                file_path=self._db_path,
+            ) from exc
         if not missing:
             return 0
         try:

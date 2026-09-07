@@ -212,12 +212,13 @@ def prune(
         if not stale:
             console.print("No stale entries.")
             return
+        noun = "path" if len(stale) == 1 else "paths"
         if dry_run:
             for path in stale:
                 console.print(path, soft_wrap=True)
-            console.print(f"{len(stale)} stale paths (dry run).")
+            console.print(f"{len(stale)} stale {noun} (dry run).")
             return
-        if not _confirmed(console, prompt=f"Prune {len(stale)} stale paths?", yes=yes):
+        if not _confirmed(console, prompt=f"Prune {len(stale)} stale {noun}?", yes=yes):
             return
         pruned = hash_cache.prune_stale()
         console.print(f"Pruned {pruned} entries.")

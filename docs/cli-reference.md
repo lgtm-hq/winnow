@@ -99,11 +99,11 @@ exits 0; success prints `Removed N entries.`
 
 Removes entries whose source files no longer exist.
 
-| Flag            | Description                                           |
-| --------------- | ----------------------------------------------------- |
-| `--dry-run`     | List each stale path, then `N stale paths (dry run).` |
-| `--yes`, `-y`   | Skip the `Prune N stale paths?` prompt.               |
-| `--config FILE` | Path to configuration file.                           |
+| Flag            | Description                                             |
+| --------------- | ------------------------------------------------------- |
+| `--dry-run`     | List each stale path, then `N stale path(s) (dry run).` |
+| `--yes`, `-y`   | Skip the `Prune N stale path(s)?` prompt.               |
+| `--config FILE` | Path to configuration file.                             |
 
 No stale entries prints `No stale entries.`; a declined prompt prints `Aborted.` and
 exits 0; success prints `Pruned N entries.` (`N` counts rows, so a path cached under

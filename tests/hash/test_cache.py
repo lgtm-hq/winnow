@@ -497,8 +497,10 @@ def test_prune_failure_raises_cache_error(cache: HashCache) -> None:
     """A prune scan against a closed connection surfaces as a cache error."""
     cache.close()
 
-    with pytest.raises(CacheError):
+    with pytest.raises(CacheError) as excinfo:
         cache.prune_stale()
+
+    assert_that(excinfo.value.context.operation).is_equal_to("cache.prune_stale")
 
 
 def test_clear_failure_raises_cache_error(cache: HashCache) -> None:
