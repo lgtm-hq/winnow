@@ -278,6 +278,21 @@ def test_extract_image_metadata_falls_back_to_ifd0_date_time(tmp_path: Path) -> 
     assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 2, 0, 0, 0))
 
 
+def test_extract_image_metadata_falls_back_when_date_time_original_invalid(
+    tmp_path: Path,
+) -> None:
+    """A malformed DateTimeOriginal does not block the IFD0 DateTime fallback."""
+    jpeg = tmp_path / "bad-original.jpg"
+    exif = Image.Exif()
+    exif[0x0132] = "2024:03:02 00:00:00"
+    exif.get_ifd(0x8769)[0x9003] = "0000:00:00 00:00:00"
+    Image.new("RGB", (4, 4)).save(jpeg, exif=exif)
+
+    metadata = extract_image_metadata(jpeg)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 2, 0, 0, 0))
+
+
 def test_extract_image_metadata_skips_exifread_for_decodable_images(
     dated_images_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

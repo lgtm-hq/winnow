@@ -270,8 +270,9 @@ def _captured_at_from_pillow(image: Image.Image) -> datetime | None:
     """Resolve the capture time from an opened Pillow image's EXIF.
 
     Reads ``DateTimeOriginal`` (ExifIFD ``0x9003``), falling back to IFD0
-    ``DateTime`` (``0x0132``), via ``image.getexif()``. This is the capture date
-    read point for every format Pillow can open, HEIF/HEIC included.
+    ``DateTime`` (``0x0132``) when the former is absent or does not parse, via
+    ``image.getexif()``. This is the capture date read point for every format
+    Pillow can open, HEIF/HEIC included.
 
     Args:
         image: Opened Pillow image.
@@ -282,12 +283,20 @@ def _captured_at_from_pillow(image: Image.Image) -> datetime | None:
     """
     try:
         exif = image.getexif()
-        raw = exif.get_ifd(_EXIF_IFD_POINTER).get(
-            _EXIF_TAG_DATETIME_ORIGINAL
-        ) or exif.get(_EXIF_TAG_DATETIME)
+        candidates = (
+            exif.get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_DATETIME_ORIGINAL),
+            exif.get(_EXIF_TAG_DATETIME),
+        )
     except (OSError, ValueError, SyntaxError, KeyError, TypeError):
         return None
-    return parse_exif_datetime(raw) if isinstance(raw, str) else None
+    return next(
+        (
+            parsed
+            for raw in candidates
+            if isinstance(raw, str) and (parsed := parse_exif_datetime(raw)) is not None
+        ),
+        None,
+    )
 
 
 def _captured_at_from_exif(*, tags: dict[str, str]) -> datetime | None:
