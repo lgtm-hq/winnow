@@ -193,6 +193,59 @@ def test_prune_dry_run_lists_stale_path(seeded: SeededCache) -> None:
     assert_that(_entry_count(seeded.db_path)).is_equal_to(2)
 
 
+def _add_second_stale_path(seeded: SeededCache, tmp_path: Path) -> Path:
+    """Cache a second file and delete it so two distinct paths are stale.
+
+    Args:
+        seeded: Seeded cache handles.
+        tmp_path: Pytest-provided temporary directory.
+
+    Returns:
+        The resolved path of the second deleted file.
+    """
+    second = tmp_path / "removed-too.jpg"
+    second.write_bytes(b"removed-too")
+    with HashCache(db_path=seeded.db_path) as hash_cache:
+        hash_cache.set(
+            key=CacheKey.from_file(path=second, algorithm=HashAlgorithm.PHASH),
+            digest="removed-too",
+        )
+    second.unlink()
+    return second.resolve()
+
+
+def test_prune_dry_run_pluralises_multiple_stale_paths(
+    seeded: SeededCache,
+    tmp_path: Path,
+) -> None:
+    """Two stale paths are listed and summarised as ``paths``."""
+    second = _add_second_stale_path(seeded=seeded, tmp_path=tmp_path)
+
+    result = _invoke(seeded.config_path, "prune", "--dry-run")
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains(
+        str(seeded.stale_path),
+        str(second),
+        "2 stale paths (dry run).",
+    )
+    assert_that(_entry_count(seeded.db_path)).is_equal_to(3)
+
+
+def test_prune_prompt_pluralises_multiple_stale_paths(
+    seeded: SeededCache,
+    tmp_path: Path,
+) -> None:
+    """The confirmation prompt uses ``paths`` for two stale entries."""
+    _add_second_stale_path(seeded=seeded, tmp_path=tmp_path)
+
+    result = _invoke(seeded.config_path, "prune", input="y\n")
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("Prune 2 stale paths?", "Pruned 2 entries.")
+    assert_that(_entry_count(seeded.db_path)).is_equal_to(1)
+
+
 def test_prune_declined_prompt_aborts(seeded: SeededCache) -> None:
     """Answering ``n`` to the prune prompt prints Aborted. and keeps entries."""
     result = _invoke(seeded.config_path, "prune", input="n\n")
