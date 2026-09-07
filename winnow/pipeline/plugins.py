@@ -11,7 +11,7 @@ need no adapter code: :class:`LoggingPlugin` mirrors events to loguru and
 
 from __future__ import annotations
 
-from collections import deque
+import heapq
 from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
@@ -69,6 +69,7 @@ class PluginRegistry:
         self._bus = bus if bus is not None else EventBus()
         self._plugins: dict[str, FeaturePlugin] = {}
         self._initialized: tuple[str, ...] | None = None
+        self._set_up: set[str] = set()
 
     @property
     def bus(self) -> EventBus:
@@ -88,8 +89,14 @@ class PluginRegistry:
 
         Raises:
             PipelineError: When a plugin with the same name is already
-                registered.
+                registered, or the registry has already been initialized.
         """
+        if self._initialized is not None:
+            raise PipelineError(
+                f"cannot register plugin '{plugin.name}' after initialize",
+                operation="pipeline.plugins.register",
+                details={"plugin": plugin.name},
+            )
         if plugin.name in self._plugins:
             raise PipelineError(
                 f"plugin '{plugin.name}' is already registered",
@@ -123,7 +130,8 @@ class PluginRegistry:
         """Call ``setup`` on every plugin in dependency order, once.
 
         A second call returns the order from the first call and invokes
-        nothing.
+        nothing. If a ``setup`` raises, plugins already set up are remembered
+        and skipped when ``initialize`` is retried.
 
         Args:
             context: Service container passed to each plugin's ``setup``.
@@ -139,7 +147,10 @@ class PluginRegistry:
             return self._initialized
         order = self._topological_order()
         for name in order:
+            if name in self._set_up:
+                continue
             self._plugins[name].setup(context=context, bus=self._bus)
+            self._set_up.add(name)
         self._initialized = order
         return order
 
@@ -165,15 +176,19 @@ class PluginRegistry:
                 indegree[name] += 1
                 dependents[dependency].append(name)
 
-        ready = deque(name for name, degree in indegree.items() if degree == 0)
+        position = {name: index for index, name in enumerate(self._plugins)}
+        ready = [
+            (position[name], name) for name, degree in indegree.items() if degree == 0
+        ]
+        heapq.heapify(ready)
         order: list[str] = []
         while ready:
-            name = ready.popleft()
+            _, name = heapq.heappop(ready)
             order.append(name)
             for dependent in dependents[name]:
                 indegree[dependent] -= 1
                 if indegree[dependent] == 0:
-                    ready.append(dependent)
+                    heapq.heappush(ready, (position[dependent], dependent))
 
         if len(order) != len(self._plugins):
             cycle = [name for name in self._plugins if name not in order]

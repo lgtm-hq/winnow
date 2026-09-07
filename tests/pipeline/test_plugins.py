@@ -76,6 +76,57 @@ def test_initialize_breaks_ties_by_registration_order(
     assert_that(registry.initialize(context=context)).is_equal_to(("z", "m", "a"))
 
 
+def test_initialize_prefers_earlier_registered_plugin_once_ready(
+    context: PipelineContext,
+) -> None:
+    """A dependent registered before an independent plugin runs first once ready."""
+    registry = PluginRegistry()
+    registry.register(_FakePlugin("a"))
+    registry.register(_FakePlugin("b", ("a",)))
+    registry.register(_FakePlugin("c"))
+
+    assert_that(registry.initialize(context=context)).is_equal_to(("a", "b", "c"))
+
+
+def test_register_after_initialize_raises(context: PipelineContext) -> None:
+    """The registry is sealed once initialized."""
+    registry = PluginRegistry()
+    registry.register(_FakePlugin("a"))
+    registry.initialize(context=context)
+
+    with pytest.raises(PipelineError, match="after initialize"):
+        registry.register(_FakePlugin("late"))
+
+
+def test_initialize_retry_skips_already_set_up_plugins(
+    context: PipelineContext,
+) -> None:
+    """A retried initialize does not run setup twice for earlier plugins."""
+
+    class _FailOnce(_FakePlugin):
+        failed = False
+
+        def setup(self, *, context: PipelineContext, bus: EventBus) -> None:
+            if not self.failed:
+                self.failed = True
+                raise PipelineError("boom", operation="test")
+            super().setup(context=context, bus=bus)
+
+    registry = PluginRegistry()
+    first = _FakePlugin("a")
+    flaky = _FailOnce("b", ("a",))
+    registry.register(first)
+    registry.register(flaky)
+
+    with pytest.raises(PipelineError, match="boom"):
+        registry.initialize(context=context)
+    order = registry.initialize(context=context)
+
+    assert_that(order).is_equal_to(("a", "b"))
+    assert_that(first.calls).is_length(1)
+    assert_that(flaky.calls).is_length(1)
+
+
 def test_setup_receives_registry_bus_and_context(context: PipelineContext) -> None:
     """Each setup call gets the registry's bus and the supplied context."""
     bus = EventBus()
