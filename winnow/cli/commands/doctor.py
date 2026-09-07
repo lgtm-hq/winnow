@@ -2,9 +2,9 @@
 
 The command inspects the local environment and reports on the pieces Winnow
 relies on: the Python runtime, the FFmpeg binary, optional feature extras, the
-cache directory, and any discovered configuration file. Results render as a Rich
-table and the process exits non-zero when any hard check fails, so the command
-is usable both interactively and in CI health checks.
+cache and per-user data directories, and any discovered configuration file.
+Results render as a Rich table and the process exits non-zero when any hard
+check fails, so the command is usable both interactively and in CI health checks.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from rich.table import Table
 
 from winnow.cli.console import StatusLevel, console_from_context, status_text
 from winnow.cli.errors import ExitCode
-from winnow.config import find_config_path, load_config
+from winnow.config import find_config_path, load_config, user_data_dir
+from winnow.config.defaults import DATA_DIR_ENVVAR
 from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
 
@@ -199,6 +200,50 @@ def _directory_is_writable(directory: Path) -> bool:
     return os.access(directory, os.W_OK)
 
 
+def _check_directory(*, name: str, directory: Path, hint: str = "") -> CheckResult:
+    """Check that a directory Winnow writes to is usable.
+
+    Args:
+        name: Check name shown in the report.
+        directory: Directory to probe.
+        hint: Optional sentence appended to the detail (for example how to
+            override the location).
+
+    Returns:
+        A passing result when the directory exists and is writable, a passing
+        result when it is absent but its nearest existing ancestor is writable,
+        or a warning when neither can be written.
+    """
+    suffix = f" {hint}" if hint else ""
+    if directory.exists():
+        if _directory_is_writable(directory):
+            return CheckResult(
+                name=name,
+                status=CheckStatus.PASS,
+                detail=f"{directory} is writable.{suffix}",
+            )
+        return CheckResult(
+            name=name,
+            status=CheckStatus.WARN,
+            detail=f"{directory} exists but is not writable.{suffix}",
+        )
+    parent = next(
+        (ancestor for ancestor in directory.parents if ancestor.exists()),
+        directory.parent,
+    )
+    if parent.exists() and _directory_is_writable(parent):
+        return CheckResult(
+            name=name,
+            status=CheckStatus.PASS,
+            detail=f"{directory} is absent but can be created.{suffix}",
+        )
+    return CheckResult(
+        name=name,
+        status=CheckStatus.WARN,
+        detail=f"{directory} cannot be created; check parent permissions.{suffix}",
+    )
+
+
 def check_cache_dir(config: WinnowConfig) -> CheckResult:
     """Check that the configured cache directory is usable.
 
@@ -210,33 +255,24 @@ def check_cache_dir(config: WinnowConfig) -> CheckResult:
         passing result when it is absent but its parent is writable, or a warning
         when neither the directory nor its parent can be written.
     """
-    cache_dir = config.cache.directory
-    if cache_dir.exists():
-        if _directory_is_writable(cache_dir):
-            return CheckResult(
-                name="Cache directory",
-                status=CheckStatus.PASS,
-                detail=f"{cache_dir} is writable.",
-            )
-        return CheckResult(
-            name="Cache directory",
-            status=CheckStatus.WARN,
-            detail=f"{cache_dir} exists but is not writable.",
-        )
-    parent = next(
-        (ancestor for ancestor in cache_dir.parents if ancestor.exists()),
-        cache_dir.parent,
-    )
-    if parent.exists() and _directory_is_writable(parent):
-        return CheckResult(
-            name="Cache directory",
-            status=CheckStatus.PASS,
-            detail=f"{cache_dir} is absent but can be created.",
-        )
-    return CheckResult(
-        name="Cache directory",
-        status=CheckStatus.WARN,
-        detail=f"{cache_dir} cannot be created; check parent permissions.",
+    return _check_directory(name="Cache directory", directory=config.cache.directory)
+
+
+def check_data_dir() -> CheckResult:
+    """Check that the per-user data directory (saga session log) is usable.
+
+    The location comes from :func:`winnow.config.user_data_dir`, so the detail
+    reflects ``WINNOW_DATA_DIR`` / ``XDG_DATA_HOME`` overrides.
+
+    Returns:
+        A passing result when the data directory exists and is writable, a
+        passing result when it is absent but its parent is writable, or a
+        warning when neither can be written.
+    """
+    return _check_directory(
+        name="Data directory",
+        directory=user_data_dir(),
+        hint=f"Override with {DATA_DIR_ENVVAR}.",
     )
 
 
@@ -275,7 +311,7 @@ def run_checks() -> list[CheckResult]:
 
     Returns:
         Ordered results for the Python runtime, FFmpeg, configuration, cache
-        directory, and each optional extra.
+        directory, data directory, and each optional extra.
     """
     config, config_result = _load_config_for_checks()
     results = [
@@ -283,6 +319,7 @@ def run_checks() -> list[CheckResult]:
         check_ffmpeg(),
         config_result,
         check_cache_dir(config),
+        check_data_dir(),
     ]
     results.extend(check_optional_extras())
     return results
