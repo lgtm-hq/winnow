@@ -129,6 +129,29 @@ def test_read_c2pa_manifest_rejects_cabx_without_crc(tmp_path: Path) -> None:
     assert_that(read_c2pa_manifest(path)).is_none()
 
 
+def test_read_c2pa_manifest_ignores_unrelated_app11_box(tmp_path: Path) -> None:
+    """An AI marker in a separate, non-C2PA APP11 box does not count."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="JPEG")
+    jpeg = buffer.getvalue()
+    segments = b""
+    for instance, payload in (
+        (b"\x00\x01", _jumbf_payload(b"digitalCapture")),
+        (b"\x00\x02", b"trainedAlgorithmicMedia"),
+    ):
+        body = b"JP" + instance + struct.pack(">I", 1) + payload
+        segments += b"\xff\xeb" + struct.pack(">H", len(body) + 2) + body
+    path = tmp_path / "mixed.jpg"
+    path.write_bytes(jpeg[:_JPEG_SOI_LENGTH] + segments + jpeg[_JPEG_SOI_LENGTH:])
+
+    manifest = read_c2pa_manifest(path)
+
+    assert_that(manifest).is_not_none()
+    if manifest is None:  # pragma: no cover - guarded above
+        pytest.fail("expected a manifest")
+    assert_that(manifest_declares_ai_source(manifest)).is_false()
+
+
 def test_read_c2pa_manifest_returns_png_cabx_data(tmp_path: Path) -> None:
     """A caBX chunk is returned from a PNG."""
     payload = _jumbf_payload(b"compositeWithTrainedAlgorithmicMedia")

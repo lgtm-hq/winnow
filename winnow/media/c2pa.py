@@ -34,6 +34,11 @@ _PNG_CHUNK_HEADER = struct.Struct(">I4s")
 _PNG_CRC_LENGTH = 4
 _JUMBF_MARKER = b"jumb"
 _C2PA_MARKER = b"c2pa"
+# JPEG APP11 JUMBF segments start with the common identifier ``JP``, a 2-byte
+# box instance number (``En``) and a 4-byte packet sequence number (``Z``).
+_APP11_COMMON_IDENTIFIER = b"JP"
+_APP11_INSTANCE_SLICE = slice(2, 4)
+_APP11_HEADER_LENGTH = 8
 
 
 def read_c2pa_manifest(path: Path) -> bytes | None:
@@ -73,29 +78,41 @@ def manifest_declares_ai_source(manifest: bytes) -> bool:
 
 
 def _read_jpeg_manifest(path: Path) -> bytes | None:
-    """Concatenate the ``APP11`` payloads of a JPEG file when they carry C2PA.
+    """Reassemble the C2PA JUMBF ``APP11`` boxes of a JPEG file.
 
-    A C2PA JUMBF box may span several contiguous ``APP11`` segments, and only
-    the first fragment carries the ``jumb``/``c2pa`` markers. All ``APP11``
-    payloads are therefore concatenated in file order before the markers are
-    checked, so continuation fragments are kept.
+    A JUMBF box may span several ``APP11`` segments that share a box instance
+    number; only the first fragment carries the ``jumb``/``c2pa`` markers.
+    Segments are grouped by instance number in file order, and every group
+    whose reassembled payload contains both markers is kept. ``APP11``
+    segments that are not JUMBF, or belong to a box without the markers, are
+    ignored.
 
     Args:
         path: Filesystem path to the JPEG.
 
     Returns:
-        Concatenated segment payloads, or ``None`` when the file has no
-        ``APP11`` segments or they do not contain a C2PA JUMBF box.
+        Concatenated payloads of the qualifying boxes, or ``None`` when the
+        file carries no C2PA JUMBF box.
     """
     try:
         with Image.open(path) as image:
             applist: list[tuple[str, bytes]] = list(getattr(image, "applist", ()))
     except (OSError, UnidentifiedImageError, ValueError):
         return None
-    manifest = b"".join(data for segment, data in applist if segment == "APP11")
-    if _JUMBF_MARKER not in manifest or _C2PA_MARKER not in manifest:
-        return None
-    return manifest
+    boxes: dict[bytes, list[bytes]] = {}
+    for segment, data in applist:
+        if segment != "APP11" or not data.startswith(_APP11_COMMON_IDENTIFIER):
+            continue
+        boxes.setdefault(data[_APP11_INSTANCE_SLICE], []).append(
+            data[_APP11_HEADER_LENGTH:],
+        )
+    payloads = [
+        payload
+        for fragments in boxes.values()
+        for payload in (b"".join(fragments),)
+        if _JUMBF_MARKER in payload and _C2PA_MARKER in payload
+    ]
+    return b"".join(payloads) if payloads else None
 
 
 def _read_png_manifest(path: Path) -> bytes | None:
