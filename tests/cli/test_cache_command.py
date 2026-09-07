@@ -130,8 +130,11 @@ def test_show_renders_hash_row_and_footer(seeded: SeededCache) -> None:
     result = _invoke(seeded.config_path, "show")
 
     assert_that(result.exit_code).is_equal_to(0)
-    assert_that(result.output).contains("Cache", "hash", "2")
-    assert_that(result.output).contains(f"Database: {seeded.db_path} (")
+    table, _, footer = result.output.partition("Database:")
+    hash_row = next(line for line in table.splitlines() if "hash" in line)
+    assert_that(table).contains("Cache")
+    assert_that(hash_row.split()).contains("2")
+    assert_that(footer).starts_with(f" {seeded.db_path} (")
 
 
 def test_show_without_database_reports_zeros(config_path: Path) -> None:
