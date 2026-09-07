@@ -537,6 +537,23 @@ def test_undo_session_skips_unusable_log_and_reverts_the_rest(
     assert_that(_session_status(saga.log, session_id)).is_equal_to(SessionStatus.FAILED)
 
 
+def _fail_undone_writes(saga: Saga, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make only ``mark_command(status=UNDONE)`` raise on the saga's log.
+
+    Args:
+        saga: Coordinator whose log is patched.
+        monkeypatch: Pytest patcher.
+    """
+    original = saga.log.mark_command
+
+    def _boom(*, seq: int, status: CommandStatus) -> None:
+        if status is CommandStatus.UNDONE:
+            raise SagaError("locked", operation="saga.log.mark_command")
+        original(seq=seq, status=status)
+
+    monkeypatch.setattr(saga.log, "mark_command", _boom)
+
+
 def test_undo_session_records_failed_undone_write(
     saga: Saga,
     workspace: tuple[Path, Path],
@@ -545,11 +562,8 @@ def test_undo_session_records_failed_undone_write(
     """A failed ``undone`` write does not stop the remaining reverts."""
     source, destination = workspace
     session_id = _run_two_moves(saga, workspace)
+    _fail_undone_writes(saga, monkeypatch)
 
-    def _boom(**_: object) -> None:
-        raise SagaError("locked", operation="saga.log.mark_command")
-
-    monkeypatch.setattr(saga.log, "mark_command", _boom)
     report = saga.undo_session(session_id)
 
     assert_that(report.reverted).is_equal_to(2)
@@ -557,7 +571,88 @@ def test_undo_session_records_failed_undone_write(
     assert_that(report.skipped[0][1]).contains("reverted but not recorded")
     assert_that((source / "a.txt").exists()).is_true()
     assert_that((source / "b.txt").exists()).is_true()
+    assert_that(_statuses(saga, session_id)).is_equal_to(
+        [CommandStatus.IN_PROGRESS, CommandStatus.IN_PROGRESS],
+    )
     assert_that(_session_status(saga.log, session_id)).is_equal_to(SessionStatus.FAILED)
+
+
+def test_undo_session_skips_rows_left_in_progress(
+    saga: Saga,
+    workspace: tuple[Path, Path],
+) -> None:
+    """A row still ``in_progress`` is reported as skipped, never reverted."""
+    source, destination = workspace
+    session_id = _run_two_moves(saga, workspace)
+    seq_b = saga.log.list_commands(session_id)[1].seq
+    saga.log.mark_command(seq=seq_b, status=CommandStatus.IN_PROGRESS)
+
+    report = saga.undo_session(session_id)
+
+    assert_that(report.reverted).is_equal_to(1)
+    assert_that(report.skipped).is_length(1)
+    assert_that(report.skipped[0][1]).is_equal_to("in_progress")
+    assert_that((destination / "b.txt").exists()).is_true()
+    assert_that(_session_status(saga.log, session_id)).is_equal_to(SessionStatus.FAILED)
+
+
+def test_second_undo_never_reverts_an_already_reverted_move(
+    db_path: Path,
+    workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reverted-but-unrecorded overwrite move is not reverted again."""
+    source, destination = workspace
+    (destination / "a.txt").write_text("old\n", encoding="utf-8")
+    with SagaLog(db_path) as log:
+        saga = Saga(log)
+        with _begin(saga, workspace) as session:
+            session.execute(
+                MoveFile(source=source / "a.txt", destination=destination / "a.txt"),
+            )
+        session_id = session.session_id
+        _fail_undone_writes(saga, monkeypatch)
+        first = saga.undo_session(session_id)
+    monkeypatch.undo()
+
+    with SagaLog(db_path) as log:
+        second = Saga(log).undo_session(session_id)
+
+    assert_that(first.reverted).is_equal_to(1)
+    assert_that(second.reverted).is_equal_to(0)
+    assert_that(second.skipped[0][1]).is_equal_to("interrupted")
+    assert_that((source / "a.txt").read_text(encoding="utf-8")).is_equal_to("a\n")
+    assert_that((destination / "a.txt").read_text(encoding="utf-8")).is_equal_to(
+        "old\n"
+    )
+
+
+def test_rollback_retry_keeps_earlier_log_errors(
+    saga: Saga,
+    workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry after a failed session update still finishes ``failed``."""
+    source, destination = workspace
+    session = _begin(saga, workspace)
+    session.execute(_move(source, destination, "a.txt"))
+    _fail_undone_writes(saga, monkeypatch)
+    original = saga.log.finish_session
+
+    def _boom(**_: object) -> None:
+        raise SagaError("locked", operation="saga.log.finish_session")
+
+    monkeypatch.setattr(saga.log, "finish_session", _boom)
+    with pytest.raises(SagaError, match="locked"):
+        session.rollback()
+    monkeypatch.setattr(saga.log, "finish_session", original)
+
+    assert_that(session.rollback()).is_length(1)
+    assert_that(session.executed).is_empty()
+    assert_that((source / "a.txt").exists()).is_true()
+    assert_that(_session_status(saga.log, session.session_id)).is_equal_to(
+        SessionStatus.FAILED
+    )
 
 
 def test_undo_session_unknown_id_raises(saga: Saga) -> None:

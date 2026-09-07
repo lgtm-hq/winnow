@@ -8,6 +8,7 @@ block fails. It never touches the filesystem itself and never issues SQL.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from types import TracebackType
 from typing import Literal, Self
@@ -37,6 +38,7 @@ class SagaSession:
         self._log = log
         self.session_id = session_id
         self._executed: list[tuple[int, Command]] = []
+        self._undo_errors: list[Exception] = []
         self._rollback_errors: tuple[Exception, ...] | None = None
         self._finished = False
 
@@ -102,13 +104,17 @@ class SagaSession:
     def rollback(self) -> tuple[Exception, ...]:
         """Undo every executed command, newest first, and finish the session.
 
-        Each ``undo()`` failure is collected and the remaining commands are
-        still attempted. A failed ``undone`` row write after a successful
-        ``undo()`` is collected too, so a log fault never stops the remaining
-        reverts; the command's effects are already gone from disk. Calling
-        this again returns the stored errors without touching the filesystem.
-        If finishing the durable session fails, the result is not cached and
-        a later call retries the remaining commands and the session update.
+        Each command row is marked ``in_progress`` (best effort) before its
+        ``undo()`` and ``undone`` afterwards, so a failed ``undone`` write
+        never leaves a stale ``done`` row for a reverted command. Each
+        ``undo()`` failure is collected and the remaining commands are still
+        attempted; a failed ``undone`` write is collected too, so a log fault
+        never stops the remaining reverts. Calling this again returns the
+        stored errors without touching the filesystem. If finishing the
+        durable session fails, the result is not cached; a later call keeps
+        the errors seen so far, retries only the still-applied commands and
+        the session update, and never finishes ``rolled_back`` while an
+        earlier log fault is unresolved.
 
         Returns:
             Errors raised while undoing or recording an undo, in the order
@@ -121,14 +127,18 @@ class SagaSession:
         if self._rollback_errors is not None:
             return self._rollback_errors
         self._require_open("rollback")
-        errors: list[Exception] = []
+        errors = self._undo_errors
         remaining: list[tuple[int, Command]] = []
         for seq, command in reversed(self._executed):
+            # In process the disk revert takes priority over the claim row.
+            with contextlib.suppress(SagaError):
+                self._log.mark_command(seq=seq, status=CommandStatus.IN_PROGRESS)
             try:
                 command.undo()
             except PipelineError as error:
                 errors.append(error)
                 remaining.append((seq, command))
+                self._mark_quietly(seq=seq, status=CommandStatus.DONE)
                 continue
             try:
                 self._log.mark_command(seq=seq, status=CommandStatus.UNDONE)
@@ -190,6 +200,18 @@ class SagaSession:
                 for error in errors:
                     exc_value.add_note(f"rollback failed: {error}")
         return False
+
+    def _mark_quietly(self, *, seq: int, status: CommandStatus) -> None:
+        """Best-effort status write that logs instead of raising.
+
+        Args:
+            seq: Command row to update.
+            status: Status to store.
+        """
+        try:
+            self._log.mark_command(seq=seq, status=status)
+        except SagaError as error:
+            _LOGGER.warning("could not mark command %d %s: %s", seq, status, error)
 
     def _require_open(self, operation: str) -> None:
         """Fail when the session has already been committed or rolled back.

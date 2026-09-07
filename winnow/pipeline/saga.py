@@ -11,6 +11,7 @@ never issues SQL.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from winnow.exceptions import PipelineError, SagaError
@@ -25,7 +26,7 @@ from winnow.pipeline.saga_records import (
 )
 from winnow.pipeline.saga_session import SagaSession
 
-_UNTOUCHED_STATUSES = frozenset({CommandStatus.INTERRUPTED, CommandStatus.FAILED})
+_LOGGER = logging.getLogger(__name__)
 
 
 class Saga:
@@ -78,9 +79,10 @@ class Saga:
         """Reverse a recorded session's ``done`` commands, newest first.
 
         Each planned command is rebuilt with ``Command.from_dict`` and its
-        stored :class:`OperationLog`, then reversed with ``undo()``.
-        ``interrupted`` and ``failed`` commands are never touched and appear in
-        ``skipped`` with their status as the reason.
+        stored :class:`OperationLog`, marked ``in_progress``, reversed with
+        ``undo()`` and then marked ``undone``. Commands in any other status
+        (``interrupted``, ``failed``, ``in_progress``) are never touched and
+        appear in ``skipped`` with their status as the reason.
 
         Args:
             session_id: Session to undo.
@@ -119,10 +121,10 @@ class Saga:
         reverted = 0
         skipped: list[tuple[CommandRecord, str]] = []
         for record in records:
-            if record.status in _UNTOUCHED_STATUSES:
-                skipped.append((record, record.status.value))
-            elif record.status is CommandStatus.DONE:
+            if record.status is CommandStatus.DONE:
                 reverted += self._undo_record(record, skipped=skipped)
+            elif record.status is not CommandStatus.UNDONE:
+                skipped.append((record, record.status.value))
         self._log.finish_session(
             session_id=session_id,
             status=SessionStatus.FAILED if skipped else SessionStatus.ROLLED_BACK,
@@ -142,28 +144,51 @@ class Saga:
     ) -> int:
         """Rebuild and undo one ``done`` command.
 
-        A row that cannot be rebuilt or reversed is skipped with the reason.
-        When the reversal succeeds but the ``undone`` write fails, the command
-        counts as reverted and the log error is recorded in ``skipped`` so the
-        session finishes ``failed`` instead of aborting the remaining undos.
+        The row is marked ``in_progress`` before ``undo()`` touches the
+        filesystem, so a stale ``done`` row can never describe an already
+        reverted command: a crash or a failed ``undone`` write leaves the row
+        ``in_progress``, which a later log open turns into ``interrupted`` and
+        a later undo skips. A row that cannot be rebuilt, claimed or reversed
+        is skipped with the reason; when only the ``undone`` write fails, the
+        command counts as reverted and the log error is recorded in
+        ``skipped`` so the session finishes ``failed``.
 
         Args:
             record: Command row to reverse.
-            skipped: Collector appended to when the undo or its log write fails.
+            skipped: Collector appended to when the undo or a log write fails.
 
         Returns:
             ``1`` when the command was reverted, ``0`` when it was skipped.
         """
         try:
-            _rebuild(record).undo()
-        except (PipelineError, SagaError) as error:
+            command = _rebuild(record)
+            self._log.mark_command(seq=record.seq, status=CommandStatus.IN_PROGRESS)
+        except SagaError as error:
             skipped.append((record, str(error)))
+            return 0
+        try:
+            command.undo()
+        except PipelineError as error:
+            skipped.append((record, str(error)))
+            self._mark_quietly(seq=record.seq, status=CommandStatus.DONE)
             return 0
         try:
             self._log.mark_command(seq=record.seq, status=CommandStatus.UNDONE)
         except SagaError as error:
             skipped.append((record, f"reverted but not recorded: {error}"))
         return 1
+
+    def _mark_quietly(self, *, seq: int, status: CommandStatus) -> None:
+        """Best-effort status write that logs instead of raising.
+
+        Args:
+            seq: Command row to update.
+            status: Status to store.
+        """
+        try:
+            self._log.mark_command(seq=seq, status=status)
+        except SagaError as error:
+            _LOGGER.warning("could not mark command %d %s: %s", seq, status, error)
 
 
 def _rebuild(record: CommandRecord) -> Command:
