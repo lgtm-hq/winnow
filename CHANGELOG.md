@@ -21,6 +21,36 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.35.0] - 2026-09-07
+
+### Added
+
+- **hash**: add ContentHasher for exact MD5/SHA-256 file digests (#236) (379666a)
+
+## [0.34.0] - 2026-09-07
+
+### Added
+
+- **classify**: AI-generated metadata heuristics (#73 PR A) (#234) (9c042bc)
+
+## [0.33.0] - 2026-09-07
+
+### Added
+
+- **pipeline**: plugin registry + event bus (#63 PR A) (#232) (fbdc36f)
+
+## [0.32.0] - 2026-09-07
+
+### Added
+
+- **pipeline**: Discovery step (#53 PR B) (#233) (f014510)
+
+## [0.31.0] - 2026-09-07
+
+### Added
+
+- **cli**: live-photos command (#67 PR B) (#228) (5a266d6)
+
 ## [0.30.0] - 2026-09-07
 
 ### Added
