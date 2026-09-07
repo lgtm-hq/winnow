@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.36.0] - 2026-09-07
+
+### Added
+
+- **hash**: batch hasher hash_media_files (#45 PR A) (#237) (df27b2a)
+
 ## [0.35.0] - 2026-09-07
 
 ### Added
