@@ -10,7 +10,7 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
-from winnow.cli.errors import ExitCode, WinnowGroup
+from winnow.cli.errors import ExitCode, WinnowGroup, _describe
 from winnow.exceptions import ConfigError, HashError, MediaError
 
 
@@ -148,5 +148,73 @@ def test_config_validate_missing_file_through_main(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
     assert_that(result.stderr).contains("Error")
     assert_that(result.stderr).contains("operation: load_config")
-    assert_that(result.stderr).contains("winnow config validate")
+    assert_that(result.stderr).contains("winnow init")
+    assert_that(result.stderr).does_not_contain("winnow config validate")
     assert_that(result.stdout).is_empty()
+
+
+def test_describe_renders_pydantic_field_errors() -> None:
+    """Pydantic ``errors()`` details render as one ``loc: msg`` line each."""
+    exc = ConfigError(
+        "Invalid Winnow configuration",
+        operation="validate_config",
+        file_path="/x",
+        details={
+            "errors": [
+                {
+                    "loc": ("cache", "enabled"),
+                    "msg": "Input should be a valid boolean",
+                    "type": "bool_parsing",
+                },
+                {"loc": ("workers",), "msg": "Input should be greater than 0"},
+            ],
+        },
+    )
+
+    text = _describe(exc)
+
+    assert_that(text).starts_with(
+        "Invalid Winnow configuration (operation: validate_config, path: /x)",
+    )
+    assert_that(text).contains("cache.enabled: Input should be a valid boolean")
+    assert_that(text).contains("workers: Input should be greater than 0")
+    assert_that(text).does_not_contain("bool_parsing")
+
+
+def test_describe_renders_plain_details() -> None:
+    """Non-Pydantic details render as ``key: value`` lines."""
+    exc = ConfigError(
+        "Unable to load Winnow configuration",
+        operation="load_config",
+        details={"error": "mapping values are not allowed here"},
+    )
+
+    assert_that(_describe(exc)).contains(
+        "error: mapping values are not allowed here",
+    )
+
+
+def test_describe_without_details_is_one_line() -> None:
+    """An error with no details keeps the single-line rendering."""
+    exc = ConfigError("bad", operation="load_config", file_path="/x")
+
+    assert_that(_describe(exc)).is_equal_to(
+        "bad (operation: load_config, path: /x)",
+    )
+
+
+def test_validate_config_error_hint_does_not_name_config_validate(
+    group: WinnowGroup,
+) -> None:
+    """A ``validate_config`` error points at the listed keys, not the validator."""
+
+    @group.command(name="validate-error")
+    def validate_error() -> None:
+        """Raise a ``ConfigError`` from the validation step."""
+        raise ConfigError("bad", operation="validate_config")
+
+    result = CliRunner().invoke(group, ["validate-error"])
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("Fix the keys listed above")
+    assert_that(result.stderr).does_not_contain("winnow config validate")
