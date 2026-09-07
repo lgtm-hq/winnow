@@ -66,6 +66,13 @@ def test_from_dict_rejects_malformed_path_lists(value: object) -> None:
         OperationLog.from_dict({"operation": "move", "created_paths": value})
 
 
+@pytest.mark.parametrize("key", ["source", "destination"])
+def test_from_dict_rejects_non_string_paths(key: str) -> None:
+    """A non-string ``source`` or ``destination`` is rejected, not coerced."""
+    with pytest.raises(ValueError, match="must be a string"):
+        OperationLog.from_dict({"operation": "move", key: 123})
+
+
 def test_from_dict_without_operation_raises() -> None:
     """A payload lacking ``operation`` is rejected."""
     with pytest.raises(ValueError, match="operation"):

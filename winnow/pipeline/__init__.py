@@ -11,6 +11,7 @@ adapters subscribe to.
 
 from __future__ import annotations
 
+from winnow.exceptions import SagaError
 from winnow.pipeline.bus import EventBus, HandlerError
 from winnow.pipeline.commands import (
     Command,
@@ -62,6 +63,7 @@ __all__ = [
     "PipelineEvent",
     "RunState",
     "Saga",
+    "SagaError",
     "SagaLog",
     "SagaSession",
     "SessionRecord",

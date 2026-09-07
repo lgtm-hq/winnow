@@ -63,24 +63,43 @@ class OperationLog:
 
         Raises:
             ValueError: When ``operation`` is missing, either enum value is
-                unknown, or ``backups``/``created_paths`` is present but not
-                a list of strings.
+                unknown, ``source``/``destination`` is present but not a
+                string, or ``backups``/``created_paths`` is present but not a
+                list of strings.
         """
         operation = data.get("operation")
         if operation is None:
             raise ValueError("operation log data is missing 'operation'")
-        source = data.get("source")
-        destination = data.get("destination")
         return cls(
             operation=FileOperation(str(operation)),
-            source=Path(str(source)) if source is not None else None,
-            destination=Path(str(destination)) if destination is not None else None,
+            source=_path_from(data.get("source"), key="source"),
+            destination=_path_from(data.get("destination"), key="destination"),
             backups=_paths_from(data.get("backups")),
             created_paths=_paths_from(data.get("created_paths")),
             status=OperationStatus(
                 str(data.get("status", OperationStatus.APPLIED.value)),
             ),
         )
+
+
+def _path_from(value: object, *, key: str) -> Path | None:
+    """Decode one optional serialized path.
+
+    Args:
+        value: JSON string, or ``None`` when absent.
+        key: Field name used in the error message.
+
+    Returns:
+        The path, or ``None`` when ``value`` is ``None``.
+
+    Raises:
+        ValueError: When ``value`` is present but not a string.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"operation log '{key}' must be a string")
+    return Path(value)
 
 
 def _paths_from(value: object) -> tuple[Path, ...]:

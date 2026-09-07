@@ -22,7 +22,7 @@ def test_pipeline_package_imports_without_circular_imports() -> None:
             "from winnow.pipeline import Command, MoveFile, PipelineContext, "
             "Step, RunState, StepEvents, NullEvents, StepStarted, StepProgress, "
             "StepCompleted, StepIssue, DiscoveryStep, EventBus, HandlerError, "
-            "FileMoved, DuplicateFound, Saga, SagaSession, SagaLog",
+            "FileMoved, DuplicateFound, Saga, SagaSession, SagaLog, SagaError",
         ],
         capture_output=True,
         text=True,
@@ -51,6 +51,7 @@ def test_pipeline_public_exports_are_accessible() -> None:
         "PipelineEvent",
         "RunState",
         "Saga",
+        "SagaError",
         "SagaLog",
         "SagaSession",
         "Step",
