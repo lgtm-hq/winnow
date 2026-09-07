@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.4] - 2026-09-07
+
+### Fixed
+
+- **hash**: rehash files whose cached digest is malformed instead of failing them
+  forever (#265) (0939f2d)
+
 ## [0.37.3] - 2026-09-07
 
 ### Fixed
