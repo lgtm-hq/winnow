@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.34.0] - 2026-09-07
+
+### Added
+
+- **classify**: AI-generated metadata heuristics (#73 PR A) (#234) (9c042bc)
+
 ## [0.33.0] - 2026-09-07
 
 ### Added
