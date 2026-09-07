@@ -1,10 +1,14 @@
-"""SQLite connection and query plumbing for the perceptual-hash cache.
+"""SQLite connection and query plumbing for the hash and metadata caches.
 
 This private module owns the low-level database concerns shared by
-:class:`winnow.hash.cache.HashCache`: opening connections, creating the
-schema, batching ``IN`` clauses under SQLite's variable limit, and fetching
-rows. The public cache class in :mod:`winnow.hash.cache` composes these
-helpers and keeps the hit/miss bookkeeping.
+:class:`winnow.hash.cache.HashCache` and
+:class:`winnow.hash.metadata_cache.MetadataCache`: opening connections,
+provisioning the schema, batching ``IN`` clauses under SQLite's variable
+limit, and fetching rows. Both caches live in one ``cache.db`` file; opening
+either one provisions both tables through
+:func:`winnow.storage.apply_schema`, so #48's prune/clear surface has one
+file to manage. The public cache classes compose these helpers and keep the
+hit/miss bookkeeping.
 """
 
 from __future__ import annotations
@@ -14,9 +18,11 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Final
 
-from winnow.exceptions import CacheError
+from winnow.exceptions import CacheError, StorageError
 from winnow.hash.cache_key import CacheKey
+from winnow.hash.metadata_cache_key import MetadataCacheKey
 from winnow.models.config import CacheSettings
+from winnow.storage import Migration, apply_schema
 
 IN_MEMORY = ":memory:"
 
@@ -29,7 +35,24 @@ MAX_SQL_VARIABLES = 900
 
 StoredRow = tuple[str, str, float, int]
 
-SCHEMA = """
+CACHE_SCHEMA_VERSION: Final[int] = 1
+"""Current ``cache.db`` schema version persisted in ``schema_version``.
+
+Databases created before versioning carry no ``schema_version`` table and
+therefore read as version ``0``; the baseline below is idempotent
+(``CREATE TABLE IF NOT EXISTS``), so they are brought current without data
+loss. Bumping this constant requires updating :data:`SCHEMA_STATEMENTS`
+**and** appending a :class:`~winnow.storage.Migration` to :data:`MIGRATIONS`.
+"""
+
+SCHEMA_VERSION_TABLE = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)
+"""
+
+HASH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS hash_cache (
     path TEXT NOT NULL,
     algorithm TEXT NOT NULL,
@@ -39,6 +62,26 @@ CREATE TABLE IF NOT EXISTS hash_cache (
     PRIMARY KEY (path, algorithm)
 )
 """
+
+METADATA_SCHEMA = """
+CREATE TABLE IF NOT EXISTS metadata_cache (
+    path TEXT NOT NULL PRIMARY KEY,
+    mtime REAL NOT NULL,
+    size INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    payload TEXT NOT NULL
+)
+"""
+
+SCHEMA_STATEMENTS: tuple[str, ...] = (
+    SCHEMA_VERSION_TABLE,
+    HASH_SCHEMA,
+    METADATA_SCHEMA,
+)
+"""Ordered DDL that provisions the full ``cache.db`` schema."""
+
+MIGRATIONS: tuple[Migration, ...] = ()
+"""Upgrade steps from older versioned schemas; empty at version 1."""
 
 
 def default_db_path(settings: CacheSettings | None = None) -> Path:
@@ -111,23 +154,28 @@ def initialize_schema(
     connection: sqlite3.Connection,
     db_path: Path,
 ) -> None:
-    """Create the cache table when it does not already exist.
+    """Provision or migrate both cache tables through :func:`apply_schema`.
 
     Args:
-        connection: Open connection to run the schema statement on.
+        connection: Open connection to run the schema statements on.
         db_path: Database location, used for error reporting.
 
     Raises:
-        CacheError: If the schema cannot be created.
+        CacheError: If the schema cannot be created or migrated.
     """
     try:
-        with connection:
-            connection.execute(SCHEMA)
-    except sqlite3.Error as exc:
+        apply_schema(
+            connection,
+            baseline=SCHEMA_STATEMENTS,
+            migrations=MIGRATIONS,
+            target_version=CACHE_SCHEMA_VERSION,
+        )
+    except StorageError as exc:
         raise CacheError(
-            "Unable to initialize hash cache schema",
+            "Unable to initialize cache schema",
             operation="cache.initialize",
             file_path=db_path,
+            details=exc.context.details,
         ) from exc
 
 
@@ -211,3 +259,41 @@ def lookup_digest(
         return None
     digest: str = row[0]
     return digest
+
+
+def lookup_metadata_row(
+    *,
+    connection: sqlite3.Connection,
+    key: MetadataCacheKey,
+) -> tuple[int, str] | None:
+    """Return the stored ``(schema_version, payload)`` for a key, or ``None``.
+
+    Args:
+        connection: Open connection to query.
+        key: Metadata cache key to resolve.
+
+    Returns:
+        The stored schema version and JSON payload, or ``None`` when no row
+        matches the key's ``path``, ``mtime`` and ``size`` exactly.
+
+    Raises:
+        CacheError: If the lookup query fails.
+    """
+    try:
+        cursor = connection.execute(
+            "SELECT schema_version, payload FROM metadata_cache "
+            "WHERE path = ? AND mtime = ? AND size = ?",
+            (str(key.path), key.mtime, key.size),
+        )
+        row = cursor.fetchone()
+    except sqlite3.Error as exc:
+        raise CacheError(
+            "Metadata cache lookup failed",
+            operation="metadata_cache.get",
+            file_path=key.path,
+        ) from exc
+    if row is None:
+        return None
+    schema_version: int = row[0]
+    payload: str = row[1]
+    return schema_version, payload
