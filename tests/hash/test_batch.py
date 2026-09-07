@@ -237,20 +237,40 @@ def test_zero_workers_raises_hash_error(image_files: list[MediaFile]) -> None:
     assert_that(excinfo.value.context.operation).is_equal_to("hash_media_files")
 
 
-def test_malformed_cached_digest_becomes_failure(
+def test_malformed_cached_digest_is_rehashed_and_overwritten(
     image_files: list[MediaFile],
     tmp_path: Path,
 ) -> None:
-    """A cache hit that cannot be deserialized is reported, not raised."""
+    """A cache row that cannot be deserialized is rehashed and replaced."""
     hasher = _CountingHasher()
     with HashCache(db_path=tmp_path / "cache.db") as cache:
-        hash_media_files(
+        key = CacheKey.from_file(image_files[0].path, hasher.cache_algorithm)
+        cache.set(key, "not-a-hash")
+
+        result = hash_media_files(
             image_files[:1],
             hashers={MediaType.IMAGE: hasher},
             cache=cache,
         )
+        row = cache.get(key)
+
+    assert_that(result.failures).is_empty()
+    assert_that(result.hashed).is_length(1)
+    assert_that(result.hashed[0].from_cache).is_false()
+    assert_that(hasher.calls).is_equal_to(1)
+    assert_that(row).is_equal_to(result.hashed[0].perceptual_hash.serialize())
+
+
+def test_valid_seeded_digest_short_circuits_hasher(
+    image_files: list[MediaFile],
+    tmp_path: Path,
+) -> None:
+    """A well-formed seeded cache row is used as-is and the hasher is not called."""
+    hasher = _CountingHasher()
+    seeded = PerceptualHash(algorithm=HashAlgorithm.PHASH, hash_size=8, digest="0" * 16)
+    with HashCache(db_path=tmp_path / "cache.db") as cache:
         key = CacheKey.from_file(image_files[0].path, hasher.cache_algorithm)
-        cache.set(key, "garbage")
+        cache.set(key, seeded.serialize())
 
         result = hash_media_files(
             image_files[:1],
@@ -258,6 +278,7 @@ def test_malformed_cached_digest_becomes_failure(
             cache=cache,
         )
 
-    assert_that(result.hashed).is_empty()
-    assert_that(result.failures).is_length(1)
-    assert_that(result.failures[0].error).is_instance_of(HashError)
+    assert_that(hasher.calls).is_equal_to(0)
+    assert_that(result.hashed).is_length(1)
+    assert_that(result.hashed[0].from_cache).is_true()
+    assert_that(result.hashed[0].perceptual_hash).is_equal_to(seeded)

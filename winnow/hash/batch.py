@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from winnow.exceptions import CacheError, HashError
 from winnow.hash.cache_entry import CacheEntry
 from winnow.hash.cache_key import CacheKey
@@ -82,7 +84,7 @@ def _hash_job(job: _Job) -> HashedMedia | HashFailure:
     )
 
 
-def _from_cache(job: _Job, digest: str) -> HashedMedia | HashFailure:
+def _from_cache(job: _Job, digest: str) -> HashedMedia | None:
     """Rebuild a hashed result from a cached serialized digest.
 
     Args:
@@ -90,12 +92,14 @@ def _from_cache(job: _Job, digest: str) -> HashedMedia | HashFailure:
         digest: Serialized :class:`PerceptualHash` read from the cache.
 
     Returns:
-        The hashed media, or a failure when the stored digest is malformed.
+        The hashed media, or ``None`` when the stored digest is malformed and
+        the file must be hashed again.
     """
     try:
         perceptual_hash = PerceptualHash.deserialize(digest)
     except HashError as exc:
-        return HashFailure(path=job.media.path, error=exc)
+        logger.debug("discarding malformed cache row for {}: {}", job.media.path, exc)
+        return None
     return HashedMedia(
         media=job.media, perceptual_hash=perceptual_hash, from_cache=True
     )
@@ -165,9 +169,10 @@ def hash_media_files(
     skipped. For the rest, cache keys are built from the file's metadata and
     the hasher's :attr:`~PerceptualHasher.cache_algorithm`; hits are resolved
     with one ``get_many`` call, misses are hashed in a thread pool, and the
-    new digests are persisted with one ``set_many`` call. A ``HashError`` or
-    ``CacheError`` raised for a single file becomes a :class:`HashFailure`
-    instead of aborting the batch.
+    new digests are persisted with one ``set_many`` call. A cached digest
+    that cannot be deserialized is treated as a miss so its row is rewritten.
+    A ``HashError`` or ``CacheError`` raised for a single file becomes a
+    :class:`HashFailure` instead of aborting the batch.
 
     Args:
         files: Media files to hash.
@@ -195,10 +200,11 @@ def hash_media_files(
     misses: list[_Job] = []
     for job in jobs:
         digest = cached.get(job.key)
-        if digest is None:
+        hit = _from_cache(job, digest) if digest is not None else None
+        if hit is None:
             misses.append(job)
         else:
-            outcomes[job.index] = _from_cache(job, digest)
+            outcomes[job.index] = hit
 
     fresh = _hash_misses(misses, workers=workers)
     for job, outcome in zip(misses, fresh, strict=True):
