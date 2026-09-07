@@ -131,8 +131,9 @@ class Page(Generic[T]):
 class MediaFileFilter:
     """Filters applied to a media-file listing; ``None`` means unfiltered.
 
-    Blank strings (empty or whitespace-only) in any text filter are treated
-    as unset, so transports can pass form values through unchanged.
+    Text filters are stripped of surrounding whitespace; blank strings (empty
+    or whitespace-only) are treated as unset, so transports can pass form
+    values through unchanged.
 
     Args:
         run_id: Restrict to files of this run.
@@ -169,11 +170,13 @@ def _text_filter(value: str | None) -> str | None:
         value: Raw filter value.
 
     Returns:
-        ``None`` when ``value`` is ``None`` or blank, else ``value`` unchanged.
+        ``None`` when ``value`` is ``None`` or blank, else ``value`` with
+        surrounding whitespace removed.
     """
-    if value is None or not value.strip():
+    if value is None:
         return None
-    return value
+    stripped = value.strip()
+    return stripped or None
 
 
 @dataclass(frozen=True, slots=True)

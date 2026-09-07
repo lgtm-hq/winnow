@@ -348,6 +348,39 @@ def test_hostile_search_returns_normally(
     assert_that(result.total).is_less_than(LIBRARY_SIZE)
 
 
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        (
+            MediaFileFilter(created_from=" 2024-01-01T00:00:00Z "),
+            [
+                "AUD_0001.mp3",
+                "AUD_0002.mp3",
+                "IMG_0002.jpg",
+                "VID_0002.mp4",
+                "VID_0001.mp4",
+            ],
+        ),
+        (
+            MediaFileFilter(created_to="\t2024-01-01T00:00:00Z\n"),
+            ["IMG_0001.jpg"],
+        ),
+        (MediaFileFilter(media_type="  video "), ["VID_0002.mp4", "VID_0001.mp4"]),
+    ],
+    ids=["created_from", "created_to", "media_type"],
+)
+def test_padded_text_filter_is_stripped(
+    report_db: ReportDatabase,
+    seeded_library: int,
+    filters: MediaFileFilter,
+    expected: list[str],
+) -> None:
+    """Surrounding whitespace on a text filter does not change its meaning."""
+    names = _all_files(report_db, filters=filters)
+
+    assert_that(names).is_equal_to(expected)
+
+
 def test_all_filters_combine_to_one_file(
     report_db: ReportDatabase,
     seeded_library: int,
