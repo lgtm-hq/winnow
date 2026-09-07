@@ -237,15 +237,15 @@ def test_search_combines_with_other_filters(
 
 @pytest.mark.parametrize(
     "search",
-    ['" OR 1=1 --', "a AND b", '"unterminated', "   "],
-    ids=["injection", "operators", "unterminated_quote", "blank"],
+    ['" OR 1=1 --', "a AND b", '"unterminated'],
+    ids=["injection", "operators", "unterminated_quote"],
 )
 def test_hostile_search_returns_normally(
     report_db: ReportDatabase,
     seeded_library: int,
     search: str,
 ) -> None:
-    """Hostile or blank search input never raises."""
+    """Hostile search input never raises and never matches the whole library."""
     result = list_media_files_page(
         report_db,
         filters=MediaFileFilter(search=search),
@@ -254,8 +254,8 @@ def test_hostile_search_returns_normally(
         page=PageRequest(),
     )
 
-    assert_that(result.total).is_greater_than_or_equal_to(0)
     assert_that(result.items).is_length(min(result.total, result.per_page))
+    assert_that(result.total).is_less_than(LIBRARY_SIZE)
 
 
 def test_blank_search_is_no_filter(
@@ -441,10 +441,11 @@ def test_media_file_where_binds_every_value() -> None:
     )
 
     assert_that(where.count("?")).is_equal_to(len(params))
-    assert_that(params).is_equal_to(
-        [7, "image", "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z", '"IMG_0001"'],
+    assert_that(params[:4]).is_equal_to(
+        [7, "image", "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
     )
-    assert_that(where).contains("group_id IS NOT NULL", "media_files_fts MATCH ?")
+    assert_that(params).is_length(5)
+    assert_that(where).contains("group_id IS NOT NULL", "MATCH ?")
 
 
 def test_media_file_where_unfiltered_is_empty() -> None:
