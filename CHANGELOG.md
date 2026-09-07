@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.2] - 2026-09-07
+
+### Fixed
+
+- **cli**: show WinnowError details in the error panel and stop the circular config hint
+  (#259) (7507ed8)
+
 ## [0.37.1] - 2026-09-07
 
 ### Fixed
