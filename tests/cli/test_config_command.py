@@ -66,7 +66,8 @@ def test_config_set_rejects_unknown_key(tmp_path: Path) -> None:
 
     assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
     assert_that(result.stderr).contains("Invalid Winnow configuration")
-    assert_that(result.stderr).contains("winnow config validate")
+    assert_that(result.stderr).contains("bogus: Extra inputs are not permitted")
+    assert_that(result.stderr).contains("winnow init")
     assert_that(result.stdout).is_empty()
 
 
@@ -164,4 +165,43 @@ def test_config_validate_reports_invalid_file(tmp_path: Path) -> None:
     assert_that(result.stderr).contains("Invalid Winnow configuration")
     assert_that(result.stderr).contains("operation: validate_config")
     assert_that(result.stderr).contains("path:")
+    assert_that(result.stderr).contains("workers: Input should be greater than")
+    assert_that(result.stderr).does_not_contain("winnow config validate")
+    assert_that(result.stdout).is_empty()
+
+
+def test_config_validate_names_offending_key(tmp_path: Path) -> None:
+    """``config validate`` prints the dotted key and Pydantic message on exit 1."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text('cache:\n  enabled: "notabool"\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        ["config", "validate", "--config", str(config_path)],
+    )
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains(
+        "cache.enabled: Input should be a valid boolean"
+    )
+    assert_that(result.stderr).does_not_contain("winnow config validate")
+    assert_that(result.stdout).is_empty()
+
+
+def test_config_validate_unparseable_yaml_shows_parser_message(
+    tmp_path: Path,
+) -> None:
+    """``config validate`` on broken YAML prints the parser message on exit 1."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("cache: [\n  x: y\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        ["config", "validate", "--config", str(config_path)],
+    )
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("operation: load_config")
+    assert_that(result.stderr).contains("while parsing a flow sequence")
+    assert_that(result.stderr).does_not_contain("winnow config validate")
     assert_that(result.stdout).is_empty()
