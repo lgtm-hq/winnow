@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.31.0] - 2026-09-07
+
+### Added
+
+- **cli**: live-photos command (#67 PR B) (#228) (5a266d6)
+
 ## [0.30.0] - 2026-09-07
 
 ### Added
