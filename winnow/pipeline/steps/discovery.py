@@ -7,11 +7,15 @@
 ``state.files``. Per-entry problems (unreadable directories, failed ``stat``
 calls, symlinks that violate the configured policy) are recorded through
 :meth:`~winnow.pipeline.state.RunState.record_issue` and never abort the walk.
+Only regular files are inventoried (FIFOs, sockets and device nodes are ignored
+without an issue), and under ``FOLLOW`` a file identity is inventoried at most
+once even when several symlinks resolve to it.
 """
 
 from __future__ import annotations
 
 import os
+import stat
 import time
 from collections.abc import Sequence
 from datetime import datetime
@@ -69,12 +73,12 @@ def _is_always_skipped(name: str) -> bool:
     return name.startswith(".") or name in _ALWAYS_SKIPPED
 
 
-def _build_media_file(path: Path, *, stat: os.stat_result) -> MediaFile | None:
+def _build_media_file(path: Path, *, st: os.stat_result) -> MediaFile | None:
     """Build a MediaFile for ``path`` when it is a recognised media file.
 
     Args:
         path: Candidate file path as encountered during the walk.
-        stat: Result of a following ``stat`` on ``path``.
+        st: Result of a following ``stat`` on ``path``.
 
     Returns:
         The populated model, or ``None`` when the file is not media.
@@ -86,8 +90,8 @@ def _build_media_file(path: Path, *, stat: os.stat_result) -> MediaFile | None:
         path=path.resolve(),
         media_type=media_type,
         extension=path.suffix.lower(),
-        size_bytes=stat.st_size,
-        creation_date=datetime.fromtimestamp(stat.st_mtime).astimezone(),
+        size_bytes=st.st_size,
+        creation_date=datetime.fromtimestamp(st.st_mtime).astimezone(),
     )
 
 
@@ -112,6 +116,10 @@ class _Walk:
             symlink_policy=config.symlink_policy,
         )
         self._visited: set[Path] = set()
+        # Identity of every inventoried file mapped to the entry that
+        # inventoried it, used under FOLLOW so that a symlink resolving to an
+        # already-collected file is reported instead of duplicated.
+        self._seen: dict[tuple[int, int], Path] = {}
         self._accepted = 0
 
     def run(self) -> None:
@@ -216,24 +224,65 @@ class _Walk:
             return False
 
     def _collect(self, entry: os.DirEntry[str]) -> None:
-        """Stat a file entry and record it when it is media.
+        """Stat a file entry and record it when it is regular media.
+
+        Non-regular files (FIFOs, sockets, device nodes) are ignored without an
+        issue, matching :func:`winnow.fs.iter_regular_files`. Under ``FOLLOW``
+        a file whose identity was already inventoried is skipped and recorded
+        as an issue against the entry that resolved to it.
 
         Args:
             entry: Non-directory entry that passed the filters.
         """
         path = Path(entry.path)
         try:
-            stat = entry.stat()
-            media = _build_media_file(path, stat=stat)
+            st = entry.stat()
+            if not stat.S_ISREG(st.st_mode):
+                return
+            if self._already_seen(entry=entry, st=st):
+                return
+            media = _build_media_file(path, st=st)
         except OSError as exc:
             self._issue(message=exc.strerror or str(exc), path=path)
             return
         if media is None:
             return
+        if self._policy is SymlinkPolicy.FOLLOW:
+            self._seen[(st.st_dev, st.st_ino)] = path
         self._state.files.append(media)
         self._accepted += 1
         if self._accepted % _PROGRESS_INTERVAL == 0:
             self._progress()
+
+    def _already_seen(self, *, entry: os.DirEntry[str], st: os.stat_result) -> bool:
+        """Report whether ``entry`` resolves to a file inventoried earlier.
+
+        Only meaningful under ``FOLLOW``; other policies never pass a symlink
+        to :meth:`_collect`, so identities are not tracked for them. The issue
+        is recorded against the symlink, whichever of the two entries it is,
+        because the walk visits files in name order and a link may sort before
+        its target.
+
+        Args:
+            entry: Directory entry under consideration.
+            st: Result of a following ``stat`` on ``entry``.
+
+        Returns:
+            ``True`` when the file was already inventoried and an issue has
+            been recorded.
+        """
+        if self._policy is not SymlinkPolicy.FOLLOW:
+            return False
+        existing = self._seen.get((st.st_dev, st.st_ino))
+        if existing is None:
+            return False
+        path = Path(entry.path)
+        link, target = (path, existing) if entry.is_symlink() else (existing, path)
+        self._issue(
+            message=f"symlink target already inventoried as {target}",
+            path=link,
+        )
+        return True
 
     def _progress(self) -> None:
         """Emit a StepProgress event with the current accepted count."""
