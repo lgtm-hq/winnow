@@ -495,3 +495,41 @@ def test_init_failure_closes_connection(
     assert_that(opened).is_length(1)
     with pytest.raises(sqlite3.ProgrammingError):
         opened[0].execute("SELECT 1")
+
+
+def test_live_get_eviction_spares_concurrently_written_row(
+    cache: MetadataCache,
+    media: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale-row delete keyed on the fetched revision leaves a newer put intact."""
+    stale_key = MetadataCacheKey.from_file(media)
+    cache.put(media, SAMPLE, key=stale_key)
+    current = media.stat().st_mtime
+    os.utime(media, (current, current + 5))
+    real_lookup = _db.lookup_metadata_row
+
+    def lookup_then_put(
+        *,
+        connection: sqlite3.Connection,
+        key: MetadataCacheKey,
+    ) -> tuple[float, int, int, str] | None:
+        """Return the stale row, then write the newer revision as another worker would.
+
+        Args:
+            connection: Connection to query.
+            key: Key whose path to look up.
+
+        Returns:
+            The row present before the concurrent put.
+        """
+        row = real_lookup(connection=connection, key=key)
+        cache.put(media, SAMPLE)
+        return row
+
+    monkeypatch.setattr(_db, "lookup_metadata_row", lookup_then_put)
+
+    assert_that(cache.get(media)).is_none()
+    monkeypatch.undo()
+    assert_that(cache.stats().entry_count).is_equal_to(1)
+    assert_that(cache.get(media)).is_equal_to(SAMPLE)

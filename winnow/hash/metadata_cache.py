@@ -278,14 +278,14 @@ class MetadataCache:
         Raises:
             CacheError: If a stale-row deletion fails.
         """
+        mtime, size, _schema_version, _payload = row
         metadata = self._decode_row(row)
         if metadata is None:
-            self._delete_row(key)
+            self._delete_row(key.path, mtime=mtime, size=size)
             return None
-        mtime, size, _schema_version, _payload = row
         if (mtime, size) != (key.mtime, key.size):
             if evict_on_mismatch:
-                self._delete_row(key)
+                self._delete_row(key.path, mtime=mtime, size=size)
             return None
         return metadata
 
@@ -311,11 +311,17 @@ class MetadataCache:
         except ValidationError:
             return None
 
-    def _delete_row(self, key: MetadataCacheKey) -> None:
-        """Delete the stale or corrupt row stored for ``key.path``.
+    def _delete_row(self, path: Path, *, mtime: float, size: int) -> None:
+        """Delete the stale or corrupt revision fetched for ``path``.
+
+        The predicate includes the fetched ``mtime`` and ``size`` so a newer
+        revision written by a concurrent worker between the lookup and this
+        delete is left in place.
 
         Args:
-            key: Key whose path identifies the row to remove.
+            path: Path whose row is to be removed.
+            mtime: ``mtime`` of the fetched row.
+            size: ``size`` of the fetched row.
 
         Raises:
             CacheError: If the delete fails.
@@ -323,8 +329,9 @@ class MetadataCache:
         try:
             with self._connection:
                 self._connection.execute(
-                    "DELETE FROM metadata_cache WHERE path = ?",
-                    (str(key.path),),
+                    "DELETE FROM metadata_cache "
+                    "WHERE path = ? AND mtime = ? AND size = ?",
+                    (str(path), mtime, size),
                 )
         except sqlite3.Error as exc:
             raise CacheError(
