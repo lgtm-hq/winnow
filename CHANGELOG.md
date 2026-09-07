@@ -21,6 +21,54 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.31.0] - 2026-09-07
+
+### Added
+
+- **cli**: live-photos command (#67 PR B) (#228) (5a266d6)
+
+## [0.30.0] - 2026-09-07
+
+### Added
+
+- **media**: captured_at + metadata schema version (#36 PR B) (#226) (4e6f97f)
+
+## [0.29.0] - 2026-09-06
+
+### Added
+
+- **pipeline**: SQLite session log + user_data_dir (#49 PR A) (#223) (b57f9c9)
+
+## [0.28.0] - 2026-09-06
+
+### Added
+
+- **report**: report export from pipeline (#222) (4a74316)
+
+## [0.27.0] - 2026-09-06
+
+### Added
+
+- **cli**: shared option decorators and cross-command flag conventions (#221) (2416dcb)
+
+## [0.26.0] - 2026-09-06
+
+### Added
+
+- **hash**: PerceptualHasher protocol + cache key identity (#39 PR A) (#220) (7763e24)
+
+### Changed
+
+- **cli**: move clean/info/stats domain logic into winnow.fs and winnow.media (#229)
+  (aa4baa7)
+
+## [0.25.0] - 2026-09-06
+
+### Added
+
+- **pipeline**: step contract — Step, RunState, StepEvents, OrganizeSettings (#53 PR A)
+  (#215) (db4851e)
+
 ## [0.24.0] - 2026-09-06
 
 ### Added

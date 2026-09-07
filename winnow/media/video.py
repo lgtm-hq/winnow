@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess  # nosec B404 - fixed argv lists only; never shell=True
+from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Final
@@ -22,6 +23,7 @@ from winnow.media._coerce import (
     coerce_non_negative_float,
     coerce_non_negative_int,
 )
+from winnow.media._dates import parse_iso_datetime
 from winnow.models.media import MediaMetadata
 
 _FFPROBE: Final[str] = "ffprobe"
@@ -302,7 +304,9 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
         path: Media path used in raised errors.
 
     Returns:
-        Metadata derived from the first video stream and container format.
+        Metadata derived from the first video stream and container format,
+        including ``captured_at`` from ``format.tags.creation_time`` when
+        present.
 
     Raises:
         MediaError: If the JSON payload cannot be decoded.
@@ -339,7 +343,26 @@ def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
         codec=codec if isinstance(codec, str) else None,
         bitrate=bitrate,
         frame_rate=_parse_frame_rate(video_stream.get("avg_frame_rate")),
+        captured_at=_parse_creation_time(container.get("tags")),
     )
+
+
+def _parse_creation_time(tags: object) -> datetime | None:
+    """Parse ``creation_time`` from an ffprobe ``format.tags`` mapping.
+
+    Args:
+        tags: The ``format.tags`` value from ffprobe JSON, if any.
+
+    Returns:
+        Parsed creation datetime, or ``None`` when the tags block is missing,
+        malformed, or lacks a parseable ``creation_time``.
+    """
+    if not isinstance(tags, dict):
+        return None
+    value = tags.get("creation_time")
+    if not isinstance(value, str):
+        return None
+    return parse_iso_datetime(value)
 
 
 def _parse_format_tags(*, payload: str, path: Path) -> dict[str, str]:

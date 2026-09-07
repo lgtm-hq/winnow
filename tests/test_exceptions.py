@@ -20,6 +20,7 @@ from winnow.exceptions import (
     HashError,
     MediaError,
     PipelineError,
+    SagaError,
     SecurityError,
     WinnowError,
 )
@@ -30,6 +31,7 @@ EXCEPTION_TYPES: tuple[tuple[type[WinnowError], str], ...] = (
     (HashError, "HashError"),
     (CacheError, "CacheError"),
     (PipelineError, "PipelineError"),
+    (SagaError, "SagaError"),
     (SecurityError, "SecurityError"),
     (DuplicateError, "DuplicateError"),
 )

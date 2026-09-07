@@ -1,9 +1,8 @@
-"""Tests for the ``winnow info`` command and its helpers."""
+"""Tests for the ``winnow info`` command."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,26 +10,11 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
-from winnow.cli.info import (
-    ImageSummary,
-    build_info_table,
-    collect_file_info,
-    read_image_summary,
-    summarize_image,
-)
-from winnow.models.media import MediaType
+from winnow.cli.info import build_info_table
+from winnow.media.inventory import FileInfo
+from winnow.models.media import MediaMetadata, MediaType
 
 _FIXED_MTIME = datetime(2022, 6, 1, 12, 0, 0, tzinfo=UTC).timestamp()
-
-
-@dataclass(frozen=True, slots=True)
-class _FakeImage:
-    """Minimal Pillow-like image used to exercise summary extraction."""
-
-    format: str | None
-    mode: str
-    width: int
-    height: int
 
 
 def _make_file(path: Path, *, content: str = "payload") -> Path:
@@ -48,60 +32,17 @@ def _make_file(path: Path, *, content: str = "payload") -> Path:
     return path
 
 
-def test_collect_file_info_classifies_media_and_size(tmp_path: Path) -> None:
-    """File info reports media type, extension, and byte size."""
-    target = _make_file(tmp_path / "clip.mp4", content="0123456789")
+def _file_info(metadata: MediaMetadata | None) -> FileInfo:
+    """Build a ``FileInfo`` for an image with the given metadata.
 
-    file_info = collect_file_info(target)
+    Args:
+        metadata: Structural metadata to attach, or ``None``.
 
-    assert_that(file_info.media_type).is_equal_to(MediaType.VIDEO)
-    assert_that(file_info.extension).is_equal_to("mp4")
-    assert_that(file_info.size_bytes).is_equal_to(10)
-    assert_that(file_info.image).is_none()
-
-
-def test_collect_file_info_marks_unknown_extension(tmp_path: Path) -> None:
-    """An unrecognized extension yields a ``None`` media type."""
-    target = _make_file(tmp_path / "notes.xyz")
-
-    file_info = collect_file_info(target)
-
-    assert_that(file_info.media_type).is_none()
-
-
-def test_summarize_image_reads_dimensions_and_format() -> None:
-    """Image summary extraction reads format, mode, and dimensions."""
-    summary = summarize_image(
-        _FakeImage(format="JPEG", mode="RGB", width=640, height=480),
-    )
-
-    assert_that(summary).is_equal_to(
-        ImageSummary(image_format="JPEG", mode="RGB", width=640, height=480),
-    )
-
-
-def test_summarize_image_defaults_missing_format() -> None:
-    """A missing container format falls back to ``unknown``."""
-    summary = summarize_image(
-        _FakeImage(format=None, mode="L", width=1, height=1),
-    )
-
-    assert_that(summary.image_format).is_equal_to("unknown")
-
-
-def test_read_image_summary_returns_none_without_pillow(tmp_path: Path) -> None:
-    """Without Pillow installed, image reading degrades to ``None``."""
-    target = _make_file(tmp_path / "pic.png")
-
-    assert_that(read_image_summary(target)).is_none()
-
-
-def test_build_info_table_includes_image_rows() -> None:
-    """The info table adds image rows when an image summary is present."""
-    from winnow.cli.info import FileInfo
-
+    Returns:
+        A populated ``FileInfo`` record.
+    """
     moment = datetime(2022, 6, 1, 12, 0, 0, tzinfo=UTC)
-    file_info = FileInfo(
+    return FileInfo(
         path=Path("pic.png"),
         media_type=MediaType.IMAGE,
         extension="png",
@@ -109,13 +50,40 @@ def test_build_info_table_includes_image_rows() -> None:
         modified=moment,
         accessed=moment,
         changed=moment,
-        image=ImageSummary(image_format="PNG", mode="RGBA", width=32, height=16),
+        metadata=metadata,
     )
 
-    table = build_info_table(file_info)
-    column_cells = list(table.columns[0].cells)
 
-    assert_that(column_cells).contains("Image format", "Dimensions")
+def test_build_info_table_includes_image_rows() -> None:
+    """The info table adds image rows when metadata is present."""
+    table = build_info_table(
+        _file_info(
+            MediaMetadata(width=32, height=16, image_format="PNG", color_mode="RGBA"),
+        ),
+    )
+    field_cells = list(table.columns[0].cells)
+    value_cells = list(table.columns[1].cells)
+
+    assert_that(field_cells).contains("Image format", "Color mode", "Dimensions")
+    assert_that(value_cells).contains("PNG", "RGBA", "32x16")
+
+
+def test_build_info_table_omits_image_rows_without_metadata() -> None:
+    """The info table has no image rows when metadata is ``None``."""
+    table = build_info_table(_file_info(None))
+    field_cells = list(table.columns[0].cells)
+
+    assert_that(field_cells).does_not_contain("Image format", "Dimensions")
+
+
+def test_build_info_table_defaults_missing_format_and_dimensions() -> None:
+    """Partial metadata falls back to ``unknown`` and skips dimensions."""
+    table = build_info_table(_file_info(MediaMetadata(width=32)))
+    field_cells = list(table.columns[0].cells)
+    value_cells = list(table.columns[1].cells)
+
+    assert_that(value_cells).contains("unknown")
+    assert_that(field_cells).does_not_contain("Dimensions")
 
 
 def test_info_command_renders_metadata_table(tmp_path: Path) -> None:
@@ -130,6 +98,17 @@ def test_info_command_renders_metadata_table(tmp_path: Path) -> None:
     assert_that(result.output).contains("image")
     assert_that(result.output).contains("2022-06-01 12:00:00")
     assert_that(result.output).contains("3 B (3 bytes)")
+
+
+def test_info_command_renders_image_rows_for_real_image(tmp_path: Path) -> None:
+    """The info command shows dimensions for a decodable image."""
+    fixture = Path(__file__).resolve().parents[1] / "media" / "fixtures" / "sample.png"
+
+    result = CliRunner().invoke(main, ["info", str(fixture)])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).contains("Image format")
+    assert_that(result.output).contains("Dimensions")
 
 
 def test_info_command_rejects_directory(tmp_path: Path) -> None:
