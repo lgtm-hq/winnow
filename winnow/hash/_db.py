@@ -22,7 +22,7 @@ from winnow.exceptions import CacheError, StorageError
 from winnow.hash.cache_key import CacheKey
 from winnow.hash.metadata_cache_key import MetadataCacheKey
 from winnow.models.config import CacheSettings
-from winnow.storage import Migration, apply_schema
+from winnow.storage import Migration, apply_schema, read_schema_version
 
 IN_MEMORY = ":memory:"
 
@@ -171,12 +171,56 @@ def initialize_schema(
             target_version=CACHE_SCHEMA_VERSION,
         )
     except StorageError as exc:
+        if _schema_is_current(connection):
+            # Another connection provisioned the schema between our version
+            # read and our baseline insert; the database is in the state we
+            # wanted, so the lost race is not an error.
+            return
         raise CacheError(
             "Unable to initialize cache schema",
             operation="cache.initialize",
             file_path=db_path,
             details=exc.context.details,
         ) from exc
+
+
+def _schema_is_current(connection: sqlite3.Connection) -> bool:
+    """Return whether the database already carries the current schema version.
+
+    Args:
+        connection: Open connection to inspect.
+
+    Returns:
+        ``True`` when ``schema_version`` reads :data:`CACHE_SCHEMA_VERSION`;
+        ``False`` on any other version or when the read itself fails.
+    """
+    try:
+        return read_schema_version(connection) == CACHE_SCHEMA_VERSION
+    except sqlite3.Error:
+        return False
+
+
+def open_database(*, db_path: Path, in_memory: bool) -> sqlite3.Connection:
+    """Open a connection and provision the schema, closing it on failure.
+
+    Args:
+        db_path: Location of the on-disk database file.
+        in_memory: Whether to open a transient in-memory database.
+
+    Returns:
+        An open connection whose schema is current.
+
+    Raises:
+        CacheError: If the database cannot be opened or its schema cannot be
+            initialized; the connection is closed before re-raising.
+    """
+    connection = connect(db_path=db_path, in_memory=in_memory)
+    try:
+        initialize_schema(connection=connection, db_path=db_path)
+    except CacheError:
+        connection.close()
+        raise
+    return connection
 
 
 def fetch_rows_for_paths(

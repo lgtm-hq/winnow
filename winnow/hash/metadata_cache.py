@@ -51,13 +51,9 @@ class MetadataCache:
             self._db_path = Path(db_path)
         self._hits = 0
         self._misses = 0
-        self._connection = _db.connect(
+        self._connection = _db.open_database(
             db_path=self._db_path,
             in_memory=self._in_memory,
-        )
-        _db.initialize_schema(
-            connection=self._connection,
-            db_path=self._db_path,
         )
 
     def get(
@@ -68,11 +64,14 @@ class MetadataCache:
     ) -> MediaMetadata | None:
         """Return the cached metadata for ``path`` if the entry is still valid.
 
-        A hit requires a row matching the file's current ``mtime`` and
-        ``size``, written under the current
-        :data:`MEDIA_METADATA_SCHEMA_VERSION`, whose payload validates as
-        :class:`MediaMetadata`. A row failing any of these checks is deleted
-        in the same call. An unreadable file is a miss, not an error.
+        A hit requires a row matching the key's ``mtime`` and ``size``,
+        written under the current :data:`MEDIA_METADATA_SCHEMA_VERSION`,
+        whose payload validates as :class:`MediaMetadata`. A row with a stale
+        schema version or an invalid payload is deleted in the same call. A
+        row whose ``mtime``/``size`` differ is deleted only when ``key`` was
+        read from the live file here; a caller-supplied snapshot that does not
+        match is a plain miss, since the row may still describe the file as it
+        is now. An unreadable file is a miss, not an error.
 
         Args:
             path: Filesystem path of the media file.
@@ -85,6 +84,7 @@ class MetadataCache:
         Raises:
             CacheError: If the lookup or stale-row deletion fails.
         """
+        key_is_live = key is None
         if key is None:
             try:
                 key = MetadataCacheKey.from_file(path)
@@ -92,10 +92,10 @@ class MetadataCache:
                 self._misses += 1
                 return None
         row = _db.lookup_metadata_row(connection=self._connection, key=key)
-        metadata = self._decode_row(row, key=key)
+        metadata = None
+        if row is not None:
+            metadata = self._resolve_row(row, key=key, evict_on_mismatch=key_is_live)
         if metadata is None:
-            if row is not None:
-                self._delete_row(key)
             self._misses += 1
             return None
         self._hits += 1
@@ -116,9 +116,13 @@ class MetadataCache:
         Args:
             path: Filesystem path of the media file.
             metadata: Extracted metadata to persist.
-            key: File-state snapshot the metadata was extracted from. Pass the
-                key taken before extraction so a file rewritten in between is
-                not recorded as current; defaults to the file's state now.
+            key: File-state snapshot the metadata was extracted from. When
+                omitted the file is stat'ed at write time, which is only
+                correct if the file has not changed since extraction; a file
+                rewritten in between would be recorded as current with stale
+                metadata. Callers that extract and store in separate steps
+                (the pipeline's Metadata step, #55) should take the key before
+                extraction and pass it here.
 
         Raises:
             CacheError: If the file metadata cannot be read or the write fails.
@@ -249,29 +253,55 @@ class MetadataCache:
         """Close the connection when leaving a context manager scope."""
         self.close()
 
-    @staticmethod
-    def _decode_row(
-        row: tuple[float, int, int, str] | None,
+    def _resolve_row(
+        self,
+        row: tuple[float, int, int, str],
         *,
         key: MetadataCacheKey,
+        evict_on_mismatch: bool,
     ) -> MediaMetadata | None:
-        """Turn a stored row into metadata when it is current and valid.
+        """Validate a stored row against ``key``, evicting it when appropriate.
 
         Args:
-            row: ``(mtime, size, schema_version, payload)`` from the database,
-                or ``None``.
-            key: File state the row must match to count as current.
+            row: ``(mtime, size, schema_version, payload)`` from the database.
+            key: File state the row must match to count as a hit.
+            evict_on_mismatch: Whether a ``mtime``/``size`` mismatch should
+                delete the row. True when ``key`` reflects the live file, so
+                the row is known to be stale; false for a caller-supplied
+                snapshot, which says nothing about the file's current state.
 
         Returns:
-            The decoded metadata, or ``None`` when there is no row, the file
-            has changed, the schema version is not current, or the payload
-            does not validate.
+            The decoded metadata on a hit, or ``None`` on a miss.
+
+        Raises:
+            CacheError: If a stale-row deletion fails.
         """
-        if row is None:
+        metadata = self._decode_row(row)
+        if metadata is None:
+            self._delete_row(key)
             return None
-        mtime, size, schema_version, payload = row
+        mtime, size, _schema_version, _payload = row
         if (mtime, size) != (key.mtime, key.size):
+            if evict_on_mismatch:
+                self._delete_row(key)
             return None
+        return metadata
+
+    @staticmethod
+    def _decode_row(row: tuple[float, int, int, str]) -> MediaMetadata | None:
+        """Turn a stored row into metadata when it is well-formed.
+
+        File-state matching is the caller's concern; this only checks that
+        the row was written under the current schema and still validates.
+
+        Args:
+            row: ``(mtime, size, schema_version, payload)`` from the database.
+
+        Returns:
+            The decoded metadata, or ``None`` when the schema version is not
+            current or the payload does not validate.
+        """
+        _mtime, _size, schema_version, payload = row
         if schema_version != MEDIA_METADATA_SCHEMA_VERSION:
             return None
         try:

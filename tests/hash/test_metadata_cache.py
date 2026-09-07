@@ -383,3 +383,109 @@ def test_initialize_schema_failure_wraps_storage_error(tmp_path: Path) -> None:
         MetadataCache(db_path=db_path)
 
     assert_that(excinfo.value.context.operation).is_equal_to("cache.initialize")
+
+
+def test_snapshot_get_mismatch_keeps_current_row(
+    cache: MetadataCache,
+    media: Path,
+) -> None:
+    """A caller-supplied snapshot that misses leaves a row matching the live file."""
+    stale = MetadataCacheKey.from_file(media)
+    current = media.stat().st_mtime
+    os.utime(media, (current, current + 5))
+    cache.put(media, SAMPLE)
+
+    assert_that(cache.get(media, key=stale)).is_none()
+    assert_that(cache.stats().entry_count).is_equal_to(1)
+    assert_that(cache.get(media)).is_equal_to(SAMPLE)
+
+
+def test_snapshot_get_still_evicts_corrupt_row(
+    cache: MetadataCache,
+    media: Path,
+) -> None:
+    """A snapshot lookup still deletes a row whose payload no longer validates."""
+    key = MetadataCacheKey.from_file(media)
+    cache.put(media, SAMPLE, key=key)
+    _overwrite_row(cache._db_path, path=media, column="payload", value="{not json")
+
+    assert_that(cache.get(media, key=key)).is_none()
+    assert_that(cache.stats().entry_count).is_equal_to(0)
+
+
+def test_concurrent_schema_init_tolerates_lost_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second initializer that loses the baseline race sees the schema as current."""
+    db_path = tmp_path / "cache.db"
+    real_read = _db.read_schema_version
+    winner_done = False
+
+    def racing_read(connection: sqlite3.Connection) -> int:
+        """Report version 0 on the first read, then defer to the real reader.
+
+        Args:
+            connection: Connection whose version is being read.
+
+        Returns:
+            ``0`` for the first (loser's) read, the real version afterwards.
+        """
+        nonlocal winner_done
+        if winner_done:
+            return real_read(connection)
+        winner_done = True
+        with sqlite3.connect(db_path) as other:
+            _db.initialize_schema(connection=other, db_path=db_path)
+        return 0
+
+    monkeypatch.setattr("winnow.storage.migrations.read_schema_version", racing_read)
+
+    with MetadataCache(db_path=db_path) as cache:
+        assert_that(cache.stats().entry_count).is_equal_to(0)
+    assert_that(_table_names(db_path)).contains("hash_cache", "metadata_cache")
+
+
+def test_init_failure_closes_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schema failure during construction closes the connection it opened."""
+    opened: list[sqlite3.Connection] = []
+    real_connect = _db.connect
+
+    def tracking_connect(*, db_path: Path, in_memory: bool) -> sqlite3.Connection:
+        """Open a connection through the real helper and remember it.
+
+        Args:
+            db_path: Database location.
+            in_memory: Whether the database is in-memory.
+
+        Returns:
+            The opened connection.
+        """
+        connection = real_connect(db_path=db_path, in_memory=in_memory)
+        opened.append(connection)
+        return connection
+
+    def failing_init(*, connection: sqlite3.Connection, db_path: Path) -> None:
+        """Fail schema initialization unconditionally.
+
+        Args:
+            connection: Ignored.
+            db_path: Used for the error's file path.
+
+        Raises:
+            CacheError: Always.
+        """
+        raise CacheError("boom", operation="cache.initialize", file_path=db_path)
+
+    monkeypatch.setattr(_db, "connect", tracking_connect)
+    monkeypatch.setattr(_db, "initialize_schema", failing_init)
+
+    with pytest.raises(CacheError):
+        MetadataCache(db_path=tmp_path / "cache.db")
+
+    assert_that(opened).is_length(1)
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")
