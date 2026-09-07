@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Self
 
 from winnow.exceptions import CacheError
-from winnow.models.enums import HashAlgorithm
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,19 +22,19 @@ class CacheKey:
         path: Filesystem path of the hashed media file.
         mtime: Modification time of the file, in seconds since the epoch.
         size: Size of the file in bytes.
-        algorithm: Hash algorithm that produced the cached digest.
+        algorithm: Hasher identity string, e.g. ``ImageHasher.cache_algorithm``.
     """
 
     path: Path
     mtime: float
     size: int
-    algorithm: HashAlgorithm
+    algorithm: str
 
     @classmethod
     def from_file(
         cls,
         path: Path | str,
-        algorithm: HashAlgorithm,
+        algorithm: str,
     ) -> Self:
         """Build a cache key by reading file metadata from disk.
 
@@ -46,7 +45,8 @@ class CacheKey:
 
         Args:
             path: Filesystem path of the media file to key on.
-            algorithm: Hash algorithm the digest was produced with.
+            algorithm: Hasher identity string, e.g.
+                ``ImageHasher.cache_algorithm``.
 
         Returns:
             A cache key populated with the file's current mtime and size.

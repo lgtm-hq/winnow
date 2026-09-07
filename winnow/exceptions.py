@@ -118,6 +118,10 @@ class PipelineError(WinnowError):
     """Raised when a pipeline step fails."""
 
 
+class SagaError(PipelineError):
+    """Raised when the saga transaction log cannot be read or written."""
+
+
 class SecurityError(WinnowError):
     """Raised for path validation and symlink policy violations."""
 
@@ -147,6 +151,7 @@ __all__ = [
     "MediaError",
     "PipelineError",
     "ReportError",
+    "SagaError",
     "SecurityError",
     "StorageError",
     "WinnowError",

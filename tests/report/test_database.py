@@ -882,3 +882,68 @@ def test_close_is_idempotent(report_db: ReportDatabase) -> None:
     report_db.close()
 
     assert_that(report_db.is_connected).is_false()
+
+
+def test_transaction_commits_on_success(report_db: ReportDatabase) -> None:
+    """Statements issued through transaction() persist when the block exits."""
+    with report_db.transaction() as cursor:
+        cursor.execute(
+            "INSERT INTO report_runs (root_path) VALUES (?);",
+            ("/library",),
+        )
+
+    runs = report_db.list_runs()
+    assert_that(runs).is_length(1)
+    assert_that(runs[0].root_path).is_equal_to("/library")
+
+
+def test_transaction_rolls_back_on_error(
+    report_db: ReportDatabase,
+    seeded_run: int,
+) -> None:
+    """An exception inside transaction() discards every statement in the block."""
+    report_db.add_media_file(
+        run_id=seeded_run,
+        path="/library/a.jpg",
+        media_type=MediaType.IMAGE,
+    )
+
+    def _counts() -> dict[str, int]:
+        return {
+            table: report_db._query(
+                f"SELECT COUNT(*) AS n FROM {table};",  # nosec B608 - fixed table names
+            )[0]["n"]
+            for table in (
+                "report_runs",
+                "media_files",
+                "duplicate_groups",
+                "operations",
+            )
+        }
+
+    before = _counts()
+
+    with pytest.raises(RuntimeError), report_db.transaction() as cursor:
+        cursor.execute(
+            "INSERT INTO report_runs (root_path) VALUES (?);",
+            ("/other",),
+        )
+        cursor.execute(
+            "INSERT INTO media_files (run_id, path, filename, media_type) "
+            "VALUES (?, ?, ?, ?);",
+            (seeded_run, "/library/b.jpg", "b.jpg", "image"),
+        )
+        raise RuntimeError("boom")
+
+    assert_that(_counts()).is_equal_to(before)
+    assert_that(report_db.is_connected).is_true()
+
+
+def test_transaction_wraps_sqlite_errors(report_db: ReportDatabase) -> None:
+    """SQLite failures inside transaction() surface as ReportError after rollback."""
+    with pytest.raises(ReportError) as exc_info, report_db.transaction() as cursor:
+        cursor.execute("INSERT INTO report_runs (root_path) VALUES (?);", ("/x",))
+        cursor.execute("INSERT INTO no_such_table VALUES (1);")
+
+    assert_that(exc_info.value.context.operation).is_equal_to("transaction")
+    assert_that(report_db.list_runs()).is_empty()

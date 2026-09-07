@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from enum import Enum
 from io import StringIO
@@ -45,6 +46,18 @@ def config_json_schema() -> dict[str, object]:
         JSON schema describing :class:`winnow.models.config.WinnowConfig`.
     """
     return cast("dict[str, object]", WinnowConfig.model_json_schema())
+
+
+def config_digest(config: WinnowConfig) -> str:
+    """Return a stable content digest of a configuration.
+
+    Args:
+        config: Configuration to fingerprint.
+
+    Returns:
+        SHA-256 hex digest of ``config.model_dump_json()``.
+    """
+    return hashlib.sha256(config.model_dump_json().encode()).hexdigest()
 
 
 def render_config_yaml(

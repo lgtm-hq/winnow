@@ -26,6 +26,7 @@ from winnow.hash.image_hasher import (
     PerceptualHash,
     hash_image,
 )
+from winnow.hash.protocol import PerceptualHasher
 
 __all__ = [
     "DEFAULT_HASH_SIZE",
@@ -36,6 +37,7 @@ __all__ = [
     "HashCache",
     "ImageHasher",
     "PerceptualHash",
+    "PerceptualHasher",
     "hamming_distance",
     "hash_image",
     "open_hash_cache",
