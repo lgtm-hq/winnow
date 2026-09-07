@@ -19,7 +19,9 @@ def test_pipeline_package_imports_without_circular_imports() -> None:
             sys.executable,
             "-c",
             "import winnow.pipeline; "
-            "from winnow.pipeline import Command, MoveFile, PipelineContext",
+            "from winnow.pipeline import Command, MoveFile, PipelineContext, "
+            "Step, RunState, StepEvents, NullEvents, StepStarted, StepProgress, "
+            "StepCompleted, StepIssue",
         ],
         capture_output=True,
         text=True,
@@ -39,5 +41,14 @@ def test_pipeline_public_exports_are_accessible() -> None:
         "CreateDirectory",
         "DeleteFile",
         "MoveFile",
+        "NullEvents",
         "PipelineContext",
+        "PipelineEvent",
+        "RunState",
+        "Step",
+        "StepCompleted",
+        "StepEvents",
+        "StepIssue",
+        "StepProgress",
+        "StepStarted",
     )

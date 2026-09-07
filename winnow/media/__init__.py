@@ -11,6 +11,13 @@ from winnow.media.image import (
     read_exif,
     read_maker_note_tags,
 )
+from winnow.media.inventory import (
+    DirectoryStats,
+    FileInfo,
+    collect_directory_stats,
+    inspect_file,
+    iter_regular_files,
+)
 from winnow.media.registry import (
     DEFAULT_FORMAT_REGISTRY,
     DEFAULT_FORMATS,
@@ -40,9 +47,12 @@ __all__ = [
     "DEFAULT_THUMBNAIL_SIZE",
     "RAW_IMAGE_MIME_TYPES",
     "DefaultMetadataService",
+    "DirectoryStats",
+    "FileInfo",
     "FormatRegistry",
     "MetadataService",
     "create_default_format_registry",
+    "collect_directory_stats",
     "create_metadata_service",
     "detect_media_type",
     "extract_audio_metadata",
@@ -53,6 +63,8 @@ __all__ = [
     "ffprobe_available",
     "generate_thumbnail",
     "heif_supported",
+    "inspect_file",
+    "iter_regular_files",
     "media_type_for_extension",
     "normalize_extension",
     "read_audio_tags",

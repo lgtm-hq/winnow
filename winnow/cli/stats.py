@@ -2,13 +2,13 @@
 
 Files are classified with the format registry and aggregated into counts per
 media type, a total size, and the span of file modification times.
+
+``--recursive/--no-recursive`` is purpose-specific to this command and
+intentionally not part of ``winnow.cli.standards``.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,96 +17,13 @@ from rich.table import Table
 
 from winnow.cli.console import console_from_context
 from winnow.cli.rendering import format_size, format_timestamp
-from winnow.media.registry import DEFAULT_FORMAT_REGISTRY, FormatRegistry
+from winnow.media.inventory import DirectoryStats, collect_directory_stats
 from winnow.models.media import MediaType
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
-
     from rich.console import Console
 
-__all__ = ["DirectoryStats", "collect_directory_stats", "stats"]
-
-
-@dataclass(frozen=True, slots=True)
-class DirectoryStats:
-    """Aggregate statistics for a directory of media files."""
-
-    total_files: int
-    total_bytes: int
-    counts_by_type: Mapping[MediaType, int]
-    unknown_count: int
-    earliest_modified: datetime | None
-    latest_modified: datetime | None
-
-
-def _iter_files(directory: Path, *, recursive: bool) -> Iterator[Path]:
-    """Yield regular files under a directory.
-
-    Args:
-        directory: Directory to walk.
-        recursive: When ``True``, descend into subdirectories.
-
-    Yields:
-        Paths to regular files (symlinks and special files excluded).
-    """
-    entries = directory.rglob("*") if recursive else directory.iterdir()
-    for entry in entries:
-        if entry.is_file() and not entry.is_symlink():
-            yield entry
-
-
-def collect_directory_stats(
-    directory: Path,
-    *,
-    recursive: bool = True,
-    registry: FormatRegistry | None = None,
-) -> DirectoryStats:
-    """Aggregate media statistics for a directory.
-
-    Args:
-        directory: Directory to summarize.
-        recursive: When ``True``, include files in subdirectories.
-        registry: Format registry used to classify files. Defaults to the
-            shared process-wide registry.
-
-    Returns:
-        Aggregate counts, total size, and modification-time span. Timestamps
-        are expressed in UTC.
-    """
-    active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
-    counts: dict[MediaType, int] = defaultdict(int)
-    total_files = 0
-    total_bytes = 0
-    unknown_count = 0
-    earliest: datetime | None = None
-    latest: datetime | None = None
-
-    for file_path in _iter_files(directory, recursive=recursive):
-        stat_result = file_path.stat()
-        total_files += 1
-        total_bytes += stat_result.st_size
-
-        media_type = active_registry.lookup(file_path.name)
-        if media_type is None:
-            unknown_count += 1
-        else:
-            counts[media_type] += 1
-
-        modified = datetime.fromtimestamp(stat_result.st_mtime, tz=UTC)
-        if earliest is None or modified < earliest:
-            earliest = modified
-        if latest is None or modified > latest:
-            latest = modified
-
-    return DirectoryStats(
-        total_files=total_files,
-        total_bytes=total_bytes,
-        counts_by_type=dict(counts),
-        unknown_count=unknown_count,
-        earliest_modified=earliest,
-        latest_modified=latest,
-    )
+__all__ = ["build_stats_table", "stats"]
 
 
 def build_stats_table(directory: Path, directory_stats: DirectoryStats) -> Table:
