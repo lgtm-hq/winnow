@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from assertpy import assert_that
+from PIL import ExifTags, Image
 
 from tests.classify.conftest import ImageFactory
 from winnow.classify.livephoto import (
@@ -28,6 +29,7 @@ from winnow.classify.livephoto import (
     still_content_identifier,
     video_content_identifier,
 )
+from winnow.media.image import heif_supported
 
 _UUID = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
 _ROOT = Path("/library")
@@ -68,6 +70,9 @@ def _scan(
 def apple_maker_note(identifier: str) -> bytes:
     """Build an Apple-style MakerNote carrying a content identifier.
 
+    The value offset is relative to the start of the blob, as in real Apple
+    MakerNotes (the IFD starts at offset 14).
+
     Args:
         identifier: ASCII identifier stored in ``Tag 0x0011``.
 
@@ -75,7 +80,7 @@ def apple_maker_note(identifier: str) -> bytes:
         Raw MakerNote bytes suitable for EXIF tag ``0x927C``.
     """
     payload = identifier.encode("ascii") + b"\x00"
-    entry = struct.pack(">HHII", 0x0011, 2, len(payload), 2 + 12 + 4)
+    entry = struct.pack(">HHII", 0x0011, 2, len(payload), 14 + 2 + 12 + 4)
     ifd = struct.pack(">H", 1) + entry + struct.pack(">I", 0)
     return b"Apple iOS\x00" + b"\x00\x01" + b"MM" + ifd + payload
 
@@ -246,6 +251,36 @@ def test_still_content_identifier_reads_synthetic_maker_note(
 
     assert_that(still_content_identifier(path)).is_equal_to(_UUID)
     assert_that(APPLE_CONTENT_IDENTIFIER_TAG).is_equal_to("Tag 0x0011")
+
+
+@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+def test_find_live_photo_pairs_pairs_heic_still(tmp_path: Path) -> None:
+    """A HEIC still with an Apple MakerNote pairs with a video sharing its id."""
+    still = tmp_path / "IMG_0001.HEIC"
+    exif = Image.Exif()
+    exif[0x010F] = "Apple"
+    exif[ExifTags.IFD.Exif] = {0x927C: apple_maker_note(_UUID)}
+    Image.new("RGB", (16, 16)).save(still, format="HEIF", exif=exif.tobytes())
+    video = tmp_path / "clips" / "IMG_9999.MOV"
+
+    scan = find_live_photo_pairs(
+        [still, video],
+        still_identifier=still_content_identifier,
+        video_identifier=_reader({video: _UUID}),
+    )
+
+    assert_that(scan.pairs).is_equal_to(
+        (
+            LivePhotoPair(
+                still=still,
+                video=video,
+                content_identifier=_UUID,
+                verified=True,
+            ),
+        ),
+    )
+    assert_that(scan.unpaired_stills).is_empty()
+    assert_that(scan.unpaired_videos).is_empty()
 
 
 def test_still_content_identifier_none_without_maker_note(

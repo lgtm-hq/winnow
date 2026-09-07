@@ -6,6 +6,7 @@ import struct
 from datetime import datetime
 from pathlib import Path
 
+import exifread
 import pytest
 from assertpy import assert_that
 from PIL import ExifTags, Image, UnidentifiedImageError
@@ -481,25 +482,150 @@ def test_read_maker_note_tags_missing_file_degrades(tmp_path: Path) -> None:
     assert_that(read_maker_note_tags(tmp_path / "missing.jpg")).is_equal_to({})
 
 
-def test_read_maker_note_tags_reads_apple_note(tmp_path: Path) -> None:
-    """A synthetic Apple MakerNote is decoded with the prefix stripped."""
-    uuid = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
+def _apple_maker_note(uuid: str) -> bytes:
+    """Build an Apple MakerNote blob carrying a content identifier.
+
+    Mirrors the real layout: ``Apple iOS\\0`` + 2-byte version, ``MM`` byte
+    order, then a TIFF IFD at offset 14 with one ASCII entry (``Tag 0x0011``)
+    whose value offset is relative to the start of the blob.
+
+    Args:
+        uuid: ASCII identifier stored in ``Tag 0x0011``.
+
+    Returns:
+        Raw MakerNote bytes suitable for EXIF tag ``0x927C``.
+    """
     payload = uuid.encode("ascii") + b"\x00"
-    entry = struct.pack(">HHII", 0x0011, 2, len(payload), 2 + 12 + 4)
-    note = (
-        b"Apple iOS\x00"
-        + b"\x00\x01"
-        + b"MM"
-        + struct.pack(">H", 1)
-        + entry
-        + struct.pack(">I", 0)
-        + payload
-    )
+    value_offset = 14 + 2 + 12 + 4
+    entry = struct.pack(">HHII", 0x0011, 2, len(payload), value_offset)
+    ifd = struct.pack(">H", 1) + entry + struct.pack(">I", 0)
+    return b"Apple iOS\x00" + b"\x00\x01" + b"MM" + ifd + payload
+
+
+def _apple_exif(note: bytes | None) -> Image.Exif:
+    """Build an EXIF block for an Apple still, optionally with a MakerNote.
+
+    Args:
+        note: Raw MakerNote bytes, or ``None`` to omit the tag.
+
+    Returns:
+        EXIF block ready to pass to ``Image.save``.
+    """
     exif = Image.Exif()
     exif[0x010F] = "Apple"
-    exif[ExifTags.IFD.Exif] = {0x927C: note}
+    exif[ExifTags.IFD.Exif] = {0x927C: note} if note is not None else {}
+    return exif
+
+
+def test_read_maker_note_tags_reads_apple_note(tmp_path: Path) -> None:
+    """A synthetic Apple MakerNote JPEG is decoded with the prefix stripped."""
+    uuid = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
     path = tmp_path / "live.jpg"
-    Image.new("RGB", (8, 8)).save(path, exif=exif)
+    Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(_apple_maker_note(uuid)))
 
     assert_that(read_maker_note_tags(path)).is_equal_to({"Tag 0x0011": uuid})
     assert_that(read_exif(path)).does_not_contain_key("MakerNote Tag 0x0011")
+
+
+@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+def test_read_maker_note_tags_reads_apple_note_from_heic(tmp_path: Path) -> None:
+    """A HEIC still carrying an Apple MakerNote yields the content identifier."""
+    uuid = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
+    path = tmp_path / "live.heic"
+    exif = _apple_exif(_apple_maker_note(uuid))
+    Image.new("RGB", (8, 8)).save(path, format="HEIF", exif=exif.tobytes())
+
+    assert_that(read_maker_note_tags(path)["Tag 0x0011"]).is_equal_to(uuid)
+
+
+@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+def test_read_maker_note_tags_empty_for_heic_without_maker_note(
+    tmp_path: Path,
+) -> None:
+    """A HEIC with EXIF but no MakerNote yields an empty mapping."""
+    path = tmp_path / "plain.heic"
+    Image.new("RGB", (8, 8)).save(path, format="HEIF", exif=_apple_exif(None).tobytes())
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({})
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        b"Apple iOS\x00\x00\x01MM\x00",
+        b"Apple iOS\x00\x00\x01MM" + struct.pack(">H", 1),
+        _apple_maker_note("A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF")[:-8],
+        b"Apple iOS\x00\x00\x01XX" + struct.pack(">H", 0),
+        b"Canon\x00\x00\x01MM" + struct.pack(">H", 0),
+    ],
+    ids=[
+        "truncated_count",
+        "truncated_entry",
+        "truncated_value",
+        "unknown_byte_order",
+        "not_apple",
+    ],
+)
+def test_read_maker_note_tags_empty_for_malformed_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    note: bytes,
+) -> None:
+    """Truncated or foreign MakerNote bytes degrade to an empty mapping.
+
+    exifread is stubbed out so the assertion isolates the Pillow parser; on a
+    JPEG the exifread fallback would otherwise run on the same bytes.
+    """
+    monkeypatch.setattr(exifread, "process_file", lambda *a, **k: {})
+    path = tmp_path / "broken.jpg"
+    Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({})
+
+
+@pytest.mark.parametrize(
+    ("order", "endian"),
+    [(b"MM", ">"), (b"II", "<")],
+    ids=["big_endian", "little_endian"],
+)
+def test_read_maker_note_tags_skips_non_string_entries(
+    tmp_path: Path,
+    order: bytes,
+    endian: str,
+) -> None:
+    """Inline values decode in either byte order; non-string entries are skipped."""
+    entries = (
+        struct.pack(f"{endian}HHI", 0x0001, 9, 1) + struct.pack(f"{endian}I", 7),
+        struct.pack(f"{endian}HHI", 0x0003, 7, 4) + b"\xff\xfe\x00\x01",
+        struct.pack(f"{endian}HHI", 0x0011, 2, 4) + b"abc\x00",
+    )
+    note = (
+        b"Apple iOS\x00\x00\x01"
+        + order
+        + struct.pack(f"{endian}H", len(entries))
+        + b"".join(entries)
+        + struct.pack(f"{endian}I", 0)
+    )
+    path = tmp_path / "inline.jpg"
+    Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({"Tag 0x0011": "abc"})
+
+
+def test_read_maker_note_tags_falls_back_to_exifread(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Pillow finds no Apple MakerNote, exifread's MakerNote keys are used."""
+    monkeypatch.setattr(
+        exifread,
+        "process_file",
+        lambda handle, details: {
+            "MakerNote Tag 0x0011": "from-exifread",
+            "Image Make": "X",
+        },
+    )
+
+    tags = read_maker_note_tags(fixtures_dir / "sample.jpg")
+
+    assert_that(tags).is_equal_to({"Tag 0x0011": "from-exifread"})
