@@ -99,18 +99,20 @@ class SagaSession:
         """Undo every executed command, newest first, and finish the session.
 
         Each ``undo()`` failure is collected and the remaining commands are
-        still attempted. Calling this again returns the stored errors without
-        touching the filesystem. If finishing the durable session fails, the
-        result is not cached and a later call retries the remaining commands
-        and the session update.
+        still attempted. A failed ``undone`` row write after a successful
+        ``undo()`` is collected too, so a log fault never stops the remaining
+        reverts; the command's effects are already gone from disk. Calling
+        this again returns the stored errors without touching the filesystem.
+        If finishing the durable session fails, the result is not cached and
+        a later call retries the remaining commands and the session update.
 
         Returns:
-            Errors raised while undoing, in the order they occurred; empty
-            when every command was reverted.
+            Errors raised while undoing or recording an undo, in the order
+            they occurred; empty when every command was reverted and recorded.
 
         Raises:
             SagaError: When the session has already been committed, or the
-                log cannot be written.
+                session row cannot be written.
         """
         if self._rollback_errors is not None:
             return self._rollback_errors
@@ -120,10 +122,14 @@ class SagaSession:
         for seq, command in reversed(self._executed):
             try:
                 command.undo()
-                self._log.mark_command(seq=seq, status=CommandStatus.UNDONE)
             except PipelineError as error:
                 errors.append(error)
                 remaining.append((seq, command))
+                continue
+            try:
+                self._log.mark_command(seq=seq, status=CommandStatus.UNDONE)
+            except SagaError as error:
+                errors.append(error)
         self._executed = remaining[::-1]
         self._log.finish_session(
             session_id=self.session_id,
@@ -155,8 +161,8 @@ class SagaSession:
             traceback: Escaping exception traceback, if any.
 
         Returns:
-            ``False`` so the block's exception is never suppressed; undo
-            failures are attached to it with ``add_note``.
+            ``False`` so the block's exception is never suppressed; undo and
+            log failures are attached to it with ``add_note``.
         """
         del traceback
         if self._finished:
@@ -164,7 +170,12 @@ class SagaSession:
         if exc_type is None:
             self.commit()
             return False
-        errors = self.rollback()
+        try:
+            errors: tuple[Exception, ...] = self.rollback()
+        except SagaError as log_error:
+            # The block's exception must win; the session stays open so a
+            # later rollback() can retry the durable write.
+            errors = (log_error,)
         if errors:
             _LOGGER.warning(
                 "saga session %s rollback left %d command(s) unreverted",

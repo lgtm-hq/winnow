@@ -88,7 +88,8 @@ class Saga:
 
         Returns:
             The plan and, unless ``dry_run``, how many commands were reverted
-            and which were skipped.
+            and which were skipped. A command that was reverted but whose
+            ``undone`` row could not be written appears in both counts.
 
         Raises:
             SagaError: When the session is unknown or still ``running``.
@@ -141,19 +142,27 @@ class Saga:
     ) -> int:
         """Rebuild and undo one ``done`` command.
 
+        A row that cannot be rebuilt or reversed is skipped with the reason.
+        When the reversal succeeds but the ``undone`` write fails, the command
+        counts as reverted and the log error is recorded in ``skipped`` so the
+        session finishes ``failed`` instead of aborting the remaining undos.
+
         Args:
             record: Command row to reverse.
-            skipped: Collector appended to when the undo fails.
+            skipped: Collector appended to when the undo or its log write fails.
 
         Returns:
             ``1`` when the command was reverted, ``0`` when it was skipped.
         """
         try:
             _rebuild(record).undo()
-        except PipelineError as error:
+        except (PipelineError, SagaError) as error:
             skipped.append((record, str(error)))
             return 0
-        self._log.mark_command(seq=record.seq, status=CommandStatus.UNDONE)
+        try:
+            self._log.mark_command(seq=record.seq, status=CommandStatus.UNDONE)
+        except SagaError as error:
+            skipped.append((record, f"reverted but not recorded: {error}"))
         return 1
 
 
