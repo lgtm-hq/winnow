@@ -19,6 +19,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from winnow.exceptions import SecurityError
+from winnow.fs.retention import BACKUP_DIRNAME
 from winnow.media.registry import detect_media_type
 from winnow.models.config import WinnowConfig
 from winnow.models.enums import SymlinkPolicy
@@ -29,7 +30,7 @@ from winnow.pipeline.events import StepCompleted, StepProgress, StepStarted
 from winnow.pipeline.state import RunState
 from winnow.security.path_validator import PathValidator
 
-_ALWAYS_SKIPPED: frozenset[str] = frozenset({".winnow-backups", ".winnow-staging"})
+_ALWAYS_SKIPPED: frozenset[str] = frozenset({BACKUP_DIRNAME, ".winnow-staging"})
 _PROGRESS_INTERVAL = 100
 
 
