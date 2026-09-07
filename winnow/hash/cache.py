@@ -174,6 +174,30 @@ class HashCache:
                 details={"entry_count": len(rows)},
             ) from exc
 
+    def stale_paths(self) -> list[str]:
+        """Return cached paths whose source files no longer exist.
+
+        Nothing is deleted; this is the preview half of :meth:`prune_stale`.
+
+        Returns:
+            Distinct cached paths, in database order, whose files are missing.
+
+        Raises:
+            CacheError: If the scan query fails.
+        """
+        try:
+            cursor = self._connection.execute(
+                "SELECT DISTINCT path FROM hash_cache",
+            )
+            paths = [row[0] for row in cursor.fetchall()]
+        except sqlite3.Error as exc:
+            raise CacheError(
+                "Hash cache stale scan failed",
+                operation="cache.stale_paths",
+                file_path=self._db_path,
+            ) from exc
+        return [path for path in paths if not Path(path).exists()]
+
     def prune_stale(self) -> int:
         """Delete cached entries whose source files no longer exist.
 
@@ -184,13 +208,16 @@ class HashCache:
             CacheError: If the scan or deletion fails.
         """
         try:
-            cursor = self._connection.execute(
-                "SELECT DISTINCT path FROM hash_cache",
-            )
-            paths = [row[0] for row in cursor.fetchall()]
-            missing = [path for path in paths if not Path(path).exists()]
-            if not missing:
-                return 0
+            missing = self.stale_paths()
+        except CacheError as exc:
+            raise CacheError(
+                "Hash cache prune failed",
+                operation="cache.prune_stale",
+                file_path=self._db_path,
+            ) from exc
+        if not missing:
+            return 0
+        try:
             deleted = 0
             with self._connection:
                 for chunk in _db.chunked(missing, _db.MAX_SQL_VARIABLES):
