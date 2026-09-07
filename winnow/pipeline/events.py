@@ -2,7 +2,8 @@
 
 Steps report their lifecycle through a :class:`StepEvents` sink so that adapters
 (CLI, API, tests) can observe progress without the steps importing any output
-library. :class:`NullEvents` is the default sink and discards everything.
+library. :class:`NullEvents` is the default sink and discards everything; the
+fan-out sink lives in :mod:`winnow.pipeline.bus`.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from winnow.models.enums import MoveKind
 from winnow.models.pipeline import PipelineStep
 
 
@@ -70,7 +72,43 @@ class StepIssue:
     path: Path | None = None
 
 
-PipelineEvent = StepStarted | StepProgress | StepCompleted | StepIssue
+@dataclass(frozen=True, slots=True)
+class FileMoved:
+    """A step moved one file.
+
+    Args:
+        step: The step that performed the move.
+        source: Path the file was moved from.
+        destination: Path the file was moved to.
+        kind: Why the file was moved.
+    """
+
+    step: PipelineStep
+    source: Path
+    destination: Path
+    kind: MoveKind
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateFound:
+    """A step resolved one duplicate group.
+
+    Args:
+        step: The step that found the group.
+        group_number: 1-based ordinal of the group within the run.
+        files: Every file in the group, including ``best``.
+        best: The file kept in place as the group's best copy.
+    """
+
+    step: PipelineStep
+    group_number: int
+    files: tuple[Path, ...]
+    best: Path
+
+
+PipelineEvent = (
+    StepStarted | StepProgress | StepCompleted | StepIssue | FileMoved | DuplicateFound
+)
 
 
 class StepEvents(Protocol):
@@ -96,6 +134,8 @@ class NullEvents:
 
 
 __all__ = [
+    "DuplicateFound",
+    "FileMoved",
     "NullEvents",
     "PipelineEvent",
     "StepCompleted",

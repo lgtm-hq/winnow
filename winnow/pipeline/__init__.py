@@ -2,13 +2,15 @@
 
 Exposes the command pattern implementations used for reversible file mutations,
 the durable :class:`SagaLog` that records them, the :class:`PipelineContext`
-dependency-injection container that wires services into pipeline steps, and the
+dependency-injection container that wires services into pipeline steps, the
 step contract (:class:`Step`, :class:`RunState`, :class:`StepEvents` and its
-event types) every step builds on.
+event types) every step builds on, and the :class:`EventBus` fan-out sink that
+adapters subscribe to.
 """
 
 from __future__ import annotations
 
+from winnow.pipeline.bus import EventBus, HandlerError
 from winnow.pipeline.commands import (
     Command,
     CopyFile,
@@ -18,6 +20,8 @@ from winnow.pipeline.commands import (
 )
 from winnow.pipeline.context import PipelineContext
 from winnow.pipeline.events import (
+    DuplicateFound,
+    FileMoved,
     NullEvents,
     PipelineEvent,
     StepCompleted,
@@ -46,6 +50,10 @@ __all__ = [
     "CreateDirectory",
     "DeleteFile",
     "DiscoveryStep",
+    "DuplicateFound",
+    "EventBus",
+    "FileMoved",
+    "HandlerError",
     "MoveFile",
     "NullEvents",
     "PipelineContext",
