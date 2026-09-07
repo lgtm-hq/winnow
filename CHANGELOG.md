@@ -21,6 +21,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.2] - 2026-09-07
+
+### Fixed
+
+- **cli**: show WinnowError details in the error panel and stop the circular config hint
+  (#259) (7507ed8)
+
+## [0.37.1] - 2026-09-07
+
+### Fixed
+
+- **classify**: read the Live Photo content identifier from HEIC stills via Pillow
+  (#261) (db368d3)
+
+## [0.37.0] - 2026-09-07
+
+### Added
+
+- **cli**: cache show/clear/prune over the hash cache (#48 PR A) (#239) (9e9bd64)
+
 ## [0.36.1] - 2026-09-07
 
 ### Fixed
