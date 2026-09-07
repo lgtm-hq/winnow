@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.33.0] - 2026-09-07
+
+### Added
+
+- **pipeline**: plugin registry + event bus (#63 PR A) (#232) (fbdc36f)
+
 ## [0.32.0] - 2026-09-07
 
 ### Added
