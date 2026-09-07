@@ -7,10 +7,16 @@ from collections.abc import Mapping
 from dynaconf.utils.parse_conf import boolean_fix, parse_conf_data
 from pydantic import TypeAdapter, ValidationError
 
-from winnow.config.defaults import ENVVAR_PREFIX
+from winnow.config.defaults import (
+    CONFIG_DIR_ENVVAR,
+    DATA_DIR_ENVVAR,
+    ENVVAR_PREFIX,
+)
 from winnow.models.enums import SymlinkPolicy
 
 _ENVVAR_PREFIX = f"{ENVVAR_PREFIX}_"
+_DIRECTORY_ENVVARS = frozenset({CONFIG_DIR_ENVVAR, DATA_DIR_ENVVAR})
+"""Location variables that share the prefix but are not settings overrides."""
 _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
 _BOOL_ADAPTER = TypeAdapter(bool)
@@ -31,7 +37,7 @@ def _load_env_data(
     data: dict[str, object] = {}
     explicit_keys: set[str] = set()
     for env_key, env_value in environ.items():
-        if not env_key.startswith(_ENVVAR_PREFIX):
+        if not env_key.startswith(_ENVVAR_PREFIX) or env_key in _DIRECTORY_ENVVARS:
             continue
         setting_key = env_key.removeprefix(_ENVVAR_PREFIX)
         key_parts = [part.lower() for part in setting_key.split("__") if part]
