@@ -10,7 +10,7 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
-from winnow.cli.errors import ExitCode, WinnowGroup, _describe
+from winnow.cli.errors import ExitCode, WinnowGroup
 from winnow.exceptions import ConfigError, HashError, MediaError
 
 
@@ -153,7 +153,28 @@ def test_config_validate_missing_file_through_main(tmp_path: Path) -> None:
     assert_that(result.stdout).is_empty()
 
 
-def test_describe_renders_pydantic_field_errors() -> None:
+def _invoke_raising(group: WinnowGroup, exc: ConfigError) -> str:
+    """Run a throwaway command that raises ``exc`` and return the stderr panel.
+
+    Args:
+        group: Root group to register the command on.
+        exc: Error the command raises.
+
+    Returns:
+        Everything the root handler printed on stderr.
+    """
+
+    @group.command(name="raise-it")
+    def raise_it() -> None:
+        """Raise the prepared error."""
+        raise exc
+
+    result = CliRunner().invoke(group, ["raise-it"])
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    return result.stderr
+
+
+def test_panel_renders_pydantic_field_errors(group: WinnowGroup) -> None:
     """Pydantic ``errors()`` details render as one ``loc: msg`` line each."""
     exc = ConfigError(
         "Invalid Winnow configuration",
@@ -171,17 +192,15 @@ def test_describe_renders_pydantic_field_errors() -> None:
         },
     )
 
-    text = _describe(exc)
+    stderr = _invoke_raising(group, exc)
 
-    assert_that(text).starts_with(
-        "Invalid Winnow configuration (operation: validate_config, path: /x)",
-    )
-    assert_that(text).contains("cache.enabled: Input should be a valid boolean")
-    assert_that(text).contains("workers: Input should be greater than 0")
-    assert_that(text).does_not_contain("bool_parsing")
+    assert_that(stderr).contains("operation: validate_config")
+    assert_that(stderr).contains("cache.enabled: Input should be a valid boolean")
+    assert_that(stderr).contains("workers: Input should be greater than 0")
+    assert_that(stderr).does_not_contain("bool_parsing")
 
 
-def test_describe_renders_plain_details() -> None:
+def test_panel_renders_plain_details(group: WinnowGroup) -> None:
     """Non-Pydantic details render as ``key: value`` lines."""
     exc = ConfigError(
         "Unable to load Winnow configuration",
@@ -189,18 +208,19 @@ def test_describe_renders_plain_details() -> None:
         details={"error": "mapping values are not allowed here"},
     )
 
-    assert_that(_describe(exc)).contains(
-        "error: mapping values are not allowed here",
-    )
+    stderr = _invoke_raising(group, exc)
+
+    assert_that(stderr).contains("error: mapping values are not allowed here")
 
 
-def test_describe_without_details_is_one_line() -> None:
+def test_panel_without_details_has_no_detail_lines(group: WinnowGroup) -> None:
     """An error with no details keeps the single-line rendering."""
     exc = ConfigError("bad", operation="load_config", file_path="/x")
 
-    assert_that(_describe(exc)).is_equal_to(
-        "bad (operation: load_config, path: /x)",
-    )
+    stderr = _invoke_raising(group, exc)
+
+    assert_that(stderr).contains("bad (operation: load_config, path: /x)")
+    assert_that(stderr).does_not_contain("error:")
 
 
 def test_validate_config_error_hint_does_not_name_config_validate(
