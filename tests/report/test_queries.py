@@ -159,11 +159,17 @@ def seeded_library(report_db: ReportDatabase) -> int:
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
-        (MediaFileFilter(), LIBRARY_SIZE),
-        (MediaFileFilter(media_type="video"), 2),
-        (MediaFileFilter(duplicate_status=DuplicateStatus.GROUPED), 2),
-        (MediaFileFilter(duplicate_status=DuplicateStatus.UNGROUPED), 4),
-        (MediaFileFilter(search="IMG_0001"), 1),
+        (MediaFileFilter(), SORTED_NAMES[MediaFileSort.PATH]),
+        (MediaFileFilter(media_type="video"), ["VID_0001.mp4", "VID_0002.mp4"]),
+        (
+            MediaFileFilter(duplicate_status=DuplicateStatus.GROUPED),
+            ["IMG_0001.jpg", "IMG_0002.jpg"],
+        ),
+        (
+            MediaFileFilter(duplicate_status=DuplicateStatus.UNGROUPED),
+            ["AUD_0001.mp3", "AUD_0002.mp3", "VID_0001.mp4", "VID_0002.mp4"],
+        ),
+        (MediaFileFilter(search="IMG_0001"), ["IMG_0001.jpg"]),
     ],
     ids=["unfiltered", "media_type", "grouped", "ungrouped", "search"],
 )
@@ -171,9 +177,9 @@ def test_list_media_files_page_filters(
     report_db: ReportDatabase,
     seeded_library: int,
     filters: MediaFileFilter,
-    expected: int,
+    expected: list[str],
 ) -> None:
-    """Each filter narrows the page and the total to the documented count."""
+    """Each filter narrows the page to exactly the documented files."""
     result = list_media_files_page(
         report_db,
         filters=filters,
@@ -182,8 +188,8 @@ def test_list_media_files_page_filters(
         page=PageRequest(),
     )
 
-    assert_that(result.items).is_length(expected)
-    assert_that(result.total).is_equal_to(expected)
+    assert_that([item.filename for item in result.items]).is_equal_to(expected)
+    assert_that(result.total).is_equal_to(len(expected))
 
 
 def test_run_id_filter_scopes_to_one_run(
@@ -396,6 +402,77 @@ def test_every_sort_column_orders_ascending(
     names = _all_files(report_db, sort=sort, direction=SortDirection.ASC)
 
     assert_that(names).is_equal_to(SORTED_NAMES[sort])
+
+
+@pytest.fixture
+def undated_file(report_db: ReportDatabase, seeded_library: int) -> str:
+    """Add a file with neither ``creation_date`` nor ``quality_score``.
+
+    Args:
+        report_db: Connected report database fixture.
+        seeded_library: Identifier of the seeded run.
+
+    Returns:
+        The filename of the added row.
+    """
+    name = "UNK_0001.jpg"
+    report_db.add_media_file(
+        run_id=seeded_library,
+        path=ROOT / name,
+        media_type=MediaType.IMAGE,
+        size_bytes=1,
+    )
+    return name
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        MediaFileFilter(created_from="2000-01-01T00:00:00Z"),
+        MediaFileFilter(created_to="2100-01-01T00:00:00Z"),
+    ],
+    ids=["created_from", "created_to"],
+)
+def test_date_window_excludes_undated_file(
+    report_db: ReportDatabase,
+    undated_file: str,
+    filters: MediaFileFilter,
+) -> None:
+    """A NULL ``creation_date`` never satisfies a date bound."""
+    names = _all_files(report_db, filters=filters)
+
+    assert_that(names).does_not_contain(undated_file)
+    assert_that(names).is_equal_to(SORTED_NAMES[MediaFileSort.PATH])
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (
+            SortDirection.ASC,
+            ["UNK_0001.jpg", *SORTED_NAMES[MediaFileSort.QUALITY_SCORE]],
+        ),
+        (
+            SortDirection.DESC,
+            [*reversed(SORTED_NAMES[MediaFileSort.QUALITY_SCORE]), "UNK_0001.jpg"],
+        ),
+    ],
+    ids=["asc_null_first", "desc_null_last"],
+)
+def test_quality_sort_places_null_per_sqlite(
+    report_db: ReportDatabase,
+    undated_file: str,
+    direction: SortDirection,
+    expected: list[str],
+) -> None:
+    """A NULL ``quality_score`` sorts first ascending and last descending."""
+    names = _all_files(
+        report_db,
+        sort=MediaFileSort.QUALITY_SCORE,
+        direction=direction,
+    )
+
+    assert_that(names).is_equal_to(expected)
 
 
 def test_pagination_returns_slice_and_total(
