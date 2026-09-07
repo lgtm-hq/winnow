@@ -38,6 +38,7 @@ _DIGEST_LENGTHS: Mapping[HashAlgorithm, int] = MappingProxyType(
 _LOWER_HEXDIGITS = frozenset(hexdigits.lower())
 _DESERIALIZE_OPERATION = "deserialize_content_hash"
 _CONFIGURE_OPERATION = "configure_content_hasher"
+_CONSTRUCT_OPERATION = "construct_content_hash"
 
 
 def _validate_algorithm(algorithm: HashAlgorithm, *, operation: str) -> None:
@@ -61,6 +62,35 @@ def _validate_algorithm(algorithm: HashAlgorithm, *, operation: str) -> None:
         )
 
 
+def _validate_digest(
+    algorithm: HashAlgorithm,
+    digest: str,
+    *,
+    operation: str,
+) -> None:
+    """Ensure ``digest`` is lowercase hex of ``algorithm``'s expected length.
+
+    Args:
+        algorithm: Content hash algorithm the digest belongs to.
+        digest: Candidate hexadecimal digest.
+        operation: Operation name recorded on any raised error.
+
+    Raises:
+        HashError: If ``digest`` is not lowercase hex of the expected length.
+    """
+    expected_length = _DIGEST_LENGTHS[algorithm]
+    if len(digest) != expected_length or not set(digest) <= _LOWER_HEXDIGITS:
+        raise HashError(
+            "content hash digest must be lowercase hex of the expected length",
+            operation=operation,
+            details={
+                "algorithm": algorithm.value,
+                "digest": digest,
+                "expected_length": expected_length,
+            },
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ContentHash:
     """An exact content digest and the algorithm that produced it.
@@ -68,10 +98,19 @@ class ContentHash:
     Args:
         algorithm: Content hash algorithm (MD5 or SHA-256).
         digest: Lowercase hexadecimal digest, 32 (MD5) or 64 (SHA-256) chars.
+
+    Raises:
+        HashError: If ``algorithm`` is not a content algorithm or ``digest``
+            is not lowercase hex of the algorithm's expected length.
     """
 
     algorithm: HashAlgorithm
     digest: str
+
+    def __post_init__(self) -> None:
+        """Validate the algorithm and digest so every instance round-trips."""
+        _validate_algorithm(self.algorithm, operation=_CONSTRUCT_OPERATION)
+        _validate_digest(self.algorithm, self.digest, operation=_CONSTRUCT_OPERATION)
 
     def serialize(self) -> str:
         """Return a stable string encoding of this hash.
@@ -114,17 +153,7 @@ class ContentHash:
                 details={"algorithm": algorithm_value},
             ) from error
         _validate_algorithm(algorithm, operation=_DESERIALIZE_OPERATION)
-        expected_length = _DIGEST_LENGTHS[algorithm]
-        if len(digest) != expected_length or not set(digest) <= _LOWER_HEXDIGITS:
-            raise HashError(
-                "content hash digest must be lowercase hex of the expected length",
-                operation=_DESERIALIZE_OPERATION,
-                details={
-                    "algorithm": algorithm.value,
-                    "digest": digest,
-                    "expected_length": expected_length,
-                },
-            )
+        _validate_digest(algorithm, digest, operation=_DESERIALIZE_OPERATION)
         return cls(algorithm=algorithm, digest=digest)
 
 

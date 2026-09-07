@@ -180,6 +180,28 @@ def test_deserialize_rejects_malformed(value: str) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("algorithm", "digest"),
+    [
+        pytest.param(HashAlgorithm.SHA256, "A" * 64, id="uppercase_hex"),
+        pytest.param(HashAlgorithm.SHA256, "0" * 32, id="wrong_length"),
+        pytest.param(HashAlgorithm.MD5, "zz" * 16, id="non_hex"),
+        pytest.param(HashAlgorithm.PHASH, "0" * 64, id="perceptual_algorithm"),
+    ],
+)
+def test_construct_rejects_invalid_values(
+    algorithm: HashAlgorithm,
+    digest: str,
+) -> None:
+    """Directly constructed hashes are validated like deserialized ones."""
+    with pytest.raises(HashError) as excinfo:
+        ContentHash(algorithm=algorithm, digest=digest)
+
+    assert_that(excinfo.value.context.operation).is_equal_to(
+        "construct_content_hash",
+    )
+
+
 def test_content_hasher_satisfies_protocol() -> None:
     """``ContentHasher`` satisfies ``ContentHasherProtocol`` at runtime."""
     hasher: ContentHasherProtocol = ContentHasher()
