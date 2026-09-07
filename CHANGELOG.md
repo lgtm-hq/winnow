@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.1] - 2026-09-07
+
+### Fixed
+
+- **classify**: read the Live Photo content identifier from HEIC stills via Pillow
+  (#261) (db368d3)
+
 ## [0.37.0] - 2026-09-07
 
 ### Added
