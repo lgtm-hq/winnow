@@ -103,7 +103,8 @@ not exist they print `no cache database at <path>` and exit 0.
 
 Prints a `Cache` table with one `hash` row (entry count) and a footer
 `Database: <path> (<size>)`. Hit rate is not shown because the counters are per-process.
-Without a database the row reads `0`.
+Without a database the table is still printed: the `hash` row reads `0` and the
+`Database:` footer is replaced by `no cache database at <path>`.
 
 | Flag            | Description                 |
 | --------------- | --------------------------- |
