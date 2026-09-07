@@ -62,8 +62,9 @@ class OperationLog:
             An operation log equal to the one that produced ``data``.
 
         Raises:
-            ValueError: When ``operation`` is missing or either enum value is
-                unknown.
+            ValueError: When ``operation`` is missing, either enum value is
+                unknown, or ``backups``/``created_paths`` is present but not
+                a list of strings.
         """
         operation = data.get("operation")
         if operation is None:

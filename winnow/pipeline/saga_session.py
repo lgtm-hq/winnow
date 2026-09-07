@@ -66,14 +66,18 @@ class SagaSession:
             SagaError: When the session has already been committed or rolled
                 back, or the log cannot be written.
             PipelineError: Re-raised unchanged when the command fails; the
-                command is recorded as ``failed`` first.
+                command is recorded as ``failed`` first. If that write fails,
+                the log error is attached with ``add_note``.
         """
         self._require_open("execute")
         seq = self._log.append_command(session_id=self.session_id, command=command)
         try:
             op_log = command.execute()
-        except PipelineError:
-            self._log.mark_command(seq=seq, status=CommandStatus.FAILED)
+        except PipelineError as error:
+            try:
+                self._log.mark_command(seq=seq, status=CommandStatus.FAILED)
+            except SagaError as log_error:
+                error.add_note(f"failed-row write failed: {log_error}")
             raise
         # Track before marking done: if the log write fails, the command's
         # effects are on disk and must still be covered by rollback().

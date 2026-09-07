@@ -10,7 +10,6 @@ from assertpy import assert_that
 
 from winnow.exceptions import PipelineError, SagaError
 from winnow.pipeline import (
-    CommandRecord,
     CommandStatus,
     MoveFile,
     Saga,
@@ -18,7 +17,6 @@ from winnow.pipeline import (
     SagaSession,
     SessionStatus,
 )
-from winnow.pipeline import saga as saga_module
 
 DIGEST = "0" * 64
 
@@ -250,6 +248,35 @@ def test_failed_mark_done_still_rolls_back_command(
     assert_that(session.executed).is_empty()
 
 
+def test_failed_command_keeps_pipeline_error_when_failed_write_fails(
+    saga: Saga,
+    workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed ``failed``-row write is noted on the command's PipelineError."""
+    source, destination = workspace
+
+    def _boom(**_: object) -> None:
+        raise SagaError("locked", operation="saga.log.mark_command")
+
+    monkeypatch.setattr(saga.log, "mark_command", _boom)
+    with (
+        pytest.raises(PipelineError) as excinfo,
+        _begin(saga, workspace) as session,
+    ):
+        session.execute(_move(source, destination, "missing.txt"))
+
+    assert_that(excinfo.value.__notes__).is_length(1)
+    assert_that(excinfo.value.__notes__[0]).contains("locked")
+    assert_that(session.executed).is_empty()
+    assert_that(_statuses(saga, session.session_id)).is_equal_to(
+        [CommandStatus.IN_PROGRESS],
+    )
+    assert_that(_session_status(saga.log, session.session_id)).is_equal_to(
+        SessionStatus.ROLLED_BACK
+    )
+
+
 def test_rollback_retries_when_finish_session_fails(
     saga: Saga,
     workspace: tuple[Path, Path],
@@ -477,18 +504,25 @@ def test_undo_session_collects_undo_failures(
     )
 
 
-def test_undo_session_skips_malformed_log_and_reverts_the_rest(
+@pytest.mark.parametrize(
+    ("log_json", "match"),
+    [(None, "has no operation log"), ('{"status": "applied"}', "malformed")],
+    ids=["missing_log", "malformed_log"],
+)
+def test_undo_session_skips_unusable_log_and_reverts_the_rest(
     saga: Saga,
     workspace: tuple[Path, Path],
+    log_json: str | None,
+    match: str,
 ) -> None:
-    """A row whose stored log cannot be decoded is skipped, not fatal."""
+    """A ``done`` row whose stored log cannot be rebuilt is skipped, not fatal."""
     source, destination = workspace
     session_id = _run_two_moves(saga, workspace)
     seq_b = saga.log.list_commands(session_id)[1].seq
     with saga.log._store.transaction("corrupt") as connection:
         connection.execute(
             "UPDATE commands SET log_json = ? WHERE seq = ?;",
-            ('{"status": "applied"}', seq_b),
+            (log_json, seq_b),
         )
 
     report = saga.undo_session(session_id)
@@ -497,7 +531,7 @@ def test_undo_session_skips_malformed_log_and_reverts_the_rest(
     assert_that(report.skipped).is_length(1)
     skipped_record, reason = report.skipped[0]
     assert_that(skipped_record.seq).is_equal_to(seq_b)
-    assert_that(reason).contains("malformed")
+    assert_that(reason).contains(match)
     assert_that((source / "a.txt").exists()).is_true()
     assert_that((destination / "b.txt").exists()).is_true()
     assert_that(_session_status(saga.log, session_id)).is_equal_to(SessionStatus.FAILED)
@@ -545,38 +579,3 @@ def test_undo_session_running_raises(
 def test_saga_log_property_returns_log(saga: Saga) -> None:
     """``Saga.log`` exposes the log passed to the constructor."""
     assert_that(saga.log).is_instance_of(SagaLog)
-
-
-def _record(log: dict[str, object] | None) -> CommandRecord:
-    """Build a ``done`` move record with the given stored log.
-
-    Args:
-        log: Serialized operation log, or ``None``.
-
-    Returns:
-        A hand-built command record.
-    """
-    return CommandRecord(
-        seq=1,
-        session_id="s",
-        command_type="move_file",
-        args={"command": "move_file", "source": "/a", "destination": "/b"},
-        log=log,
-        status=CommandStatus.DONE,
-        timestamp="t",
-        completed_at="t",
-    )
-
-
-@pytest.mark.parametrize(
-    ("log", "match"),
-    [(None, "has no operation log"), ({"status": "applied"}, "malformed")],
-    ids=["missing_log", "malformed_log"],
-)
-def test_rebuild_rejects_unusable_log(
-    log: dict[str, object] | None,
-    match: str,
-) -> None:
-    """A record without a decodable log cannot be rebuilt for undo."""
-    with pytest.raises(SagaError, match=match):
-        saga_module._rebuild(_record(log))
