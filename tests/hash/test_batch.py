@@ -267,9 +267,7 @@ def test_valid_seeded_digest_short_circuits_hasher(
 ) -> None:
     """A well-formed seeded cache row is used as-is and the hasher is not called."""
     hasher = _CountingHasher()
-    seeded = PerceptualHash(
-        algorithm=HashAlgorithm.PHASH, hash_size=8, digest="0" * 16
-    )
+    seeded = PerceptualHash(algorithm=HashAlgorithm.PHASH, hash_size=8, digest="0" * 16)
     with HashCache(db_path=tmp_path / "cache.db") as cache:
         key = CacheKey.from_file(image_files[0].path, hasher.cache_algorithm)
         cache.set(key, seeded.serialize())

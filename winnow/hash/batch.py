@@ -98,9 +98,7 @@ def _from_cache(job: _Job, digest: str) -> HashedMedia | None:
     try:
         perceptual_hash = PerceptualHash.deserialize(digest)
     except HashError as exc:
-        logger.debug(
-            "discarding malformed cache row for {}: {}", job.media.path, exc
-        )
+        logger.debug("discarding malformed cache row for {}: {}", job.media.path, exc)
         return None
     return HashedMedia(
         media=job.media, perceptual_hash=perceptual_hash, from_cache=True
