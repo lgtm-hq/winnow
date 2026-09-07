@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.35.0] - 2026-09-07
+
+### Added
+
+- **hash**: add ContentHasher for exact MD5/SHA-256 file digests (#236) (379666a)
+
 ## [0.34.0] - 2026-09-07
 
 ### Added
