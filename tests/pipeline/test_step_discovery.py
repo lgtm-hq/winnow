@@ -384,15 +384,28 @@ def test_discovery_skips_fifo(tmp_path: Path, name: str) -> None:
 
 
 @pytest.mark.skipif(_WINDOWS, reason="hard links behave differently on Windows")
-def test_discovery_skip_policy_keeps_hard_links(tmp_path: Path) -> None:
-    """Outside FOLLOW, two hard links to one inode are both inventoried."""
+@pytest.mark.parametrize(
+    "config",
+    [WinnowConfig(symlink_policy=SymlinkPolicy.SKIP), _follow_config()],
+    ids=["policy=skip", "policy=follow"],
+)
+def test_discovery_keeps_hard_links(tmp_path: Path, config: WinnowConfig) -> None:
+    """Two hard links to one inode are distinct paths and both inventoried."""
     root = tmp_path / "root"
     _write_jpeg(root / "a.jpg")
     os.link(root / "a.jpg", root / "b.jpg")
 
-    state = _run(root, config=WinnowConfig(symlink_policy=SymlinkPolicy.SKIP))
+    state = _run(root, config=config)
 
     assert_that(_relative_paths(state)).is_equal_to(["a.jpg", "b.jpg"])
+    assert_that(state.result.errors).is_empty()
+
+
+def test_discovery_follow_keeps_distinct_regular_files(media_tree: Path) -> None:
+    """Under FOLLOW unrelated regular files are all inventoried without issues."""
+    state = _run(media_tree, config=_follow_config())
+
+    assert_that(state.files).is_length(7)
     assert_that(state.result.errors).is_empty()
 
 
