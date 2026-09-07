@@ -403,11 +403,17 @@ def test_snapshot_get_mismatch_keeps_current_row(
 def test_snapshot_get_still_evicts_corrupt_row(
     cache: MetadataCache,
     media: Path,
+    tmp_path: Path,
 ) -> None:
     """A snapshot lookup still deletes a row whose payload no longer validates."""
     key = MetadataCacheKey.from_file(media)
     cache.put(media, SAMPLE, key=key)
-    _overwrite_row(cache._db_path, path=media, column="payload", value="{not json")
+    _overwrite_row(
+        tmp_path / "cache.db",
+        path=media,
+        column="payload",
+        value="{not json",
+    )
 
     assert_that(cache.get(media, key=key)).is_none()
     assert_that(cache.stats().entry_count).is_equal_to(0)

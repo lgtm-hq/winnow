@@ -5,8 +5,10 @@ The cache maps ``(path, mtime, size)`` keys to a JSON-serialized
 :data:`~winnow.models.media.MEDIA_METADATA_SCHEMA_VERSION` it was written
 under. Entries are invalidated when a file's modification time or size
 changes, when the model schema version moves on, or when the stored payload
-no longer validates; stale rows are deleted on read so ``entry_count`` only
-counts usable rows.
+no longer validates. Eviction is lazy: a stale row is deleted when a live
+:meth:`MetadataCache.get` misses on it, and rows for deleted files go via
+:meth:`MetadataCache.prune_stale`. ``entry_count`` is the raw table size, so
+stale rows that have not been read since the file changed still count.
 
 The store shares ``cache.db`` with :class:`winnow.hash.cache.HashCache` and is
 a pure key/value surface: the "check cache, extract on miss" policy belongs to
