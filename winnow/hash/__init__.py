@@ -20,6 +20,7 @@ from winnow.hash.cache_key import CacheKey
 from winnow.hash.cache_stats import CacheStats
 from winnow.hash.content import (
     CONTENT_ALGORITHMS,
+    DEFAULT_CHUNK_SIZE,
     ContentHash,
     ContentHasher,
     ContentHasherProtocol,
@@ -49,6 +50,7 @@ __all__ = [
     "open_hash_cache",
     "parse_digest",
     "CONTENT_ALGORITHMS",
+    "DEFAULT_CHUNK_SIZE",
     "ContentHash",
     "ContentHasher",
     "ContentHasherProtocol",

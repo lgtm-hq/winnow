@@ -49,9 +49,10 @@ def _validate_algorithm(algorithm: HashAlgorithm, *, operation: str) -> None:
         operation: Operation name recorded on any raised error.
 
     Raises:
-        HashError: If ``algorithm`` is not in :data:`CONTENT_ALGORITHMS`.
+        HashError: If ``algorithm`` is not a :class:`HashAlgorithm` member in
+            :data:`CONTENT_ALGORITHMS` (plain strings are rejected).
     """
-    if algorithm not in CONTENT_ALGORITHMS:
+    if not isinstance(algorithm, HashAlgorithm) or algorithm not in CONTENT_ALGORITHMS:
         raise HashError(
             "algorithm is not a content hash algorithm",
             operation=operation,

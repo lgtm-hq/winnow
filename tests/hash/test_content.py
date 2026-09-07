@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from assertpy import assert_that
@@ -200,6 +200,15 @@ def test_construct_rejects_invalid_values(
     assert_that(excinfo.value.context.operation).is_equal_to(
         "construct_content_hash",
     )
+
+
+def test_raw_string_algorithm_rejected() -> None:
+    """A plain string equal to a member's value is not accepted as an algorithm."""
+    raw = cast("HashAlgorithm", "sha256")
+    with pytest.raises(HashError):
+        ContentHash(algorithm=raw, digest="0" * 64)
+    with pytest.raises(HashError):
+        ContentHasher(algorithm=raw)
 
 
 def test_content_hasher_satisfies_protocol() -> None:
