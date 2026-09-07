@@ -51,6 +51,13 @@ _EXIF_CAPTURED_AT_TAGS: Final[tuple[str, ...]] = (
 _EXIF_IFD_POINTER: Final[int] = 0x8769
 _EXIF_TAG_DATETIME_ORIGINAL: Final[int] = 0x9003
 _EXIF_TAG_DATETIME: Final[int] = 0x0132
+_EXIF_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
+    OSError,
+    ValueError,
+    SyntaxError,
+    KeyError,
+    TypeError,
+)
 
 _MODE_BIT_DEPTH: Final[dict[str, int]] = {
     "1": 1,
@@ -283,12 +290,14 @@ def _captured_at_from_pillow(image: Image.Image) -> datetime | None:
     """
     try:
         exif = image.getexif()
-        candidates = (
-            exif.get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_DATETIME_ORIGINAL),
-            exif.get(_EXIF_TAG_DATETIME),
-        )
-    except (OSError, ValueError, SyntaxError, KeyError, TypeError):
+    except _EXIF_READ_ERRORS:
         return None
+    try:
+        original = exif.get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_DATETIME_ORIGINAL)
+    except _EXIF_READ_ERRORS:
+        # A malformed ExifIFD must not hide a still-valid IFD0 ``DateTime``.
+        original = None
+    candidates = (original, exif.get(_EXIF_TAG_DATETIME))
     return next(
         (
             parsed

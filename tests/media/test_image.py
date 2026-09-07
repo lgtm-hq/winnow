@@ -278,6 +278,26 @@ def test_extract_image_metadata_falls_back_to_ifd0_date_time(tmp_path: Path) -> 
     assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 2, 0, 0, 0))
 
 
+def test_extract_image_metadata_reads_ifd0_date_time_when_exif_ifd_is_broken(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed ExifIFD does not hide a still-valid IFD0 DateTime."""
+    jpeg = tmp_path / "broken-ifd.jpg"
+    exif = Image.Exif()
+    exif[0x0132] = "2024:03:03 00:00:00"
+    Image.new("RGB", (4, 4)).save(jpeg, exif=exif)
+
+    def _broken_get_ifd(self: Image.Exif, tag: int) -> dict[int, object]:
+        raise SyntaxError("corrupt ExifIFD")
+
+    monkeypatch.setattr(Image.Exif, "get_ifd", _broken_get_ifd)
+
+    metadata = extract_image_metadata(jpeg)
+
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 3, 0, 0, 0))
+
+
 def test_extract_image_metadata_falls_back_when_date_time_original_invalid(
     tmp_path: Path,
 ) -> None:
