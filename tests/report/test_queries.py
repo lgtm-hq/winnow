@@ -24,23 +24,68 @@ from winnow.report import (
     list_media_files_page,
     list_runs_page,
 )
-from winnow.report.queries import _media_file_where
 
 ROOT = Path("/library")
 DATE_2023 = datetime(2023, 1, 1, 0, 0, tzinfo=UTC)
 DATE_2024 = datetime(2024, 6, 15, 12, 0, tzinfo=UTC)
 DATE_2025 = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
 
-# (name, media type, size, creation date); sizes are distinct for sort tests.
+# (name, media type, size, creation date, quality score); sizes and quality
+# scores are distinct and ordered differently from the names for sort tests.
 LIBRARY = (
-    ("IMG_0001.jpg", MediaType.IMAGE, 300, DATE_2023),
-    ("IMG_0002.jpg", MediaType.IMAGE, 600, DATE_2024),
-    ("VID_0001.mp4", MediaType.VIDEO, 5000, DATE_2024),
-    ("VID_0002.mp4", MediaType.VIDEO, 4000, DATE_2025),
-    ("AUD_0001.mp3", MediaType.AUDIO, 100, DATE_2024),
-    ("AUD_0002.mp3", MediaType.AUDIO, 200, DATE_2025),
+    ("IMG_0001.jpg", MediaType.IMAGE, 300, DATE_2023, 0.9),
+    ("IMG_0002.jpg", MediaType.IMAGE, 600, DATE_2024, 0.4),
+    ("VID_0001.mp4", MediaType.VIDEO, 5000, DATE_2024, 0.7),
+    ("VID_0002.mp4", MediaType.VIDEO, 4000, DATE_2025, 0.1),
+    ("AUD_0001.mp3", MediaType.AUDIO, 100, DATE_2024, 0.5),
+    ("AUD_0002.mp3", MediaType.AUDIO, 200, DATE_2025, 0.3),
 )
 LIBRARY_SIZE = len(LIBRARY)
+
+# Expected ascending order per sort column; equal creation dates fall back to
+# insertion (``id``) order.
+SORTED_NAMES: dict[MediaFileSort, list[str]] = {
+    MediaFileSort.PATH: [
+        "AUD_0001.mp3",
+        "AUD_0002.mp3",
+        "IMG_0001.jpg",
+        "IMG_0002.jpg",
+        "VID_0001.mp4",
+        "VID_0002.mp4",
+    ],
+    MediaFileSort.FILENAME: [
+        "AUD_0001.mp3",
+        "AUD_0002.mp3",
+        "IMG_0001.jpg",
+        "IMG_0002.jpg",
+        "VID_0001.mp4",
+        "VID_0002.mp4",
+    ],
+    MediaFileSort.SIZE_BYTES: [
+        "AUD_0001.mp3",
+        "AUD_0002.mp3",
+        "IMG_0001.jpg",
+        "IMG_0002.jpg",
+        "VID_0002.mp4",
+        "VID_0001.mp4",
+    ],
+    MediaFileSort.CREATION_DATE: [
+        "IMG_0001.jpg",
+        "IMG_0002.jpg",
+        "VID_0001.mp4",
+        "AUD_0001.mp3",
+        "VID_0002.mp4",
+        "AUD_0002.mp3",
+    ],
+    MediaFileSort.QUALITY_SCORE: [
+        "VID_0002.mp4",
+        "AUD_0002.mp3",
+        "IMG_0002.jpg",
+        "AUD_0001.mp3",
+        "VID_0001.mp4",
+        "IMG_0001.jpg",
+    ],
+}
 
 
 def _all_files(
@@ -91,7 +136,7 @@ def seeded_library(report_db: ReportDatabase) -> int:
             extension=Path(name).suffix,
             size_bytes=size,
         )
-        for name, media_type, size, created in LIBRARY
+        for name, media_type, size, created, _quality in LIBRARY
     ]
     group = DuplicateGroup(
         group_number=1,
@@ -99,7 +144,16 @@ def seeded_library(report_db: ReportDatabase) -> int:
         files=[files[0].path, files[1].path],
         target_path=files[1].path,
     )
-    return export_run(report_db, RunExport(root_path=ROOT, files=files, groups=[group]))
+    quality_scores = {ROOT / name: quality for name, *_rest, quality in LIBRARY}
+    return export_run(
+        report_db,
+        RunExport(
+            root_path=ROOT,
+            files=files,
+            groups=[group],
+            quality_scores=quality_scores,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -258,14 +312,58 @@ def test_hostile_search_returns_normally(
     assert_that(result.total).is_less_than(LIBRARY_SIZE)
 
 
-def test_blank_search_is_no_filter(
+def test_all_filters_combine_to_one_file(
     report_db: ReportDatabase,
     seeded_library: int,
 ) -> None:
-    """A whitespace-only search lists every file."""
-    names = _all_files(report_db, filters=MediaFileFilter(search="   "))
+    """Run, type, group status, date window and search all apply at once."""
+    names = _all_files(
+        report_db,
+        filters=MediaFileFilter(
+            run_id=seeded_library,
+            media_type="image",
+            duplicate_status=DuplicateStatus.GROUPED,
+            created_from="2024-01-01T00:00:00Z",
+            created_to="2025-01-01T00:00:00Z",
+            search="IMG",
+        ),
+    )
 
-    assert_that(names).is_length(LIBRARY_SIZE)
+    assert_that(names).is_equal_to(["IMG_0002.jpg"])
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        MediaFileFilter(search=""),
+        MediaFileFilter(search="   "),
+        MediaFileFilter(media_type=""),
+        MediaFileFilter(media_type=" "),
+        MediaFileFilter(created_from=""),
+        MediaFileFilter(created_from="  "),
+        MediaFileFilter(created_to=""),
+        MediaFileFilter(created_to="\t"),
+    ],
+    ids=[
+        "search_empty",
+        "search_blank",
+        "media_type_empty",
+        "media_type_blank",
+        "created_from_empty",
+        "created_from_blank",
+        "created_to_empty",
+        "created_to_blank",
+    ],
+)
+def test_blank_text_filter_is_no_filter(
+    report_db: ReportDatabase,
+    seeded_library: int,
+    filters: MediaFileFilter,
+) -> None:
+    """An empty or whitespace-only text filter lists every file."""
+    names = _all_files(report_db, filters=filters)
+
+    assert_that(names).is_equal_to(SORTED_NAMES[MediaFileSort.PATH])
 
 
 def test_sort_by_size_descending(
@@ -273,17 +371,15 @@ def test_sort_by_size_descending(
     seeded_library: int,
 ) -> None:
     """``SIZE_BYTES`` / ``DESC`` orders the page by size, largest first."""
-    result = list_media_files_page(
+    names = _all_files(
         report_db,
-        filters=MediaFileFilter(),
         sort=MediaFileSort.SIZE_BYTES,
         direction=SortDirection.DESC,
-        page=PageRequest(),
     )
 
-    sizes = [item.size_bytes for item in result.items]
-    assert_that(sizes).is_equal_to(sorted(sizes, reverse=True))
-    assert_that(sizes).is_length(LIBRARY_SIZE)
+    assert_that(names).is_equal_to(
+        list(reversed(SORTED_NAMES[MediaFileSort.SIZE_BYTES])),
+    )
 
 
 @pytest.mark.parametrize(
@@ -291,15 +387,15 @@ def test_sort_by_size_descending(
     list(MediaFileSort),
     ids=[sort.name for sort in MediaFileSort],
 )
-def test_every_sort_column_is_accepted(
+def test_every_sort_column_orders_ascending(
     report_db: ReportDatabase,
     seeded_library: int,
     sort: MediaFileSort,
 ) -> None:
-    """Every whitelisted sort column produces a full page."""
+    """Every whitelisted sort column yields the expected file sequence."""
     names = _all_files(report_db, sort=sort, direction=SortDirection.ASC)
 
-    assert_that(names).is_length(LIBRARY_SIZE)
+    assert_that(names).is_equal_to(SORTED_NAMES[sort])
 
 
 def test_pagination_returns_slice_and_total(
@@ -400,6 +496,52 @@ def test_list_duplicate_groups_page_filters_by_run(
     assert_that(unscoped.total).is_equal_to(1)
 
 
+def test_list_duplicate_groups_page_paginates_across_runs(
+    report_db: ReportDatabase,
+    seeded_library: int,
+) -> None:
+    """Page 2 of size 2 holds the third group; the total spans both runs."""
+    other_root = ROOT / "other"
+    files = [
+        MediaFile(
+            path=other_root / f"IMG_{index:04d}.jpg",
+            media_type=MediaType.IMAGE,
+            creation_date=DATE_2024,
+            extension=".jpg",
+            size_bytes=index,
+        )
+        for index in range(1, 5)
+    ]
+    groups = [
+        DuplicateGroup(
+            group_number=number,
+            media_type=MediaType.IMAGE,
+            files=[files[2 * (number - 1)].path, files[2 * (number - 1) + 1].path],
+        )
+        for number in (1, 2)
+    ]
+    other = export_run(
+        report_db,
+        RunExport(root_path=other_root, files=files, groups=groups),
+    )
+
+    result = list_duplicate_groups_page(
+        report_db,
+        run_id=None,
+        page=PageRequest(page=2, per_page=2),
+    )
+
+    assert_that(result.total).is_equal_to(3)
+    assert_that(result.page).is_equal_to(2)
+    assert_that(result.items).is_length(1)
+    entry = result.items[0]
+    assert_that(entry.group.run_id).is_equal_to(other)
+    assert_that(entry.group.group_number).is_equal_to(2)
+    assert_that([member.filename for member in entry.members]).is_equal_to(
+        ["IMG_0003.jpg", "IMG_0004.jpg"],
+    )
+
+
 def test_list_runs_page_returns_the_run(
     report_db: ReportDatabase,
     seeded_library: int,
@@ -425,29 +567,3 @@ def test_list_runs_page_paginates(report_db: ReportDatabase) -> None:
 
     assert_that([run.id for run in result.items]).is_equal_to([run_ids[2]])
     assert_that(result.total).is_equal_to(3)
-
-
-def test_media_file_where_binds_every_value() -> None:
-    """The shared WHERE clause binds one parameter per value filter."""
-    where, params = _media_file_where(
-        MediaFileFilter(
-            run_id=7,
-            media_type="image",
-            duplicate_status=DuplicateStatus.GROUPED,
-            created_from="2024-01-01T00:00:00Z",
-            created_to="2025-01-01T00:00:00Z",
-            search="IMG_0001",
-        ),
-    )
-
-    assert_that(where.count("?")).is_equal_to(len(params))
-    assert_that(params[:4]).is_equal_to(
-        [7, "image", "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
-    )
-    assert_that(params).is_length(5)
-    assert_that(where).contains("group_id IS NOT NULL", "MATCH ?")
-
-
-def test_media_file_where_unfiltered_is_empty() -> None:
-    """No filters produce no WHERE clause and no parameters."""
-    assert_that(_media_file_where(MediaFileFilter())).is_equal_to(("", []))

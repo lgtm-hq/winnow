@@ -131,6 +131,9 @@ class Page(Generic[T]):
 class MediaFileFilter:
     """Filters applied to a media-file listing; ``None`` means unfiltered.
 
+    Blank strings (empty or whitespace-only) in any text filter are treated
+    as unset, so transports can pass form values through unchanged.
+
     Args:
         run_id: Restrict to files of this run.
         media_type: Compared verbatim to ``media_files.media_type``.
@@ -139,8 +142,7 @@ class MediaFileFilter:
             stored ``YYYY-MM-DDTHH:MM:SSZ`` format.
         created_to: Exclusive upper bound on ``creation_date`` in the same
             format.
-        search: Free-text FTS query over path, filename and metadata. A
-            blank string is treated as no search.
+        search: Free-text FTS query over path, filename and metadata.
     """
 
     run_id: int | None = None
@@ -157,7 +159,21 @@ class MediaFileFilter:
         Returns:
             ``True`` when ``search`` contains at least one term.
         """
-        return bool(self.search and self.search.strip())
+        return _text_filter(self.search) is not None
+
+
+def _text_filter(value: str | None) -> str | None:
+    """Normalise a text filter, treating blank strings as unset.
+
+    Args:
+        value: Raw filter value.
+
+    Returns:
+        ``None`` when ``value`` is ``None`` or blank, else ``value`` unchanged.
+    """
+    if value is None or not value.strip():
+        return None
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,20 +204,24 @@ def _media_file_where(filters: MediaFileFilter) -> tuple[str, list[object]]:
     if filters.run_id is not None:
         clauses.append("media_files.run_id = ?")
         params.append(filters.run_id)
-    if filters.media_type is not None:
+    media_type = _text_filter(filters.media_type)
+    if media_type is not None:
         clauses.append("media_files.media_type = ?")
-        params.append(filters.media_type)
+        params.append(media_type)
     if filters.duplicate_status is not None:
         clauses.append(_DUPLICATE_STATUS_CLAUSES[filters.duplicate_status])
-    if filters.created_from is not None:
+    created_from = _text_filter(filters.created_from)
+    if created_from is not None:
         clauses.append("media_files.creation_date >= ?")
-        params.append(filters.created_from)
-    if filters.created_to is not None:
+        params.append(created_from)
+    created_to = _text_filter(filters.created_to)
+    if created_to is not None:
         clauses.append("media_files.creation_date < ?")
-        params.append(filters.created_to)
-    if filters.has_search and filters.search is not None:
+        params.append(created_to)
+    search = _text_filter(filters.search)
+    if search is not None:
         clauses.append("media_files_fts MATCH ?")
-        params.append(MediaStore._build_match_query(filters.search))
+        params.append(MediaStore._build_match_query(search))
     if not clauses:
         return "", params
     return " WHERE " + " AND ".join(clauses), params
