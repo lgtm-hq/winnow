@@ -181,6 +181,31 @@ def test_size_change_invalidates(cache: MetadataCache, media: Path) -> None:
     assert_that(cache.get(media)).is_none()
 
 
+def test_changed_file_miss_deletes_stale_row(cache: MetadataCache, media: Path) -> None:
+    """A miss caused by a changed file removes the obsolete row."""
+    cache.put(media, SAMPLE)
+    current = media.stat().st_mtime
+    os.utime(media, (current, current + 5))
+
+    assert_that(cache.get(media)).is_none()
+    assert_that(cache.stats().entry_count).is_equal_to(0)
+
+
+def test_put_with_snapshot_key_ignores_later_change(
+    cache: MetadataCache,
+    media: Path,
+) -> None:
+    """A key taken before extraction keeps a later rewrite from being cached as current."""
+    key = MetadataCacheKey.from_file(media)
+    current = media.stat().st_mtime
+    os.utime(media, (current, current + 5))
+
+    cache.put(media, SAMPLE, key=key)
+
+    assert_that(cache.get(media, key=key)).is_equal_to(SAMPLE)
+    assert_that(cache.get(media)).is_none()
+
+
 def test_stale_schema_version_is_miss_and_deleted(
     cache: MetadataCache,
     media: Path,

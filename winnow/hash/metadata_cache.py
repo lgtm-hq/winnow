@@ -60,17 +60,24 @@ class MetadataCache:
             db_path=self._db_path,
         )
 
-    def get(self, path: Path) -> MediaMetadata | None:
+    def get(
+        self,
+        path: Path,
+        *,
+        key: MetadataCacheKey | None = None,
+    ) -> MediaMetadata | None:
         """Return the cached metadata for ``path`` if the entry is still valid.
 
         A hit requires a row matching the file's current ``mtime`` and
         ``size``, written under the current
         :data:`MEDIA_METADATA_SCHEMA_VERSION`, whose payload validates as
-        :class:`MediaMetadata`. A row failing either of the last two checks is
-        deleted in the same call. An unreadable file is a miss, not an error.
+        :class:`MediaMetadata`. A row failing any of these checks is deleted
+        in the same call. An unreadable file is a miss, not an error.
 
         Args:
             path: Filesystem path of the media file.
+            key: File-state snapshot to look up under. Defaults to the file's
+                current ``mtime`` and ``size``.
 
         Returns:
             The cached metadata, or ``None`` on a miss.
@@ -78,13 +85,14 @@ class MetadataCache:
         Raises:
             CacheError: If the lookup or stale-row deletion fails.
         """
-        try:
-            key = MetadataCacheKey.from_file(path)
-        except CacheError:
-            self._misses += 1
-            return None
+        if key is None:
+            try:
+                key = MetadataCacheKey.from_file(path)
+            except CacheError:
+                self._misses += 1
+                return None
         row = _db.lookup_metadata_row(connection=self._connection, key=key)
-        metadata = self._decode_row(row)
+        metadata = self._decode_row(row, key=key)
         if metadata is None:
             if row is not None:
                 self._delete_row(key)
@@ -93,7 +101,13 @@ class MetadataCache:
         self._hits += 1
         return metadata
 
-    def put(self, path: Path, metadata: MediaMetadata) -> None:
+    def put(
+        self,
+        path: Path,
+        metadata: MediaMetadata,
+        *,
+        key: MetadataCacheKey | None = None,
+    ) -> None:
         """Store or replace the metadata for ``path``.
 
         Degraded-but-valid results (an empty :class:`MediaMetadata` for a video
@@ -102,11 +116,15 @@ class MetadataCache:
         Args:
             path: Filesystem path of the media file.
             metadata: Extracted metadata to persist.
+            key: File-state snapshot the metadata was extracted from. Pass the
+                key taken before extraction so a file rewritten in between is
+                not recorded as current; defaults to the file's state now.
 
         Raises:
             CacheError: If the file metadata cannot be read or the write fails.
         """
-        key = MetadataCacheKey.from_file(path)
+        if key is None:
+            key = MetadataCacheKey.from_file(path)
         try:
             with self._connection:
                 self._connection.execute(
@@ -232,19 +250,28 @@ class MetadataCache:
         self.close()
 
     @staticmethod
-    def _decode_row(row: tuple[int, str] | None) -> MediaMetadata | None:
+    def _decode_row(
+        row: tuple[float, int, int, str] | None,
+        *,
+        key: MetadataCacheKey,
+    ) -> MediaMetadata | None:
         """Turn a stored row into metadata when it is current and valid.
 
         Args:
-            row: ``(schema_version, payload)`` from the database, or ``None``.
+            row: ``(mtime, size, schema_version, payload)`` from the database,
+                or ``None``.
+            key: File state the row must match to count as current.
 
         Returns:
-            The decoded metadata, or ``None`` when there is no row, the schema
-            version is not current, or the payload does not validate.
+            The decoded metadata, or ``None`` when there is no row, the file
+            has changed, the schema version is not current, or the payload
+            does not validate.
         """
         if row is None:
             return None
-        schema_version, payload = row
+        mtime, size, schema_version, payload = row
+        if (mtime, size) != (key.mtime, key.size):
+            return None
         if schema_version != MEDIA_METADATA_SCHEMA_VERSION:
             return None
         try:

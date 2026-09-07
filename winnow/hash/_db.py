@@ -265,25 +265,28 @@ def lookup_metadata_row(
     *,
     connection: sqlite3.Connection,
     key: MetadataCacheKey,
-) -> tuple[int, str] | None:
-    """Return the stored ``(schema_version, payload)`` for a key, or ``None``.
+) -> tuple[float, int, int, str] | None:
+    """Return the row stored for a key's path, or ``None``.
+
+    The row is matched on ``path`` alone so the caller can tell a changed
+    file (row present, ``mtime``/``size`` differ) from an unseen one.
 
     Args:
         connection: Open connection to query.
-        key: Metadata cache key to resolve.
+        key: Metadata cache key whose path to resolve.
 
     Returns:
-        The stored schema version and JSON payload, or ``None`` when no row
-        matches the key's ``path``, ``mtime`` and ``size`` exactly.
+        The stored ``(mtime, size, schema_version, payload)``, or ``None``
+        when no row exists for the key's ``path``.
 
     Raises:
         CacheError: If the lookup query fails.
     """
     try:
         cursor = connection.execute(
-            "SELECT schema_version, payload FROM metadata_cache "
-            "WHERE path = ? AND mtime = ? AND size = ?",
-            (str(key.path), key.mtime, key.size),
+            "SELECT mtime, size, schema_version, payload FROM metadata_cache "
+            "WHERE path = ?",
+            (str(key.path),),
         )
         row = cursor.fetchone()
     except sqlite3.Error as exc:
@@ -294,6 +297,8 @@ def lookup_metadata_row(
         ) from exc
     if row is None:
         return None
-    schema_version: int = row[0]
-    payload: str = row[1]
-    return schema_version, payload
+    mtime: float = row[0]
+    size: int = row[1]
+    schema_version: int = row[2]
+    payload: str = row[3]
+    return mtime, size, schema_version, payload
