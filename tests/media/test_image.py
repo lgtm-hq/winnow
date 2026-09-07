@@ -637,6 +637,28 @@ def test_malformed_apple_note_never_falls_back_to_exifread(
     assert_that(calls).is_empty()
 
 
+def test_unexpected_apple_note_parse_error_never_falls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any parser exception after the Apple signature matched yields {}."""
+    monkeypatch.setattr(
+        exifread,
+        "process_file",
+        lambda *a, **k: {"MakerNote Tag 0x0011": "EXIFREAD-RESCUE"},
+    )
+
+    def _boom(raw: bytes) -> dict[str, str]:
+        raise RuntimeError("unexpected parser failure")
+
+    monkeypatch.setattr(image_module, "_parse_apple_maker_note", _boom)
+    path = tmp_path / "apple.jpg"
+    note = _apple_maker_note("A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF")
+    Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({})
+
+
 def test_heif_encoding_supported_matches_a_real_encode() -> None:
     """The encoder probe agrees with an actual in-memory HEIF save."""
     expected = False

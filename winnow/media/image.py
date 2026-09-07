@@ -63,11 +63,6 @@ _TIFF_TYPE_ASCII: Final[int] = 2
 _TIFF_TYPE_UNDEFINED: Final[int] = 7
 _TIFF_ENTRY_SIZE: Final[int] = 12
 _TIFF_INLINE_VALUE_SIZE: Final[int] = 4
-_MAKER_NOTE_PARSE_ERRORS: Final[tuple[type[Exception], ...]] = (
-    struct.error,
-    IndexError,
-    ValueError,
-)
 _EXIF_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
     OSError,
     ValueError,
@@ -280,7 +275,7 @@ def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str] | None:
         return None
     try:
         return _parse_apple_maker_note(raw)
-    except _MAKER_NOTE_PARSE_ERRORS:
+    except Exception:  # noqa: BLE001 - a recognised Apple note never falls back
         return {}
 
 
