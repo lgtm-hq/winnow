@@ -317,48 +317,56 @@ def test_extract_image_metadata_uses_exifread_when_pillow_cannot_open(
     dated_images_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """exifread is consulted exactly once when Pillow cannot identify a file."""
+    """When Pillow cannot identify a file, metadata comes from the EXIF tags."""
     path = _require_dated(dated_images_dir, "dated.jpg")
-    calls: list[Path] = []
-
-    def counting_read_exif(path: Path) -> dict[str, str]:
-        calls.append(path)
-        return {"EXIF ExifImageWidth": "32"}
 
     def failing_open(*args: object, **kwargs: object) -> None:
         raise UnidentifiedImageError("cannot identify")
 
-    monkeypatch.setattr(image_module, "read_exif", counting_read_exif)
+    monkeypatch.setattr(
+        image_module,
+        "read_exif",
+        lambda path: {
+            "EXIF ExifImageWidth": "32",
+            "EXIF ExifImageLength": "24",
+            "EXIF DateTimeOriginal": "2024:03:01 12:34:56",
+        },
+    )
     monkeypatch.setattr(Image, "open", failing_open)
 
-    extract_image_metadata(path)
+    metadata = extract_image_metadata(path)
 
-    assert_that(calls).is_length(1)
+    assert_that(metadata.width).is_equal_to(32)
+    assert_that(metadata.height).is_equal_to(24)
+    assert_that(metadata.captured_at).is_equal_to(datetime(2024, 3, 1, 12, 34, 56))
 
 
-def test_read_exif_dated_heic_does_not_raise(dated_images_dir: Path) -> None:
-    """exifread's best-effort HEIF path degrades to a mapping, never raises."""
+def test_read_exif_dated_heic_yields_no_capture_date(dated_images_dir: Path) -> None:
+    """exifread cannot supply a HEIC capture date; the mapping lacks the tag."""
     path = _require_dated(dated_images_dir, "dated.heic")
 
-    assert_that(read_exif(path)).is_instance_of(dict)
+    tags = read_exif(path)
+
+    assert_that(tags).does_not_contain_key("EXIF DateTimeOriginal")
+    assert_that(tags).does_not_contain_key("Image DateTime")
 
 
-def test_captured_at_from_pillow_swallows_malformed_exif(
+def test_extract_image_metadata_swallows_malformed_exif(
+    fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A malformed EXIF block yields no capture time instead of raising."""
-    from winnow.media.image import _captured_at_from_pillow
+    """A malformed EXIF block yields dimensions with no capture time."""
 
-    image = Image.new("RGB", (1, 1))
-
-    def _broken_getexif() -> Image.Exif:
+    def _broken_getexif(self: Image.Image) -> Image.Exif:
         raise SyntaxError("not a TIFF header")
 
-    monkeypatch.setattr(image, "getexif", _broken_getexif)
+    monkeypatch.setattr(Image.Image, "getexif", _broken_getexif)
 
-    result = _captured_at_from_pillow(image)
+    metadata = extract_image_metadata(fixtures_dir / "sample.jpg")
 
-    assert_that(result).is_none()
+    assert_that(metadata.width).is_equal_to(8)
+    assert_that(metadata.height).is_equal_to(6)
+    assert_that(metadata.captured_at).is_none()
 
 
 def test_extract_image_metadata_ignores_zero_date_time_original(
