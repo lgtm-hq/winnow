@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.32.0] - 2026-09-07
+
+### Added
+
+- **pipeline**: Discovery step (#53 PR B) (#233) (f014510)
+
 ## [0.31.0] - 2026-09-07
 
 ### Added
