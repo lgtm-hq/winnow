@@ -69,14 +69,14 @@ default.
 ### `winnow cache`
 
 Inspects and manages the perceptual-hash cache database (`cache.db` under
-`cache.directory`). The database is never created by these commands: when the file
-does not exist they print `no cache database at <path>` and exit 0.
+`cache.directory`). The database is never created by these commands: when the file does
+not exist they print `no cache database at <path>` and exit 0.
 
 #### `winnow cache show`
 
 Prints a `Cache` table with one `hash` row (entry count) and a footer
-`Database: <path> (<size>)`. Hit rate is not shown because the counters are
-per-process. Without a database the row reads `0`.
+`Database: <path> (<size>)`. Hit rate is not shown because the counters are per-process.
+Without a database the row reads `0`.
 
 | Flag            | Description                 |
 | --------------- | --------------------------- |
