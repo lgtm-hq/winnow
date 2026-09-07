@@ -29,7 +29,7 @@ from winnow.classify.livephoto import (
     still_content_identifier,
     video_content_identifier,
 )
-from winnow.media.image import heif_supported
+from winnow.media.image import heif_encoding_supported
 
 _UUID = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
 _ROOT = Path("/library")
@@ -253,7 +253,10 @@ def test_still_content_identifier_reads_synthetic_maker_note(
     assert_that(APPLE_CONTENT_IDENTIFIER_TAG).is_equal_to("Tag 0x0011")
 
 
-@pytest.mark.skipif(not heif_supported(), reason="pillow-heif codec unavailable")
+@pytest.mark.skipif(
+    not heif_encoding_supported(),
+    reason="pillow-heif HEIF encoder unavailable",
+)
 def test_find_live_photo_pairs_pairs_heic_still(tmp_path: Path) -> None:
     """A HEIC still with an Apple MakerNote pairs with a video sharing its id."""
     still = tmp_path / "IMG_0001.HEIC"

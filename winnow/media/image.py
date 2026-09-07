@@ -16,6 +16,7 @@ read from Pillow's EXIF first and parsed in-process; ``exifread`` is the fallbac
 
 from __future__ import annotations
 
+import io
 import struct
 from datetime import datetime
 from pathlib import Path
@@ -106,6 +107,24 @@ def heif_supported() -> bool:
         ``True`` when the optional ``pillow-heif`` codec loaded successfully.
     """
     return _HEIF_AVAILABLE
+
+
+def heif_encoding_supported() -> bool:
+    """Report whether Pillow can save HEIF/HEIC files.
+
+    ``pillow-heif`` may be built decoder-only, in which case
+    :func:`heif_supported` is ``True`` but ``Image.save(format="HEIF")`` fails.
+
+    Returns:
+        ``True`` when a tiny in-memory HEIF encode succeeds.
+    """
+    if not _HEIF_AVAILABLE:
+        return False
+    try:
+        Image.new("RGB", (2, 2)).save(io.BytesIO(), format="HEIF")
+    except Exception:  # noqa: BLE001 - codec plugins may raise anything
+        return False
+    return True
 
 
 def extract_image_metadata(path: Path) -> MediaMetadata:
@@ -213,8 +232,11 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
             tags = _maker_note_tags_from_pillow(image)
     except Exception as exc:  # noqa: BLE001 - codec plugins may raise anything
         logger.debug("Pillow MakerNote read failed for {}: {}", path, exc)
-        tags = {}
-    if tags:
+        tags = None
+    if tags is not None:
+        # A recognised Apple MakerNote, even a malformed or empty one, is
+        # authoritative: exifread mis-reads Apple value offsets by 14 bytes and
+        # can yield a truncated, non-empty ``Tag 0x0011`` for the same blob.
         return tags
 
     try:
@@ -231,7 +253,7 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
     }
 
 
-def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str]:
+def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str] | None:
     """Decode the Apple MakerNote from an opened Pillow image's EXIF.
 
     The Apple MakerNote is a 12-byte header (``Apple iOS\\0`` plus a 2-byte
@@ -245,15 +267,17 @@ def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str]:
         image: Opened Pillow image.
 
     Returns:
-        Mapping of ``"Tag 0xNNNN"`` to its decoded string value. Empty when the
-        MakerNote is absent, not Apple's, or malformed.
+        Mapping of ``"Tag 0xNNNN"`` to its decoded string value; empty when the
+        Apple MakerNote is malformed or holds no string entries. ``None`` when
+        the EXIF cannot be read or the MakerNote is absent or not Apple's, so
+        the caller may try another reader.
     """
     try:
         raw = image.getexif().get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_MAKER_NOTE)
     except _EXIF_READ_ERRORS:
-        return {}
+        return None
     if not isinstance(raw, bytes) or not raw.startswith(_APPLE_MAKER_NOTE_SIGNATURE):
-        return {}
+        return None
     try:
         return _parse_apple_maker_note(raw)
     except _MAKER_NOTE_PARSE_ERRORS:

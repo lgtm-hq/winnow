@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import struct
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from winnow.media import image as image_module
 from winnow.media.image import (
     extract_image_metadata,
     generate_thumbnail,
+    heif_encoding_supported,
     heif_supported,
     read_exif,
     read_maker_note_tags,
@@ -581,6 +583,44 @@ def test_read_maker_note_tags_empty_for_malformed_note(
     Image.new("RGB", (8, 8)).save(path, exif=_apple_exif(note))
 
     assert_that(read_maker_note_tags(path)).is_equal_to({})
+
+
+def test_malformed_apple_note_never_falls_back_to_exifread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recognised but malformed Apple MakerNote is authoritative.
+
+    exifread mis-reads Apple value offsets and can return a truncated
+    ``Tag 0x0011`` for the same bytes, which would create a false pairing.
+    """
+    calls: list[str] = []
+
+    def _fake_exifread(*args: object, **kwargs: object) -> dict[str, object]:
+        calls.append("exifread")
+        return {"MakerNote Tag 0x0011": "GARB"}
+
+    monkeypatch.setattr(exifread, "process_file", _fake_exifread)
+    path = tmp_path / "truncated.jpg"
+    Image.new("RGB", (8, 8)).save(
+        path, exif=_apple_exif(b"Apple iOS\x00\x00\x01MM\x00")
+    )
+
+    assert_that(read_maker_note_tags(path)).is_equal_to({})
+    assert_that(calls).is_empty()
+
+
+def test_heif_encoding_supported_matches_a_real_encode() -> None:
+    """The encoder probe agrees with an actual in-memory HEIF save."""
+    expected = False
+    if heif_supported():
+        try:
+            Image.new("RGB", (2, 2)).save(io.BytesIO(), format="HEIF")
+            expected = True
+        except Exception:  # noqa: BLE001 - probing the codec
+            expected = False
+
+    assert_that(heif_encoding_supported()).is_equal_to(expected)
 
 
 @pytest.mark.parametrize(
