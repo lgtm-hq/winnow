@@ -212,10 +212,11 @@ def _check_directory(*, name: str, directory: Path, hint: str = "") -> CheckResu
     Returns:
         A passing result when the directory exists and is writable, a passing
         result when it is absent but its nearest existing ancestor is writable,
-        or a warning when the path is not a directory or cannot be written.
+        or a warning when the path (or an existing ancestor) is not a
+        directory, is a dangling symlink, or cannot be written.
     """
     suffix = f" {hint}" if hint else ""
-    if directory.exists():
+    if directory.exists() or directory.is_symlink():
         if not directory.is_dir():
             return CheckResult(
                 name=name,
@@ -237,6 +238,13 @@ def _check_directory(*, name: str, directory: Path, hint: str = "") -> CheckResu
         (ancestor for ancestor in directory.parents if ancestor.exists()),
         directory.parent,
     )
+    if parent.exists() and not parent.is_dir():
+        return CheckResult(
+            name=name,
+            status=CheckStatus.WARN,
+            detail=f"{directory} cannot be created; {parent} is not a directory."
+            f"{suffix}",
+        )
     if parent.exists() and _directory_is_writable(parent):
         return CheckResult(
             name=name,

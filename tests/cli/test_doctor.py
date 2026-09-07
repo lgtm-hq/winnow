@@ -300,6 +300,32 @@ def test_check_data_dir_warns_when_path_is_a_file(
     assert_that(result.detail).contains("not a directory")
 
 
+def test_check_data_dir_warns_when_ancestor_is_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing data directory under a regular file warns instead of passing."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(blocker / "data"))
+    result = check_data_dir()
+    assert_that(result.status).is_equal_to(CheckStatus.WARN)
+    assert_that(result.detail).contains("is not a directory")
+
+
+def test_check_data_dir_warns_for_dangling_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A data directory override that is a dangling symlink warns."""
+    target = tmp_path / "data"
+    target.symlink_to(tmp_path / "missing")
+    monkeypatch.setenv("WINNOW_DATA_DIR", str(target))
+    result = check_data_dir()
+    assert_that(result.status).is_equal_to(CheckStatus.WARN)
+    assert_that(result.detail).contains("not a directory")
+
+
 def test_check_data_dir_warns_when_uncreatable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
