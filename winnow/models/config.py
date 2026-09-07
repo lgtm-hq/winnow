@@ -39,6 +39,20 @@ class OrganizeSettings(BaseModel):
     max_depth: int | None = Field(default=None, ge=0)
 
 
+class RetentionSettings(BaseModel):
+    """Retention limits applied by ``winnow prune``.
+
+    A value of ``0`` disables pruning for that resource: backups and sessions
+    are never removed by age, and report runs are kept without limit.
+    """
+
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+
+    backup_max_age_days: int = Field(default=30, ge=0)
+    report_max_runs: int = Field(default=100, ge=0)
+    session_max_age_days: int = Field(default=90, ge=0)
+
+
 _MIN_PRINTABLE_CODEPOINT = 0x20
 _YEAR_FOLDER_PATTERN = re.compile(r"^\d{4}$")
 _ROUTING_FOLDER_FIELDS: tuple[str, ...] = (
@@ -142,6 +156,7 @@ class WinnowConfig(BaseModel):
     paths: PathSettings = Field(default_factory=PathSettings)
     organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
     routing: RoutingSettings = Field(default_factory=RoutingSettings)
+    retention: RetentionSettings = Field(default_factory=RetentionSettings)
 
     @model_validator(mode="after")
     def _reject_conflicting_symlink_settings(self) -> Self:
