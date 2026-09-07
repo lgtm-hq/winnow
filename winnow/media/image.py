@@ -9,10 +9,15 @@ Capture dates are read through Pillow's ``Image.getexif()`` for every format
 Pillow can open (including HEIF/HEIC via ``pillow-heif``); ``exifread`` is only
 consulted for files Pillow cannot decode. Only the naive ``DateTimeOriginal`` /
 ``DateTime`` strings are read; the ``OffsetTimeOriginal`` timezone tag is not.
+
+Apple MakerNote tags (which carry the Live Photo content identifier) are likewise
+read from Pillow's EXIF first and parsed in-process; ``exifread`` is the fallback.
 """
 
 from __future__ import annotations
 
+import io
+import struct
 from datetime import datetime
 from pathlib import Path
 from typing import Final
@@ -51,6 +56,13 @@ _EXIF_CAPTURED_AT_TAGS: Final[tuple[str, ...]] = (
 _EXIF_IFD_POINTER: Final[int] = 0x8769
 _EXIF_TAG_DATETIME_ORIGINAL: Final[int] = 0x9003
 _EXIF_TAG_DATETIME: Final[int] = 0x0132
+_EXIF_TAG_MAKER_NOTE: Final[int] = 0x927C
+_APPLE_MAKER_NOTE_SIGNATURE: Final[bytes] = b"Apple iOS\x00"
+_APPLE_MAKER_NOTE_IFD_OFFSET: Final[int] = 14
+_TIFF_TYPE_ASCII: Final[int] = 2
+_TIFF_TYPE_UNDEFINED: Final[int] = 7
+_TIFF_ENTRY_SIZE: Final[int] = 12
+_TIFF_INLINE_VALUE_SIZE: Final[int] = 4
 _EXIF_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
     OSError,
     ValueError,
@@ -90,6 +102,24 @@ def heif_supported() -> bool:
         ``True`` when the optional ``pillow-heif`` codec loaded successfully.
     """
     return _HEIF_AVAILABLE
+
+
+def heif_encoding_supported() -> bool:
+    """Report whether Pillow can save HEIF/HEIC files.
+
+    ``pillow-heif`` may be built decoder-only, in which case
+    :func:`heif_supported` is ``True`` but ``Image.save(format="HEIF")`` fails.
+
+    Returns:
+        ``True`` when a tiny in-memory HEIF encode succeeds.
+    """
+    if not _HEIF_AVAILABLE:
+        return False
+    try:
+        Image.new("RGB", (2, 2)).save(io.BytesIO(), format="HEIF")
+    except Exception:  # noqa: BLE001 - codec plugins may raise anything
+        return False
+    return True
 
 
 def extract_image_metadata(path: Path) -> MediaMetadata:
@@ -176,11 +206,13 @@ _MAKER_NOTE_PREFIX: Final[str] = "MakerNote "
 def read_maker_note_tags(path: Path) -> dict[str, str]:
     """Read decoded MakerNote tags from an image file.
 
-    Unlike :func:`read_exif`, exifread runs with ``details=True`` so vendor
-    MakerNote IFDs (for example Apple's, which carries the Live Photo content
-    identifier in ``Tag 0x0011``) are decoded. Only MakerNote keys are
-    returned, with the ``"MakerNote "`` prefix stripped. Failures degrade to an
-    empty mapping, matching the :func:`read_exif` policy.
+    The Apple MakerNote (which carries the Live Photo content identifier in
+    ``Tag 0x0011``) is read through Pillow's ``getexif()`` first, so every
+    format Pillow can open, HEIF/HEIC included, is covered. When Pillow cannot
+    open the file or finds no Apple MakerNote, exifread runs with
+    ``details=True`` so vendor MakerNote IFDs are decoded. Only MakerNote keys
+    are returned, with the ``"MakerNote "`` prefix stripped. Failures degrade to
+    an empty mapping, matching the :func:`read_exif` policy.
 
     Args:
         path: Filesystem path to the image.
@@ -191,17 +223,103 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
         parsed.
     """
     try:
+        with Image.open(path) as image:
+            tags = _maker_note_tags_from_pillow(image)
+    except Exception as exc:  # noqa: BLE001 - codec plugins may raise anything
+        logger.debug("Pillow MakerNote read failed for {}: {}", path, exc)
+        tags = None
+    if tags is not None:
+        # A recognised Apple MakerNote, even a malformed or empty one, is
+        # authoritative: exifread mis-reads Apple value offsets by 14 bytes and
+        # can yield a truncated, non-empty ``Tag 0x0011`` for the same blob.
+        return tags
+
+    try:
         with path.open("rb") as handle:
-            tags = exifread.process_file(handle, details=True)
+            raw = exifread.process_file(handle, details=True)
     except Exception as exc:  # noqa: BLE001 - exifread may raise struct.error etc.
         logger.debug("MakerNote read failed for {}: {}", path, exc)
         return {}
 
     return {
         name.removeprefix(_MAKER_NOTE_PREFIX): str(value)
-        for name, value in tags.items()
+        for name, value in raw.items()
         if name.startswith(_MAKER_NOTE_PREFIX)
     }
+
+
+def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str] | None:
+    """Decode the Apple MakerNote from an opened Pillow image's EXIF.
+
+    The Apple MakerNote is a 12-byte header (``Apple iOS\\0`` plus a 2-byte
+    version), a 2-byte TIFF byte order mark, then a TIFF IFD at offset 14 whose
+    value offsets are relative to the start of the MakerNote blob. Only ASCII
+    (type 2) and UNDEFINED (type 7) entries are decoded, as NUL-stripped ASCII
+    strings; other types, and UNDEFINED entries holding binary data (such as
+    Apple's bplist payloads), are skipped.
+
+    Args:
+        image: Opened Pillow image.
+
+    Returns:
+        Mapping of ``"Tag 0xNNNN"`` to its decoded string value; empty when the
+        Apple MakerNote is malformed or holds no string entries. ``None`` when
+        the EXIF cannot be read or the MakerNote is absent or not Apple's, so
+        the caller may try another reader.
+    """
+    try:
+        raw = image.getexif().get_ifd(_EXIF_IFD_POINTER).get(_EXIF_TAG_MAKER_NOTE)
+    except _EXIF_READ_ERRORS:
+        return None
+    if not isinstance(raw, bytes) or not raw.startswith(_APPLE_MAKER_NOTE_SIGNATURE):
+        return None
+    try:
+        return _parse_apple_maker_note(raw)
+    except Exception:  # noqa: BLE001 - a recognised Apple note never falls back
+        return {}
+
+
+def _parse_apple_maker_note(note: bytes) -> dict[str, str]:
+    """Parse the TIFF IFD embedded in an Apple MakerNote blob.
+
+    Args:
+        note: Raw MakerNote bytes starting with the ``Apple iOS\\0`` header.
+
+    Returns:
+        Mapping of ``"Tag 0xNNNN"`` to its decoded ASCII value for every ASCII
+        or UNDEFINED entry.
+
+    Raises:
+        ValueError: If the byte order mark is neither ``MM`` nor ``II``.
+        struct.error: If the blob is too short for the IFD it declares.
+    """
+    order = note[_APPLE_MAKER_NOTE_IFD_OFFSET - 2 : _APPLE_MAKER_NOTE_IFD_OFFSET]
+    if order == b"MM":
+        endian = ">"
+    elif order == b"II":
+        endian = "<"
+    else:
+        raise ValueError(f"unknown MakerNote byte order {order!r}")
+
+    (count,) = struct.unpack_from(f"{endian}H", note, _APPLE_MAKER_NOTE_IFD_OFFSET)
+    tags: dict[str, str] = {}
+    for index in range(count):
+        entry_offset = _APPLE_MAKER_NOTE_IFD_OFFSET + 2 + index * _TIFF_ENTRY_SIZE
+        tag, kind, length = struct.unpack_from(f"{endian}HHI", note, entry_offset)
+        if kind not in (_TIFF_TYPE_ASCII, _TIFF_TYPE_UNDEFINED):
+            continue
+        if length <= _TIFF_INLINE_VALUE_SIZE:
+            start = entry_offset + 8
+        else:
+            (start,) = struct.unpack_from(f"{endian}I", note, entry_offset + 8)
+        value = note[start : start + length]
+        if len(value) != length:
+            raise ValueError("MakerNote value runs past the end of the blob")
+        try:
+            tags[f"Tag 0x{tag:04X}"] = value.decode("ascii").strip("\x00")
+        except UnicodeDecodeError:
+            continue
+    return tags
 
 
 def generate_thumbnail(
