@@ -53,6 +53,18 @@ class FileAction(StrEnum):
     SKIP = auto()
 
 
+class MoveKind(StrEnum):
+    """Why the pipeline moved a file.
+
+    Attributes:
+        DATED: Placed into the dated ``YYYY/MM-Month/`` layout.
+        DUPLICATE: Parked as an inferior copy of a duplicate group.
+    """
+
+    DATED = auto()
+    DUPLICATE = auto()
+
+
 class SymlinkPolicy(StrEnum):
     """Symlink handling policies shared by configuration and path validation.
 
