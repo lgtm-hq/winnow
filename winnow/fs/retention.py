@@ -6,6 +6,9 @@ nothing about when the backup was taken: a decade-old photo overwritten
 yesterday would look stale immediately. The backup's ``st_ctime`` is set when
 the staged copy is renamed into place, which is the backup time, so age is
 always measured from ``st_ctime`` here.
+
+Only regular files directly inside a backup directory are pruned. Directory
+backups (``copytree`` copies of a backed-up directory) are left in place.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ def find_backup_directories(root: Path) -> list[Path]:
 
     A backup directory is never descended into, so a ``.winnow-backups`` nested
     inside another backup directory (a backed-up directory tree) is not listed.
+    A symlink named like a backup directory is ignored rather than followed.
 
     Args:
         root: Directory to search within.
@@ -54,9 +58,12 @@ def find_backup_directories(root: Path) -> list[Path]:
     """
     found: list[Path] = []
     for dirpath, dirnames, _filenames in os.walk(root):
-        if BACKUP_DIRNAME in dirnames:
-            found.append(Path(dirpath) / BACKUP_DIRNAME)
-            dirnames.remove(BACKUP_DIRNAME)
+        if BACKUP_DIRNAME not in dirnames:
+            continue
+        dirnames.remove(BACKUP_DIRNAME)
+        backup_dir = Path(dirpath) / BACKUP_DIRNAME
+        if not backup_dir.is_symlink():
+            found.append(backup_dir)
     return sorted(found)
 
 
@@ -84,6 +91,10 @@ def plan_backup_prune(
 
     Returns:
         The selected paths in sorted order and their combined size.
+
+    Raises:
+        FileSystemOperationError: If a backup directory cannot be listed or a
+            candidate cannot be stat'ed.
     """
     if max_age <= timedelta(0):
         return PrunePlan(paths=(), bytes_total=0)
@@ -93,14 +104,22 @@ def plan_backup_prune(
     selected: list[Path] = []
     bytes_total = 0
     for backup_dir in find_backup_directories(root):
-        for candidate in backup_dir.iterdir():
-            if not candidate.is_file() or candidate.is_symlink():
-                continue
-            stat_result = stat(candidate)
-            if stat_result.st_ctime >= cutoff:
-                continue
-            selected.append(candidate)
-            bytes_total += stat_result.st_size
+        try:
+            for candidate in backup_dir.iterdir():
+                if not candidate.is_file() or candidate.is_symlink():
+                    continue
+                stat_result = stat(candidate)
+                if stat_result.st_ctime >= cutoff:
+                    continue
+                selected.append(candidate)
+                bytes_total += stat_result.st_size
+        except OSError as error:
+            raise FileSystemOperationError(
+                "failed to plan backup prune",
+                operation="plan_backup_prune",
+                file_path=backup_dir,
+                details={"error": str(error)},
+            ) from error
     return PrunePlan(paths=tuple(sorted(selected)), bytes_total=bytes_total)
 
 

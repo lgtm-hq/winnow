@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -10,15 +11,20 @@ from assertpy import assert_that
 from click.testing import CliRunner
 
 from winnow.cli import main
+from winnow.cli.errors import ExitCode
 from winnow.config import CONFIG_FILE_NAME
-from winnow.fs.retention import BACKUP_DIRNAME
+from winnow.fs.errors import FileSystemOperationError
+from winnow.fs.retention import BACKUP_DIRNAME, PrunePlan
 
 _DAY_SECONDS = 86400
 
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    """Write a config file with a 30-day backup retention.
+    """Write a config file with a non-default 10-day backup retention.
+
+    The value is deliberately below the ``RetentionSettings`` default so a CLI
+    that ignored the config file would fail these tests.
 
     Args:
         tmp_path: Pytest temporary directory.
@@ -27,13 +33,13 @@ def config_path(tmp_path: Path) -> Path:
         Path to the config file.
     """
     path = tmp_path / CONFIG_FILE_NAME
-    path.write_text("retention:\n  backup_max_age_days: 30\n", encoding="utf-8")
+    path.write_text("retention:\n  backup_max_age_days: 10\n", encoding="utf-8")
     return path
 
 
 @pytest.fixture
 def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """Create a library with one 40-day-old backup and one fresh backup.
+    """Create a library with one 20-day-old backup and one fresh backup.
 
     ``Path.stat`` is patched so the stale file reports a backdated ``st_ctime``.
 
@@ -58,7 +64,7 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path
         if self != stale:
             return result
         fields = list(result)
-        fields[9] = result.st_ctime - 40 * _DAY_SECONDS
+        fields[9] = result.st_ctime - 20 * _DAY_SECONDS
         return os.stat_result(fields)
 
     monkeypatch.setattr(Path, "stat", fake_stat)
@@ -79,7 +85,7 @@ def test_prune_backups_dry_run_lists_without_removing(
 
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains(stale.name).contains("(2.0 KiB)")
-    assert_that(result.output).contains("1 stale backup files (2.0 KiB) (dry run).")
+    assert_that(result.output).contains("1 stale backup file (2.0 KiB) (dry run).")
     assert_that(stale.exists()).is_true()
 
 
@@ -97,7 +103,7 @@ def test_prune_backups_declined_prompt_aborts(
     )
 
     assert_that(result.exit_code).is_equal_to(0)
-    assert_that(result.output).contains("Remove 1 backup files (2.0 KiB)?")
+    assert_that(result.output).contains("Remove 1 backup file (2.0 KiB)?")
     assert_that(result.output).contains("Aborted.")
     assert_that(stale.exists()).is_true()
 
@@ -115,7 +121,7 @@ def test_prune_backups_yes_removes_stale_file(
     )
 
     assert_that(result.exit_code).is_equal_to(0)
-    assert_that(result.output).contains("Removed 1 backup files (2.0 KiB).")
+    assert_that(result.output).contains("Removed 1 backup file (2.0 KiB).")
     assert_that(stale.exists()).is_false()
     assert_that((root / BACKUP_DIRNAME / "new.jpg.1.bak").exists()).is_true()
 
@@ -185,6 +191,33 @@ def test_prune_backups_flag_overrides_config(
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).contains("No stale backups.")
     assert_that(stale.exists()).is_true()
+
+
+def test_prune_backups_failure_exits_with_error(
+    library: tuple[Path, Path],
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prune failure is reported by the root handler with exit code 1."""
+    root, stale = library
+
+    def fail(plan: PrunePlan) -> list[Path]:
+        """Simulate an unwritable backup."""
+        raise FileSystemOperationError(
+            "failed to prune backups",
+            operation="prune_backups",
+            details={"errors": [f"{stale}: locked"]},
+        )
+
+    monkeypatch.setattr(import_module("winnow.cli.prune"), "prune_backups", fail)
+
+    result = CliRunner().invoke(
+        main,
+        ["prune", "backups", str(root), "--yes", "--config", str(config_path)],
+    )
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.output).contains("failed to prune backups")
 
 
 def test_prune_help_lists_backups() -> None:

@@ -141,23 +141,25 @@ several algorithms removes more rows than the prompt's path count).
 
 Removes stale files from the `.winnow-backups` directories that overwriting moves and
 deletes leave next to the original files. Every backup directory under `ROOT` is scanned
-(a backup directory is never descended into); a file is stale when its `st_ctime` (the
-time the backup was written, not the original's mtime) is older than the threshold.
+(a backup directory is never descended into, and a symlink named `.winnow-backups` is
+ignored); a file is stale when its `st_ctime` (the time the backup was written, not the
+original's mtime) is older than the threshold. Only regular files directly inside a
+backup directory are pruned; directory backups are left in place.
 
 ```text
 winnow prune backups [OPTIONS] ROOT
 ```
 
-| Flag                 | Description                                                      |
-| -------------------- | ---------------------------------------------------------------- |
-| `--max-age-days INT` | Age threshold; defaults to `retention.backup_max_age_days`.      |
-| `--dry-run`          | List each stale file, then `N stale backup files (X) (dry run).` |
-| `--yes`, `-y`        | Skip the `Remove N backup files (X)?` prompt.                    |
-| `--config FILE`      | Path to configuration file.                                      |
+| Flag                 | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `--max-age-days INT` | Age threshold; defaults to `retention.backup_max_age_days`.        |
+| `--dry-run`          | List each stale file, then `N stale backup file(s) (X) (dry run).` |
+| `--yes`, `-y`        | Skip the `Remove N backup files (X)?` prompt.                      |
+| `--config FILE`      | Path to configuration file.                                        |
 
 `0` (flag or config) disables pruning. No stale files prints `No stale backups.`; a
 declined prompt prints `Aborted.` and exits 0; success prints
-`Removed N backup files (X).` and removes any backup directory left empty. Nothing is
+`Removed N backup file(s) (X).` and removes any backup directory left empty. Nothing is
 pruned automatically by other commands; retention is applied only when `prune` runs.
 
 ---

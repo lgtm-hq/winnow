@@ -51,6 +51,9 @@ def backups(
 ) -> None:
     """Remove stale .winnow-backups files under ROOT.
 
+    Only regular files inside a backup directory are considered; directory
+    backups are left in place.
+
     \f
 
     Args:
@@ -83,14 +86,27 @@ def backups(
         console.print(f"{path} ({format_size(path.stat().st_size)})")
     count = len(plan.paths)
     total = format_size(plan.bytes_total)
+    noun = _files(count)
 
     if dry_run:
-        console.print(f"{count} stale backup files ({total}) (dry run).")
+        console.print(f"{count} stale backup {noun} ({total}) (dry run).")
         return
 
-    if not yes and not click.confirm(f"Remove {count} backup files ({total})?"):
+    if not yes and not click.confirm(f"Remove {count} backup {noun} ({total})?"):
         console.print("Aborted.")
         return
 
     removed = prune_backups(plan)
-    console.print(f"Removed {len(removed)} backup files ({total}).")
+    console.print(f"Removed {len(removed)} backup {_files(len(removed))} ({total}).")
+
+
+def _files(count: int) -> str:
+    """Return ``file`` or ``files`` to match ``count``.
+
+    Args:
+        count: Number of files being described.
+
+    Returns:
+        The singular or plural noun.
+    """
+    return "file" if count == 1 else "files"

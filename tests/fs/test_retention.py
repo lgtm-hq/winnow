@@ -83,6 +83,41 @@ def test_find_backup_directories_finds_nested_but_does_not_descend(
     )
 
 
+def test_find_backup_directories_ignores_symlinked_backup_dir(
+    tmp_path: Path,
+) -> None:
+    """A symlink named like a backup directory is neither followed nor listed."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.bak").write_bytes(b"v")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / BACKUP_DIRNAME).symlink_to(outside, target_is_directory=True)
+
+    assert_that(find_backup_directories(root)).is_empty()
+
+
+def test_plan_wraps_listing_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``OSError`` while listing a backup directory becomes a domain error."""
+    backup_dir = tmp_path / BACKUP_DIRNAME
+    backup_dir.mkdir()
+
+    def fail(self: Path) -> object:
+        """Simulate an unreadable directory."""
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "iterdir", fail)
+
+    with pytest.raises(FileSystemOperationError) as exc_info:
+        plan_backup_prune(tmp_path, max_age=timedelta(days=1))
+
+    assert_that(exc_info.value.context.operation).is_equal_to("plan_backup_prune")
+    assert_that(str(exc_info.value.context.file_path)).is_equal_to(str(backup_dir))
+
+
 def test_plan_selects_only_files_older_than_max_age(tmp_path: Path) -> None:
     """Only the 40-day-old backup is listed, with its size as the total."""
     old_backup, young_backup, unrelated = _make_tree(tmp_path)
@@ -126,11 +161,13 @@ def test_plan_zero_max_age_is_empty(tmp_path: Path) -> None:
     assert_that(plan).is_equal_to(PrunePlan(paths=(), bytes_total=0))
 
 
-def test_plan_skips_symlinks_and_subdirectories(tmp_path: Path) -> None:
+def test_plan_skips_symlinks_and_directory_backups(tmp_path: Path) -> None:
     """Only regular files directly inside a backup dir are candidates."""
     backup_dir = tmp_path / BACKUP_DIRNAME
     backup_dir.mkdir()
-    (backup_dir / "sub").mkdir()
+    # A ``create_backup``-style directory tree (copytree of a backed-up dir).
+    (backup_dir / "album.deadbeef.bak").mkdir()
+    (backup_dir / "album.deadbeef.bak" / "pic.jpg").write_bytes(b"p")
     target = tmp_path / "target.jpg"
     target.write_bytes(b"t")
     (backup_dir / "link.jpg.0.bak").symlink_to(target)
