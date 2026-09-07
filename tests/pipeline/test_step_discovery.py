@@ -301,7 +301,7 @@ def test_discovery_follow_records_escaping_symlink(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(_WINDOWS, reason="symlink creation needs privileges on Windows")
 def test_discovery_follow_accepts_internal_symlink(tmp_path: Path) -> None:
-    """Under FOLLOW a link whose target stays inside the root is collected."""
+    """Under FOLLOW a link whose target stays inside the root is collected once."""
     root = tmp_path / "root"
     _write_png(root / "real" / "in.png")
     (root / "alias.png").symlink_to(root / "real" / "in.png")
@@ -309,7 +309,103 @@ def test_discovery_follow_accepts_internal_symlink(tmp_path: Path) -> None:
 
     state = _run(root, config=config)
 
-    assert_that(_relative_paths(state)).is_equal_to(["real/in.png", "real/in.png"])
+    assert_that(_relative_paths(state)).is_equal_to(["real/in.png"])
+    assert_that(state.result.errors).is_length(1)
+    assert_that(state.result.errors[0]).contains("alias.png")
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlink creation needs privileges on Windows")
+def test_follow_symlink_to_in_tree_file_is_inventoried_once(tmp_path: Path) -> None:
+    """Under FOLLOW ``b.jpg -> a.jpg`` yields one MediaFile and one issue."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "a.jpg")
+    (root / "b.jpg").symlink_to(root / "a.jpg")
+    events = _RecordingEvents()
+    state = _make_state(root, events=events)
+
+    DiscoveryStep().run(state, context=PipelineContext.from_config(_follow_config()))
+
+    assert_that(state.files).is_length(1)
+    assert_that(state.files[0].path).is_equal_to((root / "a.jpg").resolve())
+    issues = [e for e in events.events if isinstance(e, StepIssue)]
+    assert_that(issues).is_length(1)
+    assert_that(issues[0].path).is_equal_to(root / "b.jpg")
+    assert_that(issues[0].message).contains("already inventoried")
+    assert_that(issues[0].message).ends_with(str(root / "a.jpg"))
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlink creation needs privileges on Windows")
+def test_follow_symlink_sorting_before_target_still_names_the_link(
+    tmp_path: Path,
+) -> None:
+    """When the link sorts first, the issue is still recorded against the link."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "b.jpg")
+    (root / "a.jpg").symlink_to(root / "b.jpg")
+    events = _RecordingEvents()
+    state = _make_state(root, events=events)
+
+    DiscoveryStep().run(state, context=PipelineContext.from_config(_follow_config()))
+
+    assert_that(_relative_paths(state)).is_equal_to(["b.jpg"])
+    issues = [e for e in events.events if isinstance(e, StepIssue)]
+    assert_that(issues).is_length(1)
+    assert_that(issues[0].path).is_equal_to(root / "a.jpg")
+    assert_that(issues[0].message).ends_with(str(root / "b.jpg"))
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlink creation needs privileges on Windows")
+def test_follow_symlink_to_otherwise_skipped_file_still_collected(
+    tmp_path: Path,
+) -> None:
+    """Under FOLLOW a link to an in-tree file never walked directly is kept."""
+    root = tmp_path / "root"
+    _write_png(root / ".hidden" / "x.png")
+    (root / "link.png").symlink_to(root / ".hidden" / "x.png")
+
+    state = _run(root, config=_follow_config())
+
+    assert_that(_relative_paths(state)).is_equal_to([".hidden/x.png"])
+    assert_that(state.result.errors).is_empty()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo is POSIX-only")
+@pytest.mark.parametrize("name", ["pipe", "pipe.jpg"], ids=["no_ext", "media_ext"])
+def test_discovery_skips_fifo(tmp_path: Path, name: str) -> None:
+    """A FIFO is neither inventoried nor reported, whatever its name."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "a.jpg")
+    os.mkfifo(root / name)
+
+    state = _run(root)
+
+    assert_that(_relative_paths(state)).is_equal_to(["a.jpg"])
+    assert_that(state.result.errors).is_empty()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="hard links behave differently on Windows")
+@pytest.mark.parametrize(
+    "config",
+    [WinnowConfig(symlink_policy=SymlinkPolicy.SKIP), _follow_config()],
+    ids=["policy=skip", "policy=follow"],
+)
+def test_discovery_keeps_hard_links(tmp_path: Path, config: WinnowConfig) -> None:
+    """Two hard links to one inode are distinct paths and both inventoried."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "a.jpg")
+    os.link(root / "a.jpg", root / "b.jpg")
+
+    state = _run(root, config=config)
+
+    assert_that(_relative_paths(state)).is_equal_to(["a.jpg", "b.jpg"])
+    assert_that(state.result.errors).is_empty()
+
+
+def test_discovery_follow_keeps_distinct_regular_files(media_tree: Path) -> None:
+    """Under FOLLOW unrelated regular files are all inventoried without issues."""
+    state = _run(media_tree, config=_follow_config())
+
+    assert_that(state.files).is_length(7)
     assert_that(state.result.errors).is_empty()
 
 
