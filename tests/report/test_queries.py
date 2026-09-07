@@ -30,12 +30,14 @@ DATE_2023 = datetime(2023, 1, 1, 0, 0, tzinfo=UTC)
 DATE_2024 = datetime(2024, 6, 15, 12, 0, tzinfo=UTC)
 DATE_2025 = datetime(2025, 1, 1, 0, 0, tzinfo=UTC)
 
-# (name, media type, size, creation date, quality score); sizes and quality
-# scores are distinct and ordered differently from the names for sort tests.
+# (relative path, media type, size, creation date, quality score); sizes and
+# quality scores are distinct and ordered differently from the names for sort
+# tests. ``VID_0001`` lives in a subdirectory so path order differs from
+# filename order (ASCII sorts ``s`` after ``V``).
 LIBRARY = (
     ("IMG_0001.jpg", MediaType.IMAGE, 300, DATE_2023, 0.9),
     ("IMG_0002.jpg", MediaType.IMAGE, 600, DATE_2024, 0.4),
-    ("VID_0001.mp4", MediaType.VIDEO, 5000, DATE_2024, 0.7),
+    ("sub/VID_0001.mp4", MediaType.VIDEO, 5000, DATE_2024, 0.7),
     ("VID_0002.mp4", MediaType.VIDEO, 4000, DATE_2025, 0.1),
     ("AUD_0001.mp3", MediaType.AUDIO, 100, DATE_2024, 0.5),
     ("AUD_0002.mp3", MediaType.AUDIO, 200, DATE_2025, 0.3),
@@ -50,8 +52,8 @@ SORTED_NAMES: dict[MediaFileSort, list[str]] = {
         "AUD_0002.mp3",
         "IMG_0001.jpg",
         "IMG_0002.jpg",
-        "VID_0001.mp4",
         "VID_0002.mp4",
+        "VID_0001.mp4",
     ],
     MediaFileSort.FILENAME: [
         "AUD_0001.mp3",
@@ -160,14 +162,14 @@ def seeded_library(report_db: ReportDatabase) -> int:
     ("filters", "expected"),
     [
         (MediaFileFilter(), SORTED_NAMES[MediaFileSort.PATH]),
-        (MediaFileFilter(media_type="video"), ["VID_0001.mp4", "VID_0002.mp4"]),
+        (MediaFileFilter(media_type="video"), ["VID_0002.mp4", "VID_0001.mp4"]),
         (
             MediaFileFilter(duplicate_status=DuplicateStatus.GROUPED),
             ["IMG_0001.jpg", "IMG_0002.jpg"],
         ),
         (
             MediaFileFilter(duplicate_status=DuplicateStatus.UNGROUPED),
-            ["AUD_0001.mp3", "AUD_0002.mp3", "VID_0001.mp4", "VID_0002.mp4"],
+            ["AUD_0001.mp3", "AUD_0002.mp3", "VID_0002.mp4", "VID_0001.mp4"],
         ),
         (MediaFileFilter(search="IMG_0001"), ["IMG_0001.jpg"]),
     ],
@@ -235,8 +237,8 @@ def test_created_from_is_inclusive(
             "AUD_0001.mp3",
             "AUD_0002.mp3",
             "IMG_0002.jpg",
-            "VID_0001.mp4",
             "VID_0002.mp4",
+            "VID_0001.mp4",
         ],
     )
 
@@ -293,6 +295,34 @@ def test_search_combines_with_other_filters(
     )
 
     assert_that(names).is_equal_to(["AUD_0002.mp3", "AUD_0001.mp3"])
+
+
+def test_search_ties_break_by_rank_then_id(
+    report_db: ReportDatabase,
+    seeded_library: int,
+) -> None:
+    """Among equal creation dates a search orders by FTS rank, then id.
+
+    ``IMG_0002``, ``sub/VID_0001`` and ``AUD_0001`` share a creation date.
+    The subdirectory file carries an extra path token, so BM25 ranks it
+    below the other two, which tie on rank and fall back to insertion order.
+    """
+    names = _all_files(
+        report_db,
+        filters=MediaFileFilter(search="library"),
+        sort=MediaFileSort.CREATION_DATE,
+    )
+
+    assert_that(names).is_equal_to(
+        [
+            "IMG_0001.jpg",
+            "IMG_0002.jpg",
+            "AUD_0001.mp3",
+            "VID_0001.mp4",
+            "VID_0002.mp4",
+            "AUD_0002.mp3",
+        ],
+    )
 
 
 @pytest.mark.parametrize(
