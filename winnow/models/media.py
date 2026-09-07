@@ -5,8 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum, auto
 from pathlib import Path
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
+
+MEDIA_METADATA_SCHEMA_VERSION: Final[int] = 1
+"""Schema version of :class:`MediaMetadata`.
+
+Bump on any field change (add, remove, rename, or retype); consumed by the
+metadata cache (#42) to invalidate entries persisted under an older shape.
+"""
 
 
 class MediaType(StrEnum):
@@ -34,6 +42,7 @@ class MediaMetadata(BaseModel):
     color_mode: str | None = None
     bit_depth: int | None = Field(default=None, ge=0)
     has_alpha: bool | None = None
+    captured_at: datetime | None = None
 
 
 class MediaFile(BaseModel):

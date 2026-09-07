@@ -41,6 +41,7 @@ class SpecialCategory(StrEnum):
     GRAPHIC = auto()
     LIVE_PHOTO = auto()
     REVIEW = auto()
+    AI_GENERATED = auto()
 
 
 class FileAction(StrEnum):
@@ -51,6 +52,18 @@ class FileAction(StrEnum):
     MOVE = auto()
     REVIEW = auto()
     SKIP = auto()
+
+
+class MoveKind(StrEnum):
+    """Why the pipeline moved a file.
+
+    Attributes:
+        DATED: Placed into the dated ``YYYY/MM-Month/`` layout.
+        DUPLICATE: Parked as an inferior copy of a duplicate group.
+    """
+
+    DATED = auto()
+    DUPLICATE = auto()
 
 
 class SymlinkPolicy(StrEnum):
