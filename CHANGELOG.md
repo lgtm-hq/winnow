@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.30.0] - 2026-09-07
+
+### Added
+
+- **media**: captured_at + metadata schema version (#36 PR B) (#226) (4e6f97f)
+
 ## [0.29.0] - 2026-09-06
 
 ### Added
