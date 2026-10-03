@@ -98,11 +98,13 @@ def test_find_empty_directories_cascades_bottom_up(tmp_path: Path) -> None:
 
     result = find_empty_directories(tmp_path)
 
-    assert_that(result).contains_only(
-        tmp_path / "empty" / "nested" / "leaf",
-        tmp_path / "empty" / "nested",
-        tmp_path / "empty",
-        tmp_path / "empty2",
+    assert_that(result).is_equal_to(
+        [
+            tmp_path / "empty" / "nested" / "leaf",
+            tmp_path / "empty" / "nested",
+            tmp_path / "empty",
+            tmp_path / "empty2",
+        ],
     )
     _assert_children_before_parents(result)
 

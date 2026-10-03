@@ -3,7 +3,7 @@
 Removal is bottom-up: a directory is removable only when it holds no files
 and every subdirectory is itself removable, so clearing nested leaves can
 cascade up to their now-empty parents. Sibling subtrees are processed in
-ascending, case-sensitive name order. Callers choose whether the root itself
+ascending, code-point (str) order. Callers choose whether the root itself
 may be removed once everything beneath it is gone.
 """
 
