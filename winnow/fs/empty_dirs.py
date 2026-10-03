@@ -82,15 +82,14 @@ def find_empty_directories(
     ordered: list[Path] = []
     # Only top-down walks honor changes to subdir_names. Reverse the
     # descending traversal to get ascending sibling subtrees in postorder.
-    walked = []
-    for entry in os.walk(root, topdown=True):
-        entry[1].sort(reverse=True)
-        walked.append(entry)
-    for current_path, subdir_names, file_names in reversed(walked):
-        current = Path(current_path)
+    walked: list[tuple[Path, list[str], bool]] = []
+    for current_path, subdir_names, file_names in os.walk(root, topdown=True):
+        subdir_names.sort(reverse=True)
+        walked.append((Path(current_path), subdir_names, bool(file_names)))
+    for current, subdir_names, has_files in reversed(walked):
         if current == root and not include_root:
             continue
-        if file_names:
+        if has_files:
             continue
         if _is_excluded(current, root=root, patterns=exclude_patterns):
             continue

@@ -17,9 +17,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-@pytest.fixture
-def reversed_walk_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Simulate reversed enumeration while honoring top-down walk mutations."""
+@pytest.fixture(params=[False, True], ids=["ascending", "descending"])
+def enumerated_walk_order(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Simulate both enumeration orders and honor top-down walk mutations."""
     real_walk = os.walk
 
     def reversed_walk(
@@ -27,9 +30,9 @@ def reversed_walk_order(monkeypatch: pytest.MonkeyPatch) -> None:
         *,
         topdown: bool = True,
     ) -> Iterator[tuple[str, list[str], list[str]]]:
-        """Visit sibling subtrees backwards unless the caller reorders them."""
+        """Visit sibling subtrees in fixture order unless the caller reorders."""
         row = next(real_walk(root))
-        row[1].sort(reverse=True)
+        row[1].sort(reverse=request.param)
         if topdown:
             yield row
         for name in row[1]:
@@ -42,9 +45,9 @@ def reversed_walk_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_find_empty_directories_orders_sibling_subtrees(
     tmp_path: Path,
-    reversed_walk_order: None,
+    enumerated_walk_order: None,
 ) -> None:
-    """Reversed enumeration still yields ascending postorder across depths."""
+    """Both enumeration orders yield ascending postorder across depths."""
     (tmp_path / "first" / "z" / "leaf").mkdir(parents=True)
     (tmp_path / "first" / "a").mkdir()
     (tmp_path / "second").mkdir()
@@ -256,7 +259,7 @@ def test_remove_empty_tree_on_populated_tree_returns_empty(tmp_path: Path) -> No
 def test_remove_empty_tree_wraps_rmdir_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    reversed_walk_order: None,
+    enumerated_walk_order: None,
 ) -> None:
     """A directory that gains a file after discovery raises a wrapped error."""
     (tmp_path / "first").mkdir()
