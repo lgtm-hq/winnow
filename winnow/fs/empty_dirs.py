@@ -2,7 +2,8 @@
 
 Removal is bottom-up: a directory is removable only when it holds no files
 and every subdirectory is itself removable, so clearing nested leaves can
-cascade up to their now-empty parents. Callers choose whether the root itself
+cascade up to their now-empty parents. Sibling subtrees are processed in
+ascending, case-sensitive name order. Callers choose whether the root itself
 may be removed once everything beneath it is gone.
 """
 
@@ -33,7 +34,7 @@ def _is_excluded(
     relative to ``root`` (using forward slashes), so ``".git"`` and
     ``"cache/*"`` both work as expected. The directory's ancestors below
     ``root`` are checked too, so everything inside an excluded subtree is
-    preserved even though ``os.walk(topdown=False)`` visits it first.
+    preserved even though bottom-up processing considers it first.
 
     Args:
         directory: Directory being considered for removal.
@@ -74,12 +75,18 @@ def find_empty_directories(
             holds no files and every child directory was removable.
 
     Returns:
-        Removable directories ordered so that children precede parents,
-        making them safe to delete sequentially.
+        Removable directories in ascending sibling-subtree order, with
+        children before parents, making them safe to delete sequentially.
     """
     removable: set[Path] = set()
     ordered: list[Path] = []
-    for current_path, subdir_names, file_names in os.walk(root, topdown=False):
+    # Only top-down walks honor changes to subdir_names. Reverse the
+    # descending traversal to get ascending sibling subtrees in postorder.
+    walked = []
+    for entry in os.walk(root, topdown=True):
+        entry[1].sort(reverse=True)
+        walked.append(entry)
+    for current_path, subdir_names, file_names in reversed(walked):
         current = Path(current_path)
         if current == root and not include_root:
             continue
@@ -100,7 +107,7 @@ def remove_empty_tree(
     exclude_patterns: Sequence[str] = (),
     include_root: bool = True,
 ) -> list[Path]:
-    """Remove every empty directory under ``root``, children before parents.
+    """Remove empty directories in ascending sibling order, children first.
 
     Args:
         root: Directory tree to prune.
