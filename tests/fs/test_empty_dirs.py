@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+from contextlib import closing
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from assertpy import assert_that
@@ -12,8 +14,73 @@ from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
 from winnow.fs.errors import FileSystemOperationError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Generator, Iterator, Sequence
     from pathlib import Path
+
+
+@pytest.fixture(params=[False, True], ids=["ascending", "descending"])
+def enumerated_walk_order(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Simulate both enumeration orders and honor top-down walk mutations."""
+    real_walk = os.walk
+
+    def reversed_walk(
+        root: Path,
+        *,
+        topdown: bool = True,
+        onerror: Callable[[OSError], None] | None = None,
+        followlinks: bool = False,
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        """Visit sibling subtrees in fixture order unless the caller reorders."""
+        # os.walk returns a generator; typeshed exposes only Iterator.
+        walk = cast(
+            "Generator[tuple[str, list[str], list[str]], None, None]",
+            real_walk(root, onerror=onerror, followlinks=followlinks),
+        )
+        with closing(walk):
+            row = next(walk)
+        row[1].sort(reverse=request.param)
+        if topdown:
+            yield row
+        for name in row[1]:
+            child = root / name
+            if not followlinks and child.is_symlink():
+                continue
+            yield from reversed_walk(
+                child,
+                topdown=topdown,
+                onerror=onerror,
+                followlinks=followlinks,
+            )
+        if not topdown:
+            yield row
+
+    monkeypatch.setattr(os, "walk", reversed_walk)
+
+
+def test_find_empty_directories_orders_sibling_subtrees(
+    tmp_path: Path,
+    enumerated_walk_order: None,
+) -> None:
+    """Both enumeration orders yield ascending postorder across depths."""
+    (tmp_path / "first" / "z" / "leaf").mkdir(parents=True)
+    (tmp_path / "first" / "a").mkdir()
+    (tmp_path / "second").mkdir()
+
+    result = find_empty_directories(tmp_path, include_root=True)
+
+    assert_that(result).is_equal_to(
+        [
+            tmp_path / "first" / "a",
+            tmp_path / "first" / "z" / "leaf",
+            tmp_path / "first" / "z",
+            tmp_path / "first",
+            tmp_path / "second",
+            tmp_path,
+        ],
+    )
 
 
 def _make_tree(root: Path) -> None:
@@ -31,8 +98,8 @@ def _make_tree(root: Path) -> None:
 def _assert_children_before_parents(paths: Sequence[Path]) -> None:
     """Assert no path is followed by one of its own descendants.
 
-    ``os.walk`` guarantees children before parents but not sibling order, so
-    only the child-before-parent invariant is checked.
+    This helper checks the child-before-parent invariant independently of
+    the sibling ordering covered by the reversed-enumeration regression.
 
     Args:
         paths: Directories in the order they were reported.
@@ -48,11 +115,13 @@ def test_find_empty_directories_cascades_bottom_up(tmp_path: Path) -> None:
 
     result = find_empty_directories(tmp_path)
 
-    assert_that(result).contains_only(
-        tmp_path / "empty" / "nested" / "leaf",
-        tmp_path / "empty" / "nested",
-        tmp_path / "empty",
-        tmp_path / "empty2",
+    assert_that(result).is_equal_to(
+        [
+            tmp_path / "empty" / "nested" / "leaf",
+            tmp_path / "empty" / "nested",
+            tmp_path / "empty",
+            tmp_path / "empty2",
+        ],
     )
     _assert_children_before_parents(result)
 
@@ -209,6 +278,7 @@ def test_remove_empty_tree_on_populated_tree_returns_empty(tmp_path: Path) -> No
 def test_remove_empty_tree_wraps_rmdir_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    enumerated_walk_order: None,
 ) -> None:
     """A directory that gains a file after discovery raises a wrapped error."""
     (tmp_path / "first").mkdir()
