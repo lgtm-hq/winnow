@@ -12,7 +12,7 @@
 # Stage: builder — install deps into .venv with uv
 # -----------------------------------------------------------------------------
 # Renovate manages digest bumps for pinned base images.
-FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 AS builder
+FROM python:3.13-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81 AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc \
     /uv /usr/local/bin/uv
@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage: runtime — slim Python runtime, non-root, entrypoint winnow
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+FROM python:3.13-slim@sha256:bb2988715db2cf7ace7b53f38f3cffbef7c7046a656bee66245eb0ed386e2e81
 
 LABEL org.opencontainers.image.description="Winnow — organize and deduplicate your media library."
 
@@ -45,7 +45,11 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 
-RUN useradd --create-home --no-log-init --uid 1001 --user-group winnow && \
+# The runtime never installs packages: drop the base image's pip (system
+# interpreter, not the venv) so its vendored urllib3/msgpack/pkg_resources
+# copies do not ship in the image.
+RUN /usr/local/bin/python -m pip uninstall --yes --root-user-action=ignore pip && \
+    useradd --create-home --no-log-init --uid 1001 --user-group winnow && \
     chown -R winnow:winnow /app
 
 USER winnow
