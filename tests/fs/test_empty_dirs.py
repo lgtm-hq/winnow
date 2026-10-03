@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from contextlib import closing
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from assertpy import assert_that
@@ -13,7 +14,7 @@ from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
 from winnow.fs.errors import FileSystemOperationError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Generator, Iterator, Sequence
     from pathlib import Path
 
 
@@ -29,14 +30,30 @@ def enumerated_walk_order(
         root: Path,
         *,
         topdown: bool = True,
+        onerror: Callable[[OSError], None] | None = None,
+        followlinks: bool = False,
     ) -> Iterator[tuple[str, list[str], list[str]]]:
         """Visit sibling subtrees in fixture order unless the caller reorders."""
-        row = next(real_walk(root))
+        # os.walk returns a generator; typeshed exposes only Iterator.
+        walk = cast(
+            "Generator[tuple[str, list[str], list[str]], None, None]",
+            real_walk(root, onerror=onerror, followlinks=followlinks),
+        )
+        with closing(walk):
+            row = next(walk)
         row[1].sort(reverse=request.param)
         if topdown:
             yield row
         for name in row[1]:
-            yield from reversed_walk(root / name, topdown=topdown)
+            child = root / name
+            if not followlinks and child.is_symlink():
+                continue
+            yield from reversed_walk(
+                child,
+                topdown=topdown,
+                onerror=onerror,
+                followlinks=followlinks,
+            )
         if not topdown:
             yield row
 
