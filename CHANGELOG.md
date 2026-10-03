@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.5] - 2026-10-03
+
+### Fixed
+
+- **deps**: resolve open security advisories (#278) (b8eca87)
+
 ## [0.37.4] - 2026-09-07
 
 ### Fixed
