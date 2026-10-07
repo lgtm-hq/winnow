@@ -19,13 +19,13 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from winnow.exceptions import PipelineError
 from winnow.models.config import WinnowConfig
+from winnow.pipeline.saga import Saga
 
 if TYPE_CHECKING:
     from winnow.media.service import MetadataService
 
 Hasher = object
 Cache = object
-Saga = object
 Reporter = object
 
 

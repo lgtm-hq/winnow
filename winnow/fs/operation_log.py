@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Self
 
 from winnow.fs.operations import FileOperation, OperationStatus
 
@@ -47,3 +49,75 @@ class OperationLog:
         if self.created_paths:
             result["created_paths"] = [str(path) for path in self.created_paths]
         return result
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> Self:
+        """Rebuild an operation log from its :meth:`as_dict` representation.
+
+        Args:
+            data: Mapping produced by :meth:`as_dict`. Optional keys fall back
+                to the dataclass defaults.
+
+        Returns:
+            An operation log equal to the one that produced ``data``.
+
+        Raises:
+            ValueError: When ``operation`` is missing, either enum value is
+                unknown, ``source``/``destination`` is present but not a
+                string, or ``backups``/``created_paths`` is present but not a
+                list of strings.
+        """
+        operation = data.get("operation")
+        if operation is None:
+            raise ValueError("operation log data is missing 'operation'")
+        return cls(
+            operation=FileOperation(str(operation)),
+            source=_path_from(data.get("source"), key="source"),
+            destination=_path_from(data.get("destination"), key="destination"),
+            backups=_paths_from(data.get("backups")),
+            created_paths=_paths_from(data.get("created_paths")),
+            status=OperationStatus(
+                str(data.get("status", OperationStatus.APPLIED.value)),
+            ),
+        )
+
+
+def _path_from(value: object, *, key: str) -> Path | None:
+    """Decode one optional serialized path.
+
+    Args:
+        value: JSON string, or ``None`` when absent.
+        key: Field name used in the error message.
+
+    Returns:
+        The path, or ``None`` when ``value`` is ``None``.
+
+    Raises:
+        ValueError: When ``value`` is present but not a string.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"operation log '{key}' must be a string")
+    return Path(value)
+
+
+def _paths_from(value: object) -> tuple[Path, ...]:
+    """Decode a serialized path list.
+
+    Args:
+        value: JSON list of path strings, or ``None`` when absent.
+
+    Returns:
+        The paths as a tuple; empty when ``value`` is ``None``.
+
+    Raises:
+        ValueError: When ``value`` is present but not a list of strings.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError("operation log path list must be a list of strings")
+    return tuple(Path(item) for item in value)
