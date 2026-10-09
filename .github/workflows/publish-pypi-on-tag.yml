@@ -24,14 +24,14 @@ jobs:
     name: Generate and verify SBOM
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
     with:
       target: .
       target-type: dir
       sbom-format: cyclonedx-json
       scan-vulnerabilities: true
       create-attestation: true
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: 'd1a4cbe278d60e631d95800f449d25e174140ea1' # v0.77.4
       egress-policy: block
       egress-preset: sbom
     permissions:
@@ -54,7 +54,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -63,7 +63,7 @@ jobs:
       verify-tag-version: true
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: 'd1a4cbe278d60e631d95800f449d25e174140ea1' # v0.77.4
       egress-policy: block
       # Full allowlist (pypi preset + project extras): at v0.69.6
       # harden-runner enforces the caller's allowed-endpoints literally
@@ -122,11 +122,11 @@ jobs:
       - name: Prepare distribution
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+          tooling-ref: 'd1a4cbe278d60e631d95800f449d25e174140ea1' # v0.77.4
           validate: 'false'
       - name: Install and verify CLI
         env:
@@ -177,11 +177,11 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+          tooling-ref: 'd1a4cbe278d60e631d95800f449d25e174140ea1' # v0.77.4
       - name: Upload to PyPI
         # yamllint disable-line rule:line-length
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -200,7 +200,7 @@ jobs:
     needs: [pypi-upload]
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
       # reusable-github-release @ v0.69.6
@@ -210,7 +210,7 @@ jobs:
     with:
       artifact-name: python-dist
       generate-release-notes: true
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: 'd1a4cbe278d60e631d95800f449d25e174140ea1' # v0.77.4
       egress-policy: block
       egress-preset: github-tooling
 
@@ -238,7 +238,7 @@ jobs:
             actions.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@d1a4cbe278d60e631d95800f449d25e174140ea1 # v0.77.4
         with:
           formula: winnow
           version: ${{ needs.pypi-build.outputs.version }}
