@@ -12,6 +12,7 @@ from winnow.models.config import (
     CacheSettings,
     OrganizeSettings,
     PathSettings,
+    RetentionSettings,
     RoutingSettings,
     WinnowConfig,
 )
@@ -34,6 +35,32 @@ def test_winnow_config_defaults() -> None:
     assert_that(config.organize).is_instance_of(OrganizeSettings)
     assert_that(config.organize.max_depth).is_none()
     assert_that(config.routing).is_instance_of(RoutingSettings)
+    assert_that(config.retention).is_instance_of(RetentionSettings)
+
+
+def test_retention_settings_defaults() -> None:
+    """RetentionSettings defaults match the documented retention policy."""
+    retention = WinnowConfig().retention
+
+    assert_that(retention.backup_max_age_days).is_equal_to(30)
+    assert_that(retention.report_max_runs).is_equal_to(100)
+    assert_that(retention.session_max_age_days).is_equal_to(90)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["backup_max_age_days", "report_max_runs", "session_max_age_days"],
+)
+def test_retention_settings_reject_negative_values(field_name: str) -> None:
+    """Every retention limit must be zero or positive."""
+    with pytest.raises(ValidationError):
+        RetentionSettings.model_validate({field_name: -1})
+
+
+def test_retention_settings_reject_unknown_fields() -> None:
+    """Unknown retention keys fail validation loudly."""
+    with pytest.raises(ValidationError):
+        RetentionSettings.model_validate({"bogus": 1})
 
 
 def test_cache_settings_fields_are_enabled_and_directory() -> None:
