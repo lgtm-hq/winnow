@@ -220,12 +220,21 @@ config, caches, hashers, media services, and report writers are constructed once
 passed into steps. This avoids circular imports between CLI subcommands and keeps tests
 able to inject fakes without Click or FastAPI.
 
-### Plugin registry and event bus (planned)
+### Plugin registry and event bus
 
-Epic [#7][epic-7] adds a plugin protocol and event bus so optional extras (e.g.
-`winnow[face]`) register hooks without editing core steps. Plugins initialize in
-topological order; events announce step boundaries for metrics and extensions. No plugin
-API exists in the repository yet.
+`winnow/pipeline/bus.py` provides `EventBus`, a synchronous, ordered, in-process
+implementation of the `StepEvents` seam: steps emit `StepStarted`/`StepProgress`/
+`StepCompleted`/`StepIssue`/`FileMoved`/`DuplicateFound` events, typed subscribers run
+in subscription order followed by `subscribe_all` handlers, and a handler that raises is
+logged and recorded in `handler_errors` without interrupting the step.
+`winnow/pipeline/plugins.py` provides the `FeaturePlugin` protocol (`name`,
+`dependencies`, `setup(context=, bus=)`) and `PluginRegistry`, which registers plugins
+explicitly (no entry points) and initializes them once in Kahn topological order with
+registration order as the tie-break; missing dependencies and cycles raise
+`PipelineError`. Optional extras (e.g. `winnow[face]`) hook in by registering a plugin
+on `PipelineContext.plugins` rather than editing core steps. Two built-ins ship with the
+registry: `LoggingPlugin` mirrors events to loguru and `ProgressPlugin` keeps plain
+counters that CLI and API renderers read; Rich rendering stays in `winnow/cli`.
 
 ## API-first adapters (planned)
 

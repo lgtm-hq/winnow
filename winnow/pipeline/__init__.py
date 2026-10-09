@@ -4,8 +4,9 @@ Exposes the command pattern implementations used for reversible file mutations,
 the durable :class:`SagaLog` that records them, the :class:`PipelineContext`
 dependency-injection container that wires services into pipeline steps, the
 step contract (:class:`Step`, :class:`RunState`, :class:`StepEvents` and its
-event types) every step builds on, and the :class:`EventBus` fan-out sink that
-adapters subscribe to.
+event types) every step builds on, the :class:`EventBus` fan-out sink that
+adapters subscribe to, and the :class:`PluginRegistry` that initializes
+:class:`FeaturePlugin` instances in dependency order.
 """
 
 from __future__ import annotations
@@ -30,6 +31,12 @@ from winnow.pipeline.events import (
     StepProgress,
     StepStarted,
 )
+from winnow.pipeline.plugins import (
+    FeaturePlugin,
+    LoggingPlugin,
+    PluginRegistry,
+    ProgressPlugin,
+)
 from winnow.pipeline.saga_log import SagaLog
 from winnow.pipeline.saga_records import (
     CommandRecord,
@@ -52,12 +59,16 @@ __all__ = [
     "DiscoveryStep",
     "DuplicateFound",
     "EventBus",
+    "FeaturePlugin",
     "FileMoved",
     "HandlerError",
+    "LoggingPlugin",
     "MoveFile",
     "NullEvents",
     "PipelineContext",
     "PipelineEvent",
+    "PluginRegistry",
+    "ProgressPlugin",
     "RunState",
     "SagaLog",
     "SessionRecord",
