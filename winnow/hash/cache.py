@@ -49,13 +49,9 @@ class HashCache:
             self._db_path = Path(db_path)
         self._hits = 0
         self._misses = 0
-        self._connection = _db.connect(
+        self._connection = _db.open_database(
             db_path=self._db_path,
             in_memory=self._in_memory,
-        )
-        _db.initialize_schema(
-            connection=self._connection,
-            db_path=self._db_path,
         )
 
     def get(self, key: CacheKey) -> str | None:
