@@ -24,10 +24,15 @@ jobs:
   #                              test / Aggregate Python Results
   test:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@710c7ba40bf7b48b4d7c3442e3b60fb4b542db91 # v0.77.5
     with:
       publish-test-summary: false
       python-versions: '3.11,3.12,3.13,3.14'
+      # Distinct artifact prefixes (lgtm-ci v0.76 #1091): artifacts are named
+      # <prefix>-results-<version> and <prefix>-coverage. Both calls run 3.13,
+      # so the shared default prefix `python` would let one call's results
+      # overwrite the other's.
+      artifact-prefix: compat
       test-path: tests
       coverage: false
       # Overrides addopts to drop '-m "not integration"': CI runs the full
@@ -36,7 +41,7 @@ jobs:
       draft-pr-skip: true
       job-name: '🧪 Python Compatibility'
       runner-image: ubuntu-24.04
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
       egress-preset: quality
     permissions:
@@ -51,10 +56,11 @@ jobs:
   # Coverage mode: single version with coverage reporting and PR summary
   test-coverage:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@710c7ba40bf7b48b4d7c3442e3b60fb4b542db91 # v0.77.5
     with:
       publish-test-summary: true
       python-version: '3.13'
+      artifact-prefix: coverage
       test-path: tests
       coverage: true
       coverage-format: json
@@ -66,7 +72,7 @@ jobs:
       draft-pr-skip: true
       job-name: Python Coverage
       runner-image: ubuntu-24.04
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
       egress-preset: quality
     permissions:
@@ -86,13 +92,15 @@ jobs:
       needs.test.outputs.passed == 'true' &&
       needs.test-coverage.outputs.passed == 'true'
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python-publish.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python-publish.yml@710c7ba40bf7b48b4d7c3442e3b60fb4b542db91 # v0.77.5
     with:
       coverage-percent: ${{ needs.test-coverage.outputs.coverage-percent }}
+      # Must match test-coverage's artifact-prefix: downloads <prefix>-coverage.
+      artifact-prefix: coverage
       upload-coverage: true
       job-name: Deploy Coverage to Pages
       runner-image: ubuntu-24.04
-      tooling-ref: 'f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f' # v0.69.6
+      tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
       egress-preset: github-pages
     permissions:
