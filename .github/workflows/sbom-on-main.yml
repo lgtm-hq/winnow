@@ -28,8 +28,8 @@ jobs:
       egress-policy: block
       egress-preset: sbom
     permissions:
-      # read: checkout only. Verified against reusable-sbom @ v0.69.6
-      # (f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f): no job in that file
+      # read: checkout only. Verified against reusable-sbom @ v0.77.5
+      # (710c7ba40bf7b48b4d7c3442e3b60fb4b542db91): no job in that file
       # requests contents:write (lgtm-ci #770 moved release-asset upload
       # to reusable-sbom-release-upload.yml).
       contents: read

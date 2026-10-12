@@ -28,9 +28,10 @@ jobs:
     with:
       publish-test-summary: false
       python-versions: '3.11,3.12,3.13,3.14'
-      # Distinct artifact prefixes (lgtm-ci v0.76 #1091): both calls run 3.13,
-      # so the shared default `python-results-3.13` would let one call's
-      # results overwrite the other's.
+      # Distinct artifact prefixes (lgtm-ci v0.76 #1091): artifacts are named
+      # <prefix>-results-<version> and <prefix>-coverage. Both calls run 3.13,
+      # so the shared default prefix `python` would let one call's results
+      # overwrite the other's.
       artifact-prefix: compat
       test-path: tests
       coverage: false

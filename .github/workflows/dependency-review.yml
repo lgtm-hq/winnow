@@ -22,7 +22,7 @@ jobs:
       fail-on-severity: high
       tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
-      # Full allowlist (scorecard preset + project extras): at v0.69.6
+      # Full allowlist (scorecard preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial
       # append lists would block checkout.

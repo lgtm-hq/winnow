@@ -22,6 +22,11 @@ jobs:
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
+      # write: build-provenance attestation of dist/* (attest defaults to
+      # true); reusable-build-python-dist @ v0.77.5 declares both scopes
+      # statically, so they must be granted even with attest: false.
+      id-token: write
+      attestations: write
     with:
       python-version: '3.13'
       verify-tag-version: false
@@ -29,7 +34,7 @@ jobs:
       artifact-name: python-dist
       tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
-      # Full allowlist (pypi preset + project extras): at v0.69.6
+      # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial
       # append lists would block checkout.
@@ -48,6 +53,12 @@ jobs:
         astral.sh:443
         releases.astral.sh:443
         github-releases.githubusercontent.com:443
+        fulcio.sigstore.dev:443
+        rekor.sigstore.dev:443
+        timestamp.sigstore.dev:443
+        tuf-repo-cdn.sigstore.dev:443
+        sigstore-tuf-root.storage.googleapis.com:443
+        oauth2.sigstore.dev:443
 
   pypi-upload:
     name: Upload to TestPyPI

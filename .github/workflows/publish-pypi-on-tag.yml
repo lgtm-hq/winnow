@@ -35,8 +35,8 @@ jobs:
       egress-policy: block
       egress-preset: sbom
     permissions:
-      # read: checkout only. Verified against reusable-sbom @ v0.69.6
-      # (f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f): no job in that file
+      # read: checkout only. Verified against reusable-sbom @ v0.77.5
+      # (710c7ba40bf7b48b4d7c3442e3b60fb4b542db91): no job in that file
       # requests contents:write (lgtm-ci #770 moved release-asset upload
       # to reusable-sbom-release-upload.yml).
       contents: read
@@ -58,6 +58,11 @@ jobs:
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
+      # write: build-provenance attestation of dist/* (attest defaults to
+      # true); reusable-build-python-dist @ v0.77.5 declares both scopes
+      # statically, so they must be granted even with attest: false.
+      id-token: write
+      attestations: write
     with:
       python-version: '3.13'
       verify-tag-version: true
@@ -65,7 +70,7 @@ jobs:
       artifact-name: python-dist
       tooling-ref: '710c7ba40bf7b48b4d7c3442e3b60fb4b542db91' # v0.77.5
       egress-policy: block
-      # Full allowlist (pypi preset + project extras): at v0.69.6
+      # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial
       # append lists would block checkout.
@@ -84,6 +89,12 @@ jobs:
         astral.sh:443
         releases.astral.sh:443
         github-releases.githubusercontent.com:443
+        fulcio.sigstore.dev:443
+        rekor.sigstore.dev:443
+        timestamp.sigstore.dev:443
+        tuf-repo-cdn.sigstore.dev:443
+        sigstore-tuf-root.storage.googleapis.com:443
+        oauth2.sigstore.dev:443
 
   pypi-smoke-test:
     name: Smoke test distribution
@@ -203,8 +214,8 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@710c7ba40bf7b48b4d7c3442e3b60fb4b542db91 # v0.77.5
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
-      # reusable-github-release @ v0.69.6
-      # (f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f): creates the GitHub Release
+      # reusable-github-release @ v0.77.5
+      # (710c7ba40bf7b48b4d7c3442e3b60fb4b542db91): creates the GitHub Release
       # and uploads dist assets
       contents: write
     with:
