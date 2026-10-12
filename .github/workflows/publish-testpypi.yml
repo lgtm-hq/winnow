@@ -53,10 +53,12 @@ jobs:
         astral.sh:443
         releases.astral.sh:443
         github-releases.githubusercontent.com:443
+        release-assets.githubusercontent.com:443
         fulcio.sigstore.dev:443
         rekor.sigstore.dev:443
         timestamp.sigstore.dev:443
         tuf-repo-cdn.sigstore.dev:443
+        tuf-repo.github.com:443
         sigstore-tuf-root.storage.googleapis.com:443
         oauth2.sigstore.dev:443
 
@@ -100,6 +102,7 @@ jobs:
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             oauth2.sigstore.dev:443
       - name: Prepare PyPI upload
         id: prepare

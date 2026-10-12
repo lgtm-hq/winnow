@@ -89,10 +89,12 @@ jobs:
         astral.sh:443
         releases.astral.sh:443
         github-releases.githubusercontent.com:443
+        release-assets.githubusercontent.com:443
         fulcio.sigstore.dev:443
         rekor.sigstore.dev:443
         timestamp.sigstore.dev:443
         tuf-repo-cdn.sigstore.dev:443
+        tuf-repo.github.com:443
         sigstore-tuf-root.storage.googleapis.com:443
         oauth2.sigstore.dev:443
 
@@ -130,6 +132,7 @@ jobs:
             astral.sh:443
             releases.astral.sh:443
             tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -188,6 +191,7 @@ jobs:
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             oauth2.sigstore.dev:443
       - name: Prepare PyPI upload
         id: prepare
