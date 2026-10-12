@@ -28,7 +28,7 @@ jobs:
       # Org ruleset (checks-winnow): security-audit / 🔐 Security Audit
       job-name: '🔐 Security Audit'
       # yamllint disable-line rule:line-length
-      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:95b9fd9d62c3ca1227447467767ec915e78a7eef62282dd18c0b1c02ee4d3887
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:f7c3b4a5f9447ce12879c4b92f3ec7097aa480c925a44a04bc5358dfd70237ed
       runner-image: ubuntu-24.04
       upload-comment-artifact: ${{ github.event_name == 'pull_request' }}
       egress-policy: block

@@ -74,6 +74,10 @@ tools:
     enabled: true
   pydoclint:
     enabled: true
+  # pylint joined lintro's default tool set in 0.171.x; ruff already covers
+  # the selected pylint rules (PLR*), so keep it off to match prior behaviour.
+  pylint:
+    enabled: false
   pytest:
     enabled: true
   gitleaks:
