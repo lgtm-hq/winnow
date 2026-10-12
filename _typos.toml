@@ -1,8 +1,10 @@
 # typos (added to the lintro tool set in 0.171.x) false positives.
-[default.extend-words]
-# Pillow image mode names ("RGBa", "La") are case-sensitive identifiers.
-Ba = "Ba"
+[default.extend-identifiers]
+# Pillow image mode names are case-sensitive identifiers.
 La = "La"
+RGBa = "RGBa"
+
+[default.extend-words]
 # "mis-reads" is intentional hyphenation, not a misspelling of "miss".
 mis = "mis"
 # Accepted spelling variant used in error messages and docstrings.

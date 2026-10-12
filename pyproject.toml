@@ -63,12 +63,19 @@ Issues = "https://github.com/lgtm-hq/winnow/issues"
 [dependency-groups]
 dev = [
   "assertpy>=1.1",
+  # Python linters lintro runs locally; lintro no longer depends on them
+  # (they moved to its "full" extra), so pin them here for `uv sync`.
+  "bandit>=1.9.4",
+  "black>=26.3.1",
   "hypothesis>=6.0",
   "lintro==0.171.3",
   "mypy>=1.14",
+  "pydoclint>=0.8.3",
   "pytest>=8.0",
   "pytest-cov>=6.0",
   "pyyaml>=6.0",
+  "ruff>=0.15.9",
+  "yamllint>=1.37.1",
 ]
 
 [tool.hatch.build.targets.wheel]
