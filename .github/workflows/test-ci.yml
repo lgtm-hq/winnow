@@ -28,6 +28,10 @@ jobs:
     with:
       publish-test-summary: false
       python-versions: '3.11,3.12,3.13,3.14'
+      # Distinct artifact prefixes (lgtm-ci v0.76 #1091): both calls run 3.13,
+      # so the shared default `python-results-3.13` would let one call's
+      # results overwrite the other's.
+      artifact-prefix: compat
       test-path: tests
       coverage: false
       # Overrides addopts to drop '-m "not integration"': CI runs the full
@@ -55,6 +59,7 @@ jobs:
     with:
       publish-test-summary: true
       python-version: '3.13'
+      artifact-prefix: coverage
       test-path: tests
       coverage: true
       coverage-format: json
@@ -89,6 +94,8 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python-publish.yml@710c7ba40bf7b48b4d7c3442e3b60fb4b542db91 # v0.77.5
     with:
       coverage-percent: ${{ needs.test-coverage.outputs.coverage-percent }}
+      # Must match test-coverage's artifact-prefix: downloads <prefix>-coverage.
+      artifact-prefix: coverage
       upload-coverage: true
       job-name: Deploy Coverage to Pages
       runner-image: ubuntu-24.04
