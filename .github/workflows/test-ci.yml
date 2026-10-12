@@ -27,7 +27,7 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@f8f58587e4c324f6f0c9b3b4f59cfc93aa7d5d0f # v0.69.6
     with:
       publish-test-summary: false
-      python-versions: '3.11,3.12,3.13'
+      python-versions: '3.11,3.12,3.13,3.14'
       test-path: tests
       coverage: false
       # Overrides addopts to drop '-m "not integration"': CI runs the full
