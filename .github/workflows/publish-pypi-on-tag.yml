@@ -106,6 +106,9 @@ jobs:
     permissions:
       # read: download python-dist workflow artifact
       contents: read
+      # read: prepare-pypi-upload @ v0.77.5 verifies each dist file's build
+      # attestation (require-attestation defaults to true)
+      attestations: read
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
@@ -126,6 +129,7 @@ jobs:
             files.pythonhosted.org:443
             astral.sh:443
             releases.astral.sh:443
+            tuf-repo-cdn.sigstore.dev:443
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
