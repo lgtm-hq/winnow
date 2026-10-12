@@ -10,7 +10,6 @@ enforce:
 
 execution:
   enabled_tools: []
-  tool_order: 'priority'
   fail_fast: false
   parallel: true
   max_workers: 10
