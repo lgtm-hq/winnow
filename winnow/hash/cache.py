@@ -41,7 +41,6 @@ class HashCache:
     """
 
     def __init__(self, db_path: Path | str | None = None) -> None:
-        """Open the cache database, creating its schema if necessary."""
         self._in_memory = db_path == _db.IN_MEMORY
         if db_path is None:
             self._db_path: Path = _db.default_db_path()
@@ -222,9 +221,10 @@ class HashCache:
             with self._connection:
                 for chunk in _db.chunked(missing, _db.MAX_SQL_VARIABLES):
                     placeholders = ", ".join("?" for _ in chunk)
+                    # Only "?" placeholders are interpolated; values are bound.
                     query = (
                         "DELETE FROM hash_cache "
-                        f"WHERE path IN ({placeholders})"
+                        f"WHERE path IN ({placeholders})"  # nosec B608
                     )
                     result = self._connection.execute(query, tuple(chunk))
                     deleted += result.rowcount
