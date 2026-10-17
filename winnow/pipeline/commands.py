@@ -106,6 +106,26 @@ class Command(ABC):
             ) from error
         self._log = None
 
+    def restore_log(self, log: OperationLog) -> None:
+        """Attach the operation log of an execution performed by another instance.
+
+        Lets a command rebuilt via :meth:`from_dict` be reversed with
+        :meth:`undo` using a log persisted elsewhere (for example the saga
+        session log).
+
+        Args:
+            log: Operation log recorded when the original instance executed.
+
+        Raises:
+            PipelineError: When the command already holds an operation log.
+        """
+        if self._log is not None:
+            raise PipelineError(
+                "command already has an operation log",
+                operation=f"pipeline.{self.command_name}.restore_log",
+            )
+        self._log = log
+
     def to_dict(self) -> dict[str, object]:
         """Serialize the command to a JSON-friendly dict.
 
