@@ -36,6 +36,8 @@ from winnow.hash.image_hasher import (
     PerceptualHash,
     hash_image,
 )
+from winnow.hash.metadata_cache import MetadataCache
+from winnow.hash.metadata_cache_key import MetadataCacheKey
 from winnow.hash.protocol import PerceptualHasher
 
 __all__ = [
@@ -52,6 +54,8 @@ __all__ = [
     "hash_image",
     "open_hash_cache",
     "parse_digest",
+    "MetadataCache",
+    "MetadataCacheKey",
     "BatchHashResult",
     "HashFailure",
     "HashedMedia",
