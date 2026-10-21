@@ -12,7 +12,7 @@
 # Stage: builder — install deps into .venv with uv
 # -----------------------------------------------------------------------------
 # Renovate manages digest bumps for pinned base images.
-FROM python:3.14-slim@sha256:29e1fe7a54021a1d8990f59223f1246a4239b106895363680b23aa1265f73cb3 AS builder
+FROM python:3.14-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b \
     /uv /usr/local/bin/uv
@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage: runtime — slim Python runtime, non-root, entrypoint winnow
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim@sha256:29e1fe7a54021a1d8990f59223f1246a4239b106895363680b23aa1265f73cb3
+FROM python:3.14-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
 
 LABEL org.opencontainers.image.description="Winnow — organize and deduplicate your media library."
 
