@@ -37,7 +37,7 @@ jobs:
   # Gate cleanup on package existence: lgtm-ci reusable fails hard when the
   # GHCR package is absent, so check first to keep scheduled runs safe.
   check-package:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read # checkout for the package existence script
