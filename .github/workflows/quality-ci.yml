@@ -32,7 +32,7 @@ jobs:
       job-name: '🛠️ Lintro Code Quality'
       # yamllint disable-line rule:line-length
       lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:116e60912a8c7a2002349ef096cfa93644314492751746aacdd5ef228c74306f
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: quality
 
   publish-quality-summary:
@@ -55,5 +55,5 @@ jobs:
     with:
       exit-code: ${{ needs.quality.outputs.exit-code }}
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: github-tooling

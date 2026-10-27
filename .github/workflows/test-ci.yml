@@ -42,7 +42,7 @@ jobs:
       job-name: '🧪 Python Compatibility'
       runner-image: ubuntu-24.04
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: quality
     permissions:
       # write: merge matrix artifacts and update workflow summaries
@@ -73,7 +73,7 @@ jobs:
       job-name: Python Coverage
       runner-image: ubuntu-24.04
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: quality
     permissions:
       # write: merge coverage artifacts and update workflow summaries
@@ -101,7 +101,7 @@ jobs:
       job-name: Deploy Coverage to Pages
       runner-image: ubuntu-24.04
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: github-pages
     permissions:
       # read: download coverage artifacts from the test job
