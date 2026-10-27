@@ -41,7 +41,7 @@ jobs:
       # lgtm-ci-owned paths that do not exist in consumer repositories.
       # yamllint disable-line rule:line-length
       lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:116e60912a8c7a2002349ef096cfa93644314492751746aacdd5ef228c74306f
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: quality
     permissions:
       # read: read pyproject.toml and workflow files for version sync checks

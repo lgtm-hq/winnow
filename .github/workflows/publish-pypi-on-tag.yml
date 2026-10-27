@@ -32,7 +32,7 @@ jobs:
       scan-vulnerabilities: true
       create-attestation: true
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: sbom
     permissions:
       # read: checkout only. Verified against reusable-sbom @ v0.77.5
@@ -69,7 +69,7 @@ jobs:
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial
@@ -116,7 +116,7 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
-          egress-policy: block
+          egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
           # lgtm-ci workflow-contract.md § PyPI build + smoke install
           allowed-endpoints: >
             github.com:443
@@ -173,7 +173,7 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
-          egress-policy: block
+          egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
           # lgtm-ci workflow-contract.md § PyPI upload (OIDC)
           allowed-endpoints: >
             github.com:443
@@ -232,7 +232,7 @@ jobs:
       artifact-name: python-dist
       generate-release-notes: true
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       egress-preset: github-tooling
 
   homebrew-dispatch:
@@ -249,7 +249,7 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
-          egress-policy: block
+          egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
           # lgtm-ci docs/python-release-publish.md § Homebrew tap dispatch
           allowed-endpoints: >
             github.com:443

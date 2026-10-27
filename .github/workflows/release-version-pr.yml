@@ -27,7 +27,7 @@ jobs:
       # Patch releases auto-merge; minor/major need explicit review.
       auto-merge-patch-only: true
       tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
-      egress-policy: block
+      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       # Retained intentionally for when lgtm-ci resolves presets before
       # harden-runner; currently overridden by the explicit list below.
       egress-preset: pypi
