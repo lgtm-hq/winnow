@@ -49,7 +49,7 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
-          egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
+          egress-policy: block
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -71,7 +71,7 @@ jobs:
     needs: [check-package]
     if: needs.check-package.outputs.exists == 'true'
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-ghcr-cleanup.yml@614c5ad1fc91d742baed959643bdd1f261a71210 # v0.79.1
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-ghcr-cleanup.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     permissions:
       contents: read # checkout repo and lgtm-ci tooling sparse checkout
       packages: write # delete untagged GHCR package versions via Packages API
@@ -80,8 +80,8 @@ jobs:
       min-age-days: >-
         ${{ github.event_name != 'workflow_dispatch' && 7 || inputs.min_age_days }}
       dry-run: ${{ inputs.dry_run == true }}
-      tooling-ref: '614c5ad1fc91d742baed959643bdd1f261a71210' # v0.79.1
-      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+      egress-policy: block
       # Pair this workflow with the reusable's github-tooling baseline. In
       # replace mode, egress-preset is documentation/pairing only: the
       # explicit allowed-endpoints list below is the harden-runner allowlist,
