@@ -21,6 +21,50 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.6] - 2026-10-29
+
+### Changed
+
+- adopt lgtm-ci v0.79.0 and map CODEX_AUTH_JSON for subscription reviews (#320)
+  (491ac0a)
+- **deps**: update python docker tag to 3.15 (minor) (#292) (5ef926f)
+- **deps**: update step-security/harden-runner action to v2.22.3 (patch) (#319)
+  (02213dd)
+- **deps**: update lgtm-hq/lgtm-ci to v0.78.1 (#317) (4685748)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.5 (patch) (#311) (f081097)
+- **deps**: update dependency ubuntu to 26.04 (major) (#290) (14b19b9)
+- **actionlint**: allow ubuntu-26.04 runner labels (#306) (1fc78da)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.78.0 (minor) (#307) (bdc0482)
+- **deps**: update python:3.14-slim docker digest to fbecd46 (#305) (aeb4117)
+- **deps**: update python:3.14-slim docker digest to 29e1fe7 (#304) (a03d4ad)
+- **deps-dev**: update dependency lintro to 0.173.1 (minor) (#303) (a6fd9b0)
+- **deps**: update pypa/gh-action-pypi-publish action to v1.14.3 (patch) (#299)
+  (cd6ed5b)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.4 (patch) (#298) (fb6e0b7)
+- **deps**: update step-security/harden-runner action to v2.22.2 (patch) (#297)
+  (6325b3a)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.3 (patch) (#296) (dcd926b)
+- **deps**: lock file maintenance (#295) (a2b3b72)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.1 (patch) (#293) (7f38421)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.77.7 (patch) (#291) (270838a)
+- **deps**: update actions/checkout action to v7.0.1 (major) (#289) (c0d0e68)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.77.5 (minor) (#284) (aeff624)
+- **deps**: update python docker tag to 3.14 (minor) (#287) (2d4016e)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.0 (minor) (#285) (0e4fa86)
+- **deps-dev**: update dependency lintro to 0.171.3 (minor) (#283) (a9fffba)
+- **deps**: update python:3.13-slim docker digest to 70729b4 (#288) (8e358fd)
+- **deps**: update github-actions (#286) (f65fbca)
+- **deps**: pin docker/dockerfile docker tag to 4edf897 (#280) (06cefbb)
+- **deps**: update python:3.13-slim docker digest to 3dd7cc1 (#281) (108a9ff)
+- **ci**: remove dead self-hosted Renovate workflow (#272) (0b5df79)
+
+### Fixed
+
+- **ci**: allow "certifi" in typos check (#324) (bbf9299)
+- **ci**: cover remaining reusable calls with audit egress (#316) (8ca1a66)
+- **ci**: temporarily switch harden-runner egress to audit (#315) (21992e3)
+- **deps**: bump certifi to 2026.10.19 (GHSA-6q48-6c7w-9gw2) (#301) (a65922d)
+
 ## [0.37.5] - 2026-10-03
 
 ### Fixed
