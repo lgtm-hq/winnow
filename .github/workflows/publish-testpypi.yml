@@ -18,7 +18,7 @@ jobs:
   pypi-build:
     name: Build Python distribution
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@2097a900753e3e5ad0e336483501b278e99855ae # v0.78.1
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@229e00aaa727ecd88de5ab3711b07f701c4aae21 # v0.79.0
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -32,7 +32,7 @@ jobs:
       verify-tag-version: false
       ensure-tag-on-default-branch: false
       artifact-name: python-dist
-      tooling-ref: '2097a900753e3e5ad0e336483501b278e99855ae' # v0.78.1
+      tooling-ref: '229e00aaa727ecd88de5ab3711b07f701c4aae21' # v0.79.0
       egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
       # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
@@ -108,11 +108,11 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@2097a900753e3e5ad0e336483501b278e99855ae # v0.78.1
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@229e00aaa727ecd88de5ab3711b07f701c4aae21 # v0.79.0
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '2097a900753e3e5ad0e336483501b278e99855ae' # v0.78.1
+          tooling-ref: '229e00aaa727ecd88de5ab3711b07f701c4aae21' # v0.79.0
       - name: Upload to TestPyPI
         # yamllint disable-line rule:line-length
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
