@@ -22,16 +22,16 @@ concurrency:
 jobs:
   security-audit:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@614c5ad1fc91d742baed959643bdd1f261a71210 # v0.79.1
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     with:
-      tooling-ref: '614c5ad1fc91d742baed959643bdd1f261a71210' # v0.79.1
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       # Org ruleset (checks-winnow): security-audit / 🔐 Security Audit
       job-name: '🔐 Security Audit'
       # yamllint disable-line rule:line-length
       lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:116e60912a8c7a2002349ef096cfa93644314492751746aacdd5ef228c74306f
       runner-image: ubuntu-24.04
       upload-comment-artifact: ${{ github.event_name == 'pull_request' }}
-      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
+      egress-policy: block
       egress-preset: quality
     permissions:
       # read: checkout lockfiles and manifests for OSV scanning
@@ -46,10 +46,10 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@614c5ad1fc91d742baed959643bdd1f261a71210 # v0.79.1
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     with:
-      tooling-ref: '614c5ad1fc91d742baed959643bdd1f261a71210' # v0.79.1
-      egress-policy: audit # TEMP: lgtm-hq/lgtm-ci#1207
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+      egress-policy: block
       egress-preset: github-tooling
     permissions:
       # read: checkout repository for comment generation
