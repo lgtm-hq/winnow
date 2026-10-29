@@ -113,6 +113,9 @@ jobs:
           artifact-name: python-dist
           python-version: '3.13'
           tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+          # The dist attestation is made inside lgtm-ci's build reusable, so that
+          # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
+          signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
       - name: Upload to TestPyPI
         # yamllint disable-line rule:line-length
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
