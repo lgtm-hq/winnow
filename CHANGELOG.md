@@ -21,6 +21,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.7] - 2026-10-29
+
+### Changed
+
+- restore block egress policy and pin lgtm-ci v0.79.2 (#322) (d867edb)
+
+### Fixed
+
+- **release**: pin attestation signer to lgtm-ci's build reusable (#326) (dff7481)
+
 ## [0.37.6] - 2026-10-29
 
 ### Changed
