@@ -9,3 +9,5 @@ RGBa = "RGBa"
 mis = "mis"
 # Accepted spelling variant used in error messages and docstrings.
 unparseable = "unparseable"
+# Python package name (dependency); appears in changelog and lock entries.
+certifi = "certifi"
