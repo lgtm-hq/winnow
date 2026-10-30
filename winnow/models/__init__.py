@@ -6,6 +6,7 @@ from winnow.models.config import (
     CacheSettings,
     OrganizeSettings,
     PathSettings,
+    RetentionSettings,
     RoutingSettings,
     WinnowConfig,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "PipelineResult",
     "PipelineStep",
     "QualityScore",
+    "RetentionSettings",
     "RoutingSettings",
     "RunMetadata",
     "SortOrder",

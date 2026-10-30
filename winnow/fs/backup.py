@@ -22,6 +22,7 @@ from winnow.fs._path_ops import (
 )
 from winnow.fs.backup_options import BackupOptions
 from winnow.fs.errors import FileSystemOperationError
+from winnow.fs.retention import BACKUP_DIRNAME
 
 
 def create_backup(
@@ -43,7 +44,7 @@ def create_backup(
     if not backup_options.enabled or not path_exists(path):
         return None
 
-    backup_directory = backup_options.directory or path.parent / ".winnow-backups"
+    backup_directory = backup_options.directory or path.parent / BACKUP_DIRNAME
     _reject_nested_backup_directory(path=path, backup_directory=backup_directory)
     backup_directory.mkdir(parents=True, exist_ok=True)
     backup_path = _unique_backup_path(
