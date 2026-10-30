@@ -1,0 +1,36 @@
+---
+name: PR - All Checks Gate
+# One required check, `gate / ✅ All Checks Passed`, that passes only when
+# every other check on the PR head (or merge-queue head) finished success,
+# skipped or neutral. Keep it dedicated: all runs of this file are excluded
+# so the gate never waits on itself. Retry recovery is manual and fail-closed;
+# a recovered producer does not automatically rerun a previously failed gate.
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+    # Union of peer PR activities, including title/body/base edits.
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  # Keep each main-push proof; same-head PR edits refresh the pending gate.
+  group: >-
+    all-checks-gate-${{ github.event.pull_request.number
+    || (github.event_name == 'push' && github.run_id) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+    with:
+      egress-policy: block
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      statuses: read
