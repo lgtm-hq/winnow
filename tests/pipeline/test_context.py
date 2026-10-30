@@ -9,7 +9,7 @@ from assertpy import assert_that
 
 from winnow.exceptions import PipelineError
 from winnow.models.config import WinnowConfig
-from winnow.pipeline import PipelineContext
+from winnow.pipeline import PipelineContext, Saga, SagaLog
 
 
 def test_from_config_defaults_services_to_none() -> None:
@@ -33,6 +33,16 @@ def test_from_config_accepts_injected_services() -> None:
     context = PipelineContext.from_config(WinnowConfig(), hasher=hasher)
 
     assert_that(context.hasher).is_same_as(hasher)
+
+
+def test_from_config_accepts_saga() -> None:
+    """The ``saga`` slot is typed as the real coordinator and stores it."""
+    with SagaLog(":memory:") as log:
+        saga = Saga(log)
+        context = PipelineContext.from_config(WinnowConfig(), saga=saga)
+        typed: Saga | None = context.saga
+        assert_that(typed).is_same_as(saga)
+        assert_that(context.require("saga")).is_same_as(saga)
 
 
 def test_require_returns_configured_service() -> None:
