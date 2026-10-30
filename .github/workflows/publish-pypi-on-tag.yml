@@ -24,14 +24,14 @@ jobs:
     name: Generate and verify SBOM
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     with:
       target: .
       target-type: dir
       sbom-format: cyclonedx-json
       scan-vulnerabilities: true
       create-attestation: true
-      tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       egress-preset: sbom
     permissions:
@@ -54,7 +54,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -68,7 +68,7 @@ jobs:
       verify-tag-version: true
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
-      tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
@@ -114,7 +114,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
           # lgtm-ci workflow-contract.md § PyPI build + smoke install
@@ -141,12 +141,15 @@ jobs:
       - name: Prepare distribution
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
+          tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
           validate: 'false'
+          # The dist attestation is made inside lgtm-ci's build reusable, so that
+          # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
+          signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
       - name: Install and verify CLI
         env:
           DIST_PATH: ${{ steps.prepare.outputs.dist-path }}
@@ -171,7 +174,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
           # lgtm-ci workflow-contract.md § PyPI upload (OIDC)
@@ -198,11 +201,14 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
+          tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+          # The dist attestation is made inside lgtm-ci's build reusable, so that
+          # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
+          signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
       - name: Upload to PyPI
         # yamllint disable-line rule:line-length
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
@@ -221,7 +227,7 @@ jobs:
     needs: [pypi-upload]
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
       # reusable-github-release @ v0.77.5
@@ -231,7 +237,7 @@ jobs:
     with:
       artifact-name: python-dist
       generate-release-notes: true
-      tooling-ref: '9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb' # v0.78.0
+      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       egress-preset: github-tooling
 
@@ -247,7 +253,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
           # lgtm-ci docs/python-release-publish.md § Homebrew tap dispatch
@@ -259,7 +265,7 @@ jobs:
             actions.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@9ea778eb4e6b876d60b7b3d7d0d0aee5182717bb # v0.78.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
         with:
           formula: winnow
           version: ${{ needs.pypi-build.outputs.version }}
