@@ -22,7 +22,8 @@ def test_pipeline_package_imports_without_circular_imports() -> None:
             "from winnow.pipeline import Command, MoveFile, PipelineContext, "
             "Step, RunState, StepEvents, NullEvents, StepStarted, StepProgress, "
             "StepCompleted, StepIssue, DiscoveryStep, EventBus, HandlerError, "
-            "FileMoved, DuplicateFound",
+            "FileMoved, DuplicateFound, FeaturePlugin, PluginRegistry, "
+            "LoggingPlugin, ProgressPlugin",
         ],
         capture_output=True,
         text=True,
@@ -57,4 +58,8 @@ def test_pipeline_public_exports_are_accessible() -> None:
         "StepProgress",
         "StepStarted",
         "DiscoveryStep",
+        "FeaturePlugin",
+        "LoggingPlugin",
+        "PluginRegistry",
+        "ProgressPlugin",
     )
