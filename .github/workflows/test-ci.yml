@@ -40,7 +40,7 @@ jobs:
       extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
       job-name: '🧪 Python Compatibility'
-      runner-image: ubuntu-24.04
+      runner-image: ubuntu-26.04
       tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       egress-preset: quality
@@ -71,7 +71,7 @@ jobs:
       extra-args: '--override-ini=addopts=--strict-markers --strict-config'
       draft-pr-skip: true
       job-name: Python Coverage
-      runner-image: ubuntu-24.04
+      runner-image: ubuntu-26.04
       tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       egress-preset: quality
@@ -99,7 +99,7 @@ jobs:
       artifact-prefix: coverage
       upload-coverage: true
       job-name: Deploy Coverage to Pages
-      runner-image: ubuntu-24.04
+      runner-image: ubuntu-26.04
       tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
       egress-policy: block
       egress-preset: github-pages
