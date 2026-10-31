@@ -24,14 +24,14 @@ jobs:
     name: Generate and verify SBOM
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
     with:
       target: .
       target-type: dir
       sbom-format: cyclonedx-json
       scan-vulnerabilities: true
       create-attestation: true
-      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+      tooling-ref: '3f5d4b551b78c2a971c47f31a241426cb69a8b6a' # v0.81.0
       egress-policy: block
       egress-preset: sbom
     permissions:
@@ -54,7 +54,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -68,7 +68,7 @@ jobs:
       verify-tag-version: true
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
-      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+      tooling-ref: '3f5d4b551b78c2a971c47f31a241426cb69a8b6a' # v0.81.0
       egress-policy: block
       # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
@@ -141,11 +141,11 @@ jobs:
       - name: Prepare distribution
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+          tooling-ref: '3f5d4b551b78c2a971c47f31a241426cb69a8b6a' # v0.81.0
           validate: 'false'
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
@@ -201,11 +201,11 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+          tooling-ref: '3f5d4b551b78c2a971c47f31a241426cb69a8b6a' # v0.81.0
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
           signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
@@ -227,7 +227,7 @@ jobs:
     needs: [pypi-upload]
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
       # reusable-github-release @ v0.77.5
@@ -237,7 +237,7 @@ jobs:
     with:
       artifact-name: python-dist
       generate-release-notes: true
-      tooling-ref: '8f0fd9339df5d30a529aa572ceb51345b8be33a0' # v0.79.2
+      tooling-ref: '3f5d4b551b78c2a971c47f31a241426cb69a8b6a' # v0.81.0
       egress-policy: block
       egress-preset: github-tooling
 
@@ -265,7 +265,7 @@ jobs:
             actions.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@8f0fd9339df5d30a529aa572ceb51345b8be33a0 # v0.79.2
+        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@3f5d4b551b78c2a971c47f31a241426cb69a8b6a # v0.81.0
         with:
           formula: winnow
           version: ${{ needs.pypi-build.outputs.version }}
