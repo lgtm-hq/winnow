@@ -98,6 +98,6 @@ jobs:
         pipelines.actions.githubusercontent.com:443
         ghcr.io:443
         pkg-containers.githubusercontent.com:443
-      runner-image: ubuntu-24.04
+      runner-image: ubuntu-26.04
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
