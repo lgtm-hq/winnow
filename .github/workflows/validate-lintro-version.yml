@@ -40,7 +40,7 @@ jobs:
       # Caller repos must pass lintro-image; resolve-lintro-image.sh defaults to
       # lgtm-ci-owned paths that do not exist in consumer repositories.
       # yamllint disable-line rule:line-length
-      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:f5ec693f12556b7b19478793a919b9395e39debe7e8cb7be2ed403659c113fb2
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:19c8a8d3a30cc7bd83e927cfd631ea681a9c7162917caa52306b164d935aed1d
       egress-policy: block
       egress-preset: quality
     permissions:
