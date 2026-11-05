@@ -10,7 +10,7 @@ from assertpy import assert_that
 
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _GATE = _WORKFLOWS / "all-checks-gate.yml"
-_PIN = "8f0fd9339df5d30a529aa572ceb51345b8be33a0"
+_PIN = "39514a688ee00cdc2a82cdd13310ee1ee36b84c2"
 _DEFAULT_PR_TYPES = {"opened", "synchronize", "reopened"}
 
 
