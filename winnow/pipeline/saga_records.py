@@ -90,7 +90,8 @@ class UndoReport:
         session_id: Session that was (or would be) undone.
         planned: Commands selected for reversal, newest first.
         reverted: Number of commands successfully undone.
-        skipped: Commands left untouched, each paired with the reason.
+        skipped: Commands left untouched, or reverted without their
+            ``undone`` row being written, each paired with the reason.
     """
 
     session_id: str
