@@ -31,6 +31,7 @@ _NEED_ACTIONS_READ = frozenset(
     {
         "reusable-ai-review.yml",
         "reusable-all-checks-gate.yml",
+        "reusable-auto-rerun-on-infra-failure.yml",
         "reusable-codeql.yml",
         "reusable-docker.yml",
         "reusable-main-failure-notifier.yml",
