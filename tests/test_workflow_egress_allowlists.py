@@ -38,13 +38,27 @@ _DOCKER_REQUIRED = {
 }
 
 
+def _hosts(value: Any, where: str) -> set[str]:
+    """Read one ``allowed-endpoints`` value: a string or a list of strings.
+
+    Anything else raises, so a list written in a form these tests cannot
+    read fails them instead of being skipped.
+    """
+    if isinstance(value, str):
+        return set(value.split())
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return {host for item in value for host in item.split()}
+    msg = f"{where}: allowed-endpoints must be a string or a list of strings"
+    raise TypeError(msg)
+
+
 def _allow_lists(node: Any, where: str = "") -> list[tuple[str, set[str]]]:
     """Collect every ``allowed-endpoints`` list in a parsed workflow."""
     found: list[tuple[str, set[str]]] = []
     if isinstance(node, dict):
         for key, value in node.items():
-            if key == "allowed-endpoints" and isinstance(value, str):
-                found.append((where, set(value.split())))
+            if key == "allowed-endpoints":
+                found.append((where, _hosts(value, where)))
             else:
                 found.extend(_allow_lists(value, f"{where}/{key}"))
     elif isinstance(node, list):
@@ -124,3 +138,15 @@ def test_the_collector_finds_nested_lists() -> None:
             "x.yml/jobs/b/steps[0]/with": {"three:443", "four:443"},
         },
     )
+
+
+def test_the_collector_reads_a_list_and_refuses_what_it_cannot_read() -> None:
+    """Read a YAML sequence too, and fail on any other form."""
+    found = dict(
+        _allow_lists({"with": {"allowed-endpoints": ["one:443", "two:443 three:443"]}})
+    )
+    assert_that(found).is_equal_to({"/with": {"one:443", "two:443", "three:443"}})
+    for unreadable in ({"one:443": None}, 443, None, ["one:443", 2]):
+        assert_that(_allow_lists).raises(TypeError).when_called_with(
+            {"with": {"allowed-endpoints": unreadable}},
+        )

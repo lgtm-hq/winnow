@@ -97,8 +97,10 @@ jobs:
             test.pypi.org:443
             astral.sh:443
             releases.astral.sh:443
+            release-assets.githubusercontent.com:443
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
             oauth2.sigstore.dev:443
