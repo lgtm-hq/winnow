@@ -45,6 +45,10 @@ jobs:
         ossf.github.io:443
         www.bestpractices.dev:443
     permissions:
+      # read: the nested SARIF-uploading job requests actions: read
+      # (upload-sarif looks up the workflow run via the Actions API;
+      # lgtm-ci#1310). A caller must grant every scope a nested job asks for.
+      actions: read
       # read: checkout repository for OpenSSF Scorecard analysis
       contents: read
       # write: upload scorecard results to the Security tab

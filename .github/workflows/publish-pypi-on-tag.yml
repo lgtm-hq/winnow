@@ -35,6 +35,10 @@ jobs:
       egress-policy: block
       egress-preset: sbom
     permissions:
+      # read: the nested SARIF-uploading job requests actions: read
+      # (upload-sarif looks up the workflow run via the Actions API;
+      # lgtm-ci#1310). A caller must grant every scope a nested job asks for.
+      actions: read
       # read: checkout only. Verified against reusable-sbom @ v0.77.5
       # (710c7ba40bf7b48b4d7c3442e3b60fb4b542db91): no job in that file
       # requests contents:write (lgtm-ci #770 moved release-asset upload
