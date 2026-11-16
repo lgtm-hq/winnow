@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.9] - 2026-11-16
+
+### Fixed
+
+- **ci**: correct network allow-lists that block tag releases and fail the Docker build
+  (#420) (5d086a8)
+
 ## [0.37.8] - 2026-11-16
 
 ### Changed
