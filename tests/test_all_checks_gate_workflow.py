@@ -150,7 +150,7 @@ def test_main_gate_cannot_be_cancelled_by_another_push() -> None:
 @pytest.fixture
 def updated_workflows() -> dict[str, str]:
     """Model a coherent future Renovate update entirely in scratch workflow text."""
-    pin = _workflow(_GATE)["jobs"]["gate"]["uses"].rsplit("@", 1)[1]
+    pin = _workflow(_GATE)["jobs"]["gate"]["uses"].strip().rsplit("@", 1)[1]
     return {
         name: re.sub(
             r"# v[0-9]+\.[0-9]+\.[0-9]+",
@@ -296,15 +296,27 @@ def test_peer_owner_case_does_not_hide_drift(
         _assert_gate_pins(updated_workflows)
 
 
+def _rewrite_gate_scalar(text: str, quote: str, pad: str) -> str:
+    """Rewrite the gate reference with the given quoting and padding.
+
+    The reference is read from the parsed document, so this works whether the
+    checked-in line is plain, quoted or padded already.
+    """
+    reference = yaml.safe_load(text)["jobs"]["gate"]["uses"].strip()
+    line = _gate_uses_line(text)
+    indent = line.split("uses:", 1)[0]
+    comment = line.rsplit("#", 1)[1]
+    scalar = f"{quote}{pad}{reference}{pad}{quote}"
+    return text.replace(line, f"{indent}uses: {scalar} #{comment}")
+
+
 @pytest.mark.parametrize("quote", ["'", '"'], ids=["single", "double"])
 def test_a_quoted_gate_reference_is_accepted(
     updated_workflows: dict[str, str], quote: str
 ) -> None:
     """Accept YAML quoting around the gate reference; the pin is unchanged."""
-    text = updated_workflows[_GATE.name]
-    reference = _gate_line(text).split("uses:", 1)[1].split(" #", 1)[0].strip()
-    updated_workflows[_GATE.name] = text.replace(
-        f"uses: {reference}", f"uses: {quote}{reference}{quote}"
+    updated_workflows[_GATE.name] = _rewrite_gate_scalar(
+        text=updated_workflows[_GATE.name], quote=quote, pad=""
     )
     _assert_gate_pins(updated_workflows)
 
@@ -327,10 +339,8 @@ def test_padding_inside_quotes_changes_nothing(
     updated_workflows: dict[str, str],
 ) -> None:
     """Trim a padded gate reference and a padded tooling ref before comparing."""
-    text = updated_workflows[_GATE.name]
-    reference = _gate_line(text).split("uses:", 1)[1].split(" #", 1)[0].strip()
-    updated_workflows[_GATE.name] = text.replace(
-        f"uses: {reference}", f"uses: ' {reference} '"
+    updated_workflows[_GATE.name] = _rewrite_gate_scalar(
+        text=updated_workflows[_GATE.name], quote="'", pad=" "
     )
     peer = "jobs:\n  peer:\n    with:\n      tooling-ref: ' {pin} '"
     updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
