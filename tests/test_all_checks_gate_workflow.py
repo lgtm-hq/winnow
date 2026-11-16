@@ -44,11 +44,11 @@ def _assert_peer_pins(value: Any, pin: str) -> None:
         if isinstance(uses, str) and uses.strip().lower().startswith(
             "lgtm-hq/lgtm-ci/"
         ):
-            assert_that(uses).ends_with("@" + pin)
+            assert_that(uses.strip()).ends_with("@" + pin)
         # Workflow and action input names are case-insensitive too.
         for key, ref in value.items():
             if isinstance(key, str) and key.lower() == "tooling-ref":
-                assert_that(ref).is_equal_to(pin)
+                assert_that(str(ref).strip()).is_equal_to(pin)
         for child in value.values():
             _assert_peer_pins(value=child, pin=pin)
     elif isinstance(value, list):
@@ -81,15 +81,15 @@ def _assert_gate_pins(workflows: dict[str, str]) -> None:
     uses = gate["jobs"]["gate"]["uses"]
     # Owner and repository names are case-insensitive; the path is not.
     owner_repo, path = _REUSABLE.split("/.github/", 1)
-    assert_that(uses).matches(
+    assert_that(uses.strip()).matches(
         rf"^(?i:{re.escape(owner_repo)})/\.github/{re.escape(path)}@[0-9a-fA-F]{{40}}$"
     )
     # The release comment must sit on the gate job's own line, located from the
     # parsed document, so a comment or another job elsewhere cannot stand in.
     assert_that(_gate_uses_line(text)).matches(
-        rf"^ +uses: +{re.escape(uses)} +# v[0-9]+\.[0-9]+\.[0-9]+[ \t]*$"
+        rf"""^ +uses: +(["']?){re.escape(uses)}\1 +# v[0-9]+\.[0-9]+\.[0-9]+[ \t]*$"""
     )
-    pin = uses.rsplit("@", 1)[1]
+    pin = uses.strip().rsplit("@", 1)[1]
     for workflow in workflows.values():
         _assert_peer_pins(value=yaml.safe_load(workflow), pin=pin)
 
@@ -294,3 +294,57 @@ def test_peer_owner_case_does_not_hide_drift(
     updated_workflows["peer.yml"] = peer.format(pin="main")
     with pytest.raises(AssertionError):
         _assert_gate_pins(updated_workflows)
+
+
+@pytest.mark.parametrize("quote", ["'", '"'], ids=["single", "double"])
+def test_a_quoted_gate_reference_is_accepted(
+    updated_workflows: dict[str, str], quote: str
+) -> None:
+    """Accept YAML quoting around the gate reference; the pin is unchanged."""
+    text = updated_workflows[_GATE.name]
+    reference = _gate_line(text).split("uses:", 1)[1].split(" #", 1)[0].strip()
+    updated_workflows[_GATE.name] = text.replace(
+        f"uses: {reference}", f"uses: {quote}{reference}{quote}"
+    )
+    _assert_gate_pins(updated_workflows)
+
+
+def test_whitespace_around_a_peer_reference_changes_nothing(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Trim a quoted peer reference before comparing, in both directions."""
+    peer = (
+        "jobs:\n  peer:\n    uses: ' lgtm-hq/lgtm-ci/.github/workflows/peer.yml@{pin} '"
+    )
+    updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
+    _assert_gate_pins(updated_workflows)
+    updated_workflows["peer.yml"] = peer.format(pin="main")
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_padding_inside_quotes_changes_nothing(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Trim a padded gate reference and a padded tooling ref before comparing."""
+    text = updated_workflows[_GATE.name]
+    reference = _gate_line(text).split("uses:", 1)[1].split(" #", 1)[0].strip()
+    updated_workflows[_GATE.name] = text.replace(
+        f"uses: {reference}", f"uses: ' {reference} '"
+    )
+    peer = "jobs:\n  peer:\n    with:\n      tooling-ref: ' {pin} '"
+    updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
+    _assert_gate_pins(updated_workflows)
+    updated_workflows["peer.yml"] = peer.format(pin="main")
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_both_workflow_extensions_are_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """List workflow files with either YAML extension, and nothing else."""
+    for name in ("b.yml", "a.yaml", "notes.md"):
+        (tmp_path / name).write_text("jobs: {}\n")
+    monkeypatch.setattr(f"{__name__}._WORKFLOWS", tmp_path)
+    assert_that(sorted(_workflow_texts())).is_equal_to(["a.yaml", "b.yml"])
