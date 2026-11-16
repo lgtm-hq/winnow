@@ -9,6 +9,7 @@ every other job so a failure anywhere in the run is reported.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,9 +23,8 @@ _NOTIFIER = "lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.ym
 _JOB = "notify-failure"
 # Workflows with main-push or scheduled runs that must report failures, with
 # the issue key each uses. The key is the file stem: stable across renames of
-# the display name and unique per workflow. Tag publishing reports through
-# its own release notifier, the release reusables report their own failures,
-# and the aggregate gate is a summary of the producers listed here.
+# the display name and unique per workflow. Tag-only workflows never run on a
+# main push, so they appear in neither mapping.
 _COVERED = {
     "codeql.yml": "codeql",
     "docker-build-publish.yml": "docker-build-publish",
@@ -37,14 +37,11 @@ _COVERED = {
 }
 # Workflows that run on a main push or a schedule but carry no notifier, each
 # with the reason. A new main or scheduled workflow must either get a notifier
-# (and a _COVERED entry) or be listed here.
+# (and a _COVERED entry) or be listed here, and only such workflows may be.
 _EXEMPT = {
     "all-checks-gate.yml": (
         "aggregate gate: it summarises producers that report their own"
         " failures, and its retry-aware behaviour belongs to #352"
-    ),
-    "publish-pypi-on-tag.yml": (
-        "tag release: tag-release failure reporting belongs to #271"
     ),
     "release-auto-tag.yml": (
         "its lgtm-ci reusable reports its own failures (report-failures)"
@@ -152,6 +149,148 @@ def _events(workflow: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], events)
 
 
+# Branch filters follow GitHub's "Filter pattern cheat sheet" (workflow
+# syntax reference). Supported constructs:
+#   *       zero or more characters except "/"
+#   **      zero or more of any character, "/" included
+#   ?  +    zero-or-one / one-or-more of the preceding literal or [] class
+#   [...]   one character from a list of letters and digits, or the ranges
+#           a-z, A-Z and 0-9 (or sub-ranges of them, such as 1-2)
+#   \x      the character x taken literally
+#   !p      in ``branches`` only, as the first character: exclude refs that p
+#           matches; patterns apply in order and the last match wins
+# Every other character is literal. Anything else (a negated or malformed
+# class, a quantifier with nothing literal before it, "!" in branches-ignore,
+# both branches and branches-ignore, only negative patterns) raises, so an
+# unsupported filter fails the test instead of being guessed at.
+_BRANCH = "main"
+_CLASS_RANGES = (("a", "z"), ("A", "Z"), ("0", "9"))
+
+
+def _class_regex(body: str, pattern: str) -> str:
+    """Translate a ``[...]`` class body, allowing only what GitHub documents."""
+    if not body:
+        raise ValueError(f"empty character class in branch pattern {pattern!r}")
+    parts: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if not char.isascii() or not char.isalnum():
+            raise ValueError(
+                f"unsupported character {char!r} in class of branch pattern {pattern!r}"
+            )
+        if index + 2 < len(body) and body[index + 1] == "-":
+            end = body[index + 2]
+            if not any(low <= char <= end <= high for low, high in _CLASS_RANGES):
+                raise ValueError(
+                    f"unsupported range {char}-{end} in branch pattern {pattern!r}"
+                )
+            parts.append(f"{char}-{end}")
+            index += 3
+            continue
+        parts.append(char)
+        index += 1
+    return "[" + "".join(parts) + "]"
+
+
+def _token(pattern: str, index: int) -> tuple[str, bool, int]:
+    """Translate the token at ``index``.
+
+    Returns:
+        The token's regex, whether a ``?`` or ``+`` may follow it, and the
+        index after it.
+
+    Raises:
+        ValueError: On a class or escape the matcher does not support.
+    """
+    char = pattern[index]
+    if pattern.startswith("**", index):
+        return ".*", False, index + 2
+    if char == "*":
+        return "[^/]*", False, index + 1
+    if char == "[":
+        end = pattern.find("]", index + 1)
+        if end == -1:
+            raise ValueError(f"unclosed class in branch pattern {pattern!r}")
+        return _class_regex(pattern[index + 1 : end], pattern), True, end + 1
+    if char == "]":
+        raise ValueError(f"unopened class in branch pattern {pattern!r}")
+    if char == "\\":
+        if index + 1 == len(pattern):
+            raise ValueError(f"trailing escape in branch pattern {pattern!r}")
+        return re.escape(pattern[index + 1]), True, index + 2
+    return re.escape(char), True, index + 1
+
+
+def _pattern_regex(pattern: str) -> str:
+    """Translate one GitHub branch filter pattern into a regex.
+
+    Raises:
+        ValueError: On a quantifier with no literal or class before it.
+    """
+    out: list[str] = []
+    # Whether the last token is a literal or class a quantifier binds to.
+    quantifiable = False
+    index = 0
+    while index < len(pattern):
+        if pattern[index] in "?+":
+            if not quantifiable:
+                raise ValueError(
+                    f"unsupported {pattern[index]!r} without a preceding character"
+                    f" in branch pattern {pattern!r}"
+                )
+            out.append(pattern[index])
+            quantifiable = False
+            index += 1
+            continue
+        token, quantifiable, index = _token(pattern, index)
+        out.append(token)
+    return "".join(out)
+
+
+def _patterns(value: Any, key: str) -> list[str]:
+    """Return a filter's patterns, accepting one string or a list of strings."""
+    patterns = [value] if isinstance(value, str) else value
+    if not isinstance(patterns, list) or not all(
+        isinstance(pattern, str) for pattern in patterns
+    ):
+        raise ValueError(f"push.{key} must be a string or a list of strings")
+    return cast(list[str], patterns)
+
+
+def _branch_matches(pattern: str, branch: str) -> bool:
+    """Tell whether one positive pattern matches a branch name in full."""
+    return re.fullmatch(_pattern_regex(pattern), branch) is not None
+
+
+def _branches_include(patterns: list[str], branch: str) -> bool:
+    """Apply a ``branches`` list in order; the last matching pattern wins."""
+    if patterns and all(pattern.startswith("!") for pattern in patterns):
+        raise ValueError("push.branches needs a pattern without '!'")
+    included = False
+    for pattern in patterns:
+        negative = pattern.startswith("!")
+        if _branch_matches(pattern[1:] if negative else pattern, branch):
+            included = not negative
+    return included
+
+
+def _push_runs_on(push: dict[str, Any], branch: str) -> bool:
+    """Tell whether a push trigger's branch and tag filters admit a branch push."""
+    if "branches" in push and "branches-ignore" in push:
+        raise ValueError("GitHub rejects branches together with branches-ignore")
+    if "branches" in push:
+        return _branches_include(_patterns(push["branches"], "branches"), branch)
+    if "branches-ignore" in push:
+        ignored = _patterns(push["branches-ignore"], "branches-ignore")
+        if any(pattern.startswith("!") for pattern in ignored):
+            raise ValueError("'!' in push.branches-ignore is not supported")
+        return not any(_branch_matches(pattern, branch) for pattern in ignored)
+    # With only tag filters the workflow never runs for branch pushes; with no
+    # ref filter at all it runs for every branch.
+    return "tags" not in push and "tags-ignore" not in push
+
+
 def _runs_on_main_or_schedule(workflow: dict[str, Any]) -> bool:
     """Tell whether a workflow runs for main pushes or on a schedule."""
     events = _events(workflow)
@@ -159,12 +298,7 @@ def _runs_on_main_or_schedule(workflow: dict[str, Any]) -> bool:
         return True
     if "push" not in events:
         return False
-    push = events["push"] or {}
-    if "branches" in push:
-        return "main" in push["branches"]
-    # Without a branch filter, a push filter limited to tags never matches a
-    # branch push; any other push trigger runs on main too.
-    return "tags" not in push or "branches-ignore" in push
+    return _push_runs_on(events["push"] or {}, _BRANCH)
 
 
 def _unreported(
@@ -228,18 +362,49 @@ def test_covered_workflows_run_on_main_or_a_schedule() -> None:
 
 
 def test_every_main_or_scheduled_workflow_reports_or_is_exempt() -> None:
-    """A new main or scheduled workflow must get a notifier or a reason."""
+    """A new main or scheduled workflow must get a notifier or a reason.
+
+    Scope: workflows that run on a push to main or on a schedule, because
+    those are the only runs the notifier's condition reports. Workflows
+    triggered only by ``workflow_run``, ``release`` or ``workflow_dispatch``
+    are outside this check and are not required to carry a notifier.
+    """
     assert_that(_unreported(_workflows(), _EXEMPT)).is_empty()
+
+
+def _needless_exemptions(
+    workflows: dict[str, dict[str, Any]], exempt: dict[str, str]
+) -> list[str]:
+    """Return exemptions that name a missing file or one that needs none."""
+    return sorted(
+        name
+        for name in exempt
+        if name not in workflows or not _runs_on_main_or_schedule(workflows[name])
+    )
 
 
 def test_exemptions_name_existing_uncovered_files_with_a_reason() -> None:
     """Keep the exemption list from going stale or overlapping coverage."""
-    workflows = _workflows()
     for name, reason in _EXEMPT.items():
-        assert_that(workflows).described_as("exempt file").contains_key(name)
         assert_that(_COVERED).described_as("exempt file").does_not_contain_key(name)
-        assert_that(reason).described_as(name).is_instance_of(str)
         assert_that(reason.strip()).described_as(name).is_not_empty()
+
+
+def test_every_exemption_is_needed() -> None:
+    """Exempt only files that exist and run on a main push or a schedule."""
+    assert_that(_needless_exemptions(_workflows(), _EXEMPT)).is_empty()
+
+
+def test_a_needless_exemption_is_found() -> None:
+    """Flag a tag-only or missing workflow listed as exempt."""
+    workflows: dict[str, dict[str, Any]] = {
+        "nightly.yml": {"on": {"schedule": [{"cron": "0 0 * * *"}]}},
+        "tag.yml": {"on": {"push": {"tags": ["v*"]}, "workflow_dispatch": None}},
+    }
+    exempt = {"nightly.yml": "why", "tag.yml": "why", "gone.yml": "why"}
+    assert_that(_needless_exemptions(workflows, exempt)).is_equal_to(
+        ["gone.yml", "tag.yml"]
+    )
 
 
 def test_the_condition_reports_failed_cancelled_and_timed_out_jobs() -> None:
@@ -275,11 +440,17 @@ def test_covered_workflows_never_cancel_main_or_scheduled_runs() -> None:
 
 
 def test_workflow_keys_are_unique_and_match_the_file() -> None:
-    """One issue per workflow: keys must not collide or drift from the file."""
-    keys = list(_COVERED.values())
-    assert_that(keys).does_not_contain_duplicates()
-    for name, key in _COVERED.items():
-        assert_that(Path(name).stem).is_equal_to(key)
+    """One issue per workflow: keys read from the files must not collide."""
+    workflows = _workflows()
+    keys = {
+        name: workflow["jobs"][jobs[0]].get("with", {}).get("workflow-key")
+        for name, workflow in workflows.items()
+        if (jobs := _notifiers({name: workflow}).get(name))
+    }
+    assert_that(set(keys)).is_equal_to(set(_COVERED))
+    assert_that(list(keys.values())).does_not_contain_duplicates()
+    for name, key in keys.items():
+        assert_that(key).described_as(name).is_equal_to(Path(name).stem)
 
 
 def _good() -> dict[str, Any]:
@@ -382,19 +553,114 @@ def test_a_differently_cased_notifier_is_still_found() -> None:
     assert_that(found).is_equal_to({"peer.yml": ["report"]})
 
 
+_DETECTION_CASES: list[tuple[str, Any, bool]] = [
+    # Event spellings and schedules.
+    ("schedule", {"schedule": [{"cron": "0 0 * * 1"}]}, True),
+    ("pull-request", {"pull_request": None, "merge_group": None}, False),
+    ("dispatch", "workflow_dispatch", False),
+    ("workflow-run", {"workflow_run": {"workflows": ["CI"]}}, False),
+    ("release", {"release": {"types": ["published"]}}, False),
+    ("bare-push", "push", True),
+    ("push-list", ["push", "pull_request"], True),
+    ("push-null", {"push": None}, True),
+    ("empty-push", {"push": {}}, True),
+    ("path-filter", {"push": {"paths": ["src/**"]}}, True),
+    # branches: literal names, a bare string and lists.
+    ("main-push", {"push": {"branches": ["main"]}}, True),
+    ("main-string", {"push": {"branches": "main"}}, True),
+    ("other-branch", {"push": {"branches": ["release/*"]}}, False),
+    ("prefix-is-not-main", {"push": {"branches": ["mai"]}}, False),
+    ("longer-is-not-main", {"push": {"branches": ["main2"]}}, False),
+    ("dot-is-literal", {"push": {"branches": ["m.in"]}}, False),
+    # Wildcards.
+    ("double-star", {"push": {"branches": ["**"]}}, True),
+    ("star", {"push": {"branches": ["*"]}}, True),
+    ("m-star", {"push": {"branches": ["m*"]}}, True),
+    ("ma-star", {"push": {"branches": ["ma*"]}}, True),
+    ("star-n", {"push": {"branches": ["*n"]}}, True),
+    ("star-needs-slash", {"push": {"branches": ["*/*"]}}, False),
+    ("double-star-slash", {"push": {"branches": ["**/main"]}}, False),
+    ("other-star", {"push": {"branches": ["v*"]}}, False),
+    # Quantifiers and classes.
+    ("optional-char", {"push": {"branches": ["mainx?"]}}, True),
+    ("repeated-char", {"push": {"branches": ["mai+n"]}}, True),
+    ("plus-needs-one", {"push": {"branches": ["mainx+"]}}, False),
+    ("class", {"push": {"branches": ["[lm]ain"]}}, True),
+    ("class-range", {"push": {"branches": ["[a-z]ain"]}}, True),
+    ("class-misses", {"push": {"branches": ["[A-Z]ain"]}}, False),
+    ("class-plus", {"push": {"branches": ["[a-z]+"]}}, True),
+    ("escaped-star", {"push": {"branches": ["mai\\*"]}}, False),
+    # Negations, applied in order; the last match wins.
+    ("negated-after", {"push": {"branches": ["**", "!main"]}}, False),
+    ("re-included", {"push": {"branches": ["**", "!m*", "main"]}}, True),
+    ("negation-before", {"push": {"branches": ["!main", "**"]}}, True),
+    ("negation-other", {"push": {"branches": ["**", "!release/**"]}}, True),
+    # branches-ignore.
+    ("ignore-main", {"push": {"branches-ignore": ["main"]}}, False),
+    ("ignore-star", {"push": {"branches-ignore": ["m*"]}}, False),
+    ("ignore-other", {"push": {"branches-ignore": ["release/**"]}}, True),
+    ("ignore-string", {"push": {"branches-ignore": "main"}}, False),
+    ("tags-and-ignore", {"push": {"tags": ["v*"], "branches-ignore": ["x"]}}, True),
+    # Tag-only pushes never run for a branch.
+    ("tag-push", {"push": {"tags": ["v*"]}}, False),
+    ("tags-ignore", {"push": {"tags-ignore": ["v*"]}}, False),
+    (
+        "tags-and-branches",
+        {"push": {"tags": ["v*"], "branches": ["main"]}},
+        True,
+    ),
+]
+
+
 @pytest.mark.parametrize(
     ("events", "expected"),
-    [
-        ({"schedule": [{"cron": "0 0 * * 1"}]}, True),
-        ({"push": {"branches": ["main"]}}, True),
-        ({"push": {"tags": ["v*"]}}, False),
-        ({"pull_request": None, "merge_group": None}, False),
-    ],
-    ids=["schedule", "main-push", "tag-push", "pull-request"],
+    [(events, expected) for _, events, expected in _DETECTION_CASES],
+    ids=[case_id for case_id, _, _ in _DETECTION_CASES],
 )
-def test_main_or_schedule_detection(events: dict[str, Any], expected: bool) -> None:
-    """Recognise the triggers that make a notifier reachable."""
+def test_main_or_schedule_detection(events: Any, expected: bool) -> None:
+    """Match push branch filters the way GitHub does for a push to main."""
     assert_that(_runs_on_main_or_schedule({"on": events})).is_equal_to(expected)
+
+
+@pytest.mark.parametrize(
+    "push",
+    [
+        {"branches": ["main"], "branches-ignore": ["x"]},
+        {"branches": ["!main"]},
+        {"branches-ignore": ["**", "!main"]},
+        {"branches": ["[^x]ain"]},
+        {"branches": ["[!x]ain"]},
+        {"branches": ["[a-Z]ain"]},
+        {"branches": ["[]main"]},
+        {"branches": ["[main"]},
+        {"branches": ["main]"]},
+        {"branches": ["?main"]},
+        {"branches": ["*+"]},
+        {"branches": ["main\\"]},
+        {"branches": [1]},
+        {"branches": {"main": None}},
+    ],
+    ids=[
+        "branches-and-ignore",
+        "only-negations",
+        "negation-in-ignore",
+        "caret-class",
+        "bang-class",
+        "mixed-range",
+        "empty-class",
+        "unclosed-class",
+        "unopened-class",
+        "leading-question-mark",
+        "quantified-wildcard",
+        "trailing-escape",
+        "non-string-pattern",
+        "mapping-filter",
+    ],
+)
+def test_unsupported_branch_filters_raise(push: dict[str, Any]) -> None:
+    """Fail loudly on a filter construct the matcher does not implement."""
+    with pytest.raises(ValueError):
+        _runs_on_main_or_schedule({"on": {"push": push}})
 
 
 def test_an_unreported_scheduled_workflow_is_found() -> None:
@@ -405,32 +671,6 @@ def test_an_unreported_scheduled_workflow_is_found() -> None:
     }
     assert_that(_unreported(workflows, {})).is_equal_to(["nightly.yml"])
     assert_that(_unreported(workflows, {"nightly.yml": "why"})).is_empty()
-
-
-@pytest.mark.parametrize(
-    ("events", "expected"),
-    [
-        ("push", True),
-        (["push", "pull_request"], True),
-        ({"push": None}, True),
-        ({"push": {"paths": ["src/**"]}}, True),
-        ({"push": {"tags": ["v*"], "branches-ignore": ["x"]}}, True),
-        ({"push": {"branches": ["release/*"]}}, False),
-        ("workflow_dispatch", False),
-    ],
-    ids=[
-        "bare-push",
-        "push-list",
-        "push-null",
-        "path-filter",
-        "branches-ignore",
-        "other-branch",
-        "dispatch",
-    ],
-)
-def test_other_trigger_forms_are_recognised(events: Any, expected: bool) -> None:
-    """Detect main pushes in every spelling ``on`` allows."""
-    assert_that(_runs_on_main_or_schedule({"on": events})).is_equal_to(expected)
 
 
 @pytest.mark.parametrize(
