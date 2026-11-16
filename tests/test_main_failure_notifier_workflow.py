@@ -35,11 +35,37 @@ _COVERED = {
     "security-audit.yml": "security-audit",
     "test-ci.yml": "test-ci",
 }
-# Fire on failure or cancellation, only for main pushes and schedules: never
-# for a pull request, merge queue, tag or manual dispatch, and never when
-# every job succeeded or was skipped on purpose.
+# Workflows that run on a main push or a schedule but carry no notifier, each
+# with the reason. A new main or scheduled workflow must either get a notifier
+# (and a _COVERED entry) or be listed here.
+_EXEMPT = {
+    "all-checks-gate.yml": (
+        "aggregate gate: it summarises producers that report their own"
+        " failures, and its retry-aware behaviour belongs to #352"
+    ),
+    "publish-pypi-on-tag.yml": (
+        "tag release: tag-release failure reporting belongs to #271"
+    ),
+    "release-auto-tag.yml": (
+        "its lgtm-ci reusable reports its own failures (report-failures)"
+    ),
+    "release-version-pr.yml": (
+        "its lgtm-ci reusable reports its own failures (report-failures)"
+    ),
+    "validate-lintro-version.yml": (
+        "path-filtered main pushes cancel the in-progress run when a newer"
+        " push arrives, so a notifier would file an issue for every"
+        " superseded run; it is also not on #356's list"
+    ),
+}
+# Fire when any needed job failed or was cancelled (a timed-out job concludes
+# cancelled, which failure() and cancelled() both miss), only for main pushes
+# and schedules: never for a pull request, merge queue, tag or manual
+# dispatch, and never when every job succeeded or was skipped on purpose.
 _CONDITION = (
-    "(failure() || cancelled())"
+    "always()"
+    " && (contains(needs.*.result, 'failure')"
+    " || contains(needs.*.result, 'cancelled'))"
     " && github.ref == 'refs/heads/main'"
     " && (github.event_name == 'push' || github.event_name == 'schedule')"
 )
@@ -116,13 +142,66 @@ def _assert_notifier(name: str, workflow: dict[str, Any], key: str, pin: str) ->
     assert_that(job).described_as(name).does_not_contain_key("secrets")
 
 
+def _events(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Return a workflow's triggers as a mapping, whichever form ``on`` has."""
+    events = workflow["on"]
+    if isinstance(events, str):
+        return {events: None}
+    if isinstance(events, list):
+        return {event: None for event in events}
+    return cast(dict[str, Any], events)
+
+
 def _runs_on_main_or_schedule(workflow: dict[str, Any]) -> bool:
     """Tell whether a workflow runs for main pushes or on a schedule."""
-    events = workflow["on"]
+    events = _events(workflow)
     if "schedule" in events:
         return True
-    push = events.get("push")
-    return isinstance(push, dict) and "main" in push.get("branches", [])
+    if "push" not in events:
+        return False
+    push = events["push"] or {}
+    if "branches" in push:
+        return "main" in push["branches"]
+    # Without a branch filter, a push filter limited to tags never matches a
+    # branch push; any other push trigger runs on main too.
+    return "tags" not in push or "branches-ignore" in push
+
+
+def _unreported(
+    workflows: dict[str, dict[str, Any]], exempt: dict[str, str]
+) -> list[str]:
+    """Return main or scheduled workflows with neither notifier nor exemption."""
+    notifiers = _notifiers(workflows)
+    return sorted(
+        name
+        for name, workflow in workflows.items()
+        if _runs_on_main_or_schedule(workflow)
+        and name not in notifiers
+        and name not in exempt
+    )
+
+
+# cancel-in-progress expressions that are false for every main push and every
+# schedule (schedules always run on the default branch).
+_QUEUES_ON_MAIN = {
+    "${{ github.ref != 'refs/heads/main' }}",
+    "${{ github.event_name == 'pull_request' }}",
+}
+
+
+def _cancels_on_main(concurrency: Any) -> bool:
+    """Tell whether a concurrency setting may cancel a main or scheduled run.
+
+    Anything but an absent or false setting, or an expression known to be false
+    on main, counts as cancelling: a superseded run would otherwise be reported
+    as a failure.
+    """
+    if not isinstance(concurrency, dict):
+        return False
+    cancel = concurrency.get("cancel-in-progress", False)
+    if isinstance(cancel, bool):
+        return cancel
+    return " ".join(str(cancel).split()) not in _QUEUES_ON_MAIN
 
 
 def test_covered_workflows_each_report_failures() -> None:
@@ -146,6 +225,53 @@ def test_covered_workflows_run_on_main_or_a_schedule() -> None:
         assert_that(_runs_on_main_or_schedule(workflows[name])).described_as(
             name
         ).is_true()
+
+
+def test_every_main_or_scheduled_workflow_reports_or_is_exempt() -> None:
+    """A new main or scheduled workflow must get a notifier or a reason."""
+    assert_that(_unreported(_workflows(), _EXEMPT)).is_empty()
+
+
+def test_exemptions_name_existing_uncovered_files_with_a_reason() -> None:
+    """Keep the exemption list from going stale or overlapping coverage."""
+    workflows = _workflows()
+    for name, reason in _EXEMPT.items():
+        assert_that(workflows).described_as("exempt file").contains_key(name)
+        assert_that(_COVERED).described_as("exempt file").does_not_contain_key(name)
+        assert_that(reason).described_as(name).is_instance_of(str)
+        assert_that(reason.strip()).described_as(name).is_not_empty()
+
+
+def test_the_condition_reports_failed_cancelled_and_timed_out_jobs() -> None:
+    """Decide from needs.*.result: failure() and cancelled() miss timeouts."""
+    workflows = _workflows()
+    for name in _COVERED:
+        job = workflows[name]["jobs"][_JOB]
+        condition = " ".join(str(job.get("if", "")).split())
+        assert_that(condition).described_as(name).starts_with("always() && ")
+        assert_that(condition).described_as(name).contains(
+            "contains(needs.*.result, 'failure')",
+            "contains(needs.*.result, 'cancelled')",
+        )
+        bare = condition.replace("needs.*.result", "")
+        assert_that(bare).described_as(name).does_not_contain(
+            "failure()", "cancelled()"
+        )
+
+
+def test_covered_workflows_never_cancel_main_or_scheduled_runs() -> None:
+    """A run superseded on main would otherwise be filed as a failure."""
+    workflows = _workflows()
+    for name in _COVERED:
+        workflow = workflows[name]
+        settings = [("workflow", workflow.get("concurrency"))] + [
+            (job_id, job.get("concurrency"))
+            for job_id, job in (workflow.get("jobs") or {}).items()
+        ]
+        for where, concurrency in settings:
+            assert_that(_cancels_on_main(concurrency)).described_as(
+                f"{name} {where}"
+            ).is_false()
 
 
 def test_workflow_keys_are_unique_and_match_the_file() -> None:
@@ -185,8 +311,27 @@ def test_a_complete_notifier_passes() -> None:
     [
         ("needs", ["build"]),
         ("if", "failure() && github.ref == 'refs/heads/main'"),
+        (
+            "if",
+            "failure()"
+            " && github.ref == 'refs/heads/main'"
+            " && (github.event_name == 'push' || github.event_name == 'schedule')",
+        ),
+        (
+            "if",
+            "(failure() || cancelled())"
+            " && github.ref == 'refs/heads/main'"
+            " && (github.event_name == 'push' || github.event_name == 'schedule')",
+        ),
+        (
+            "if",
+            "always()"
+            " && contains(needs.*.result, 'failure')"
+            " && github.ref == 'refs/heads/main'"
+            " && (github.event_name == 'push' || github.event_name == 'schedule')",
+        ),
         ("if", "always() && github.ref == 'refs/heads/main'"),
-        ("if", "(failure() || cancelled())"),
+        ("if", "always() && contains(needs.*.result, 'failure')"),
         ("uses", f"{_NOTIFIER}@{'b' * 40}"),
         ("uses", f"{_NOTIFIER}@main"),
         ("permissions", {"actions": "read", "contents": "read"}),
@@ -199,6 +344,9 @@ def test_a_complete_notifier_passes() -> None:
     ids=[
         "missing-need",
         "misses-cancellation",
+        "failure-only-with-gates",
+        "status-functions-miss-timeouts",
+        "misses-cancelled-needs",
         "fires-on-success",
         "fires-on-pull-requests",
         "other-pin",
@@ -247,3 +395,85 @@ def test_a_differently_cased_notifier_is_still_found() -> None:
 def test_main_or_schedule_detection(events: dict[str, Any], expected: bool) -> None:
     """Recognise the triggers that make a notifier reachable."""
     assert_that(_runs_on_main_or_schedule({"on": events})).is_equal_to(expected)
+
+
+def test_an_unreported_scheduled_workflow_is_found() -> None:
+    """Flag a scheduled workflow with neither notifier nor exemption."""
+    workflows: dict[str, dict[str, Any]] = {
+        "nightly.yml": {"on": {"schedule": [{"cron": "0 0 * * *"}]}, "jobs": {}},
+        "pr.yml": {"on": {"pull_request": None}, "jobs": {}},
+    }
+    assert_that(_unreported(workflows, {})).is_equal_to(["nightly.yml"])
+    assert_that(_unreported(workflows, {"nightly.yml": "why"})).is_empty()
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        ("push", True),
+        (["push", "pull_request"], True),
+        ({"push": None}, True),
+        ({"push": {"paths": ["src/**"]}}, True),
+        ({"push": {"tags": ["v*"], "branches-ignore": ["x"]}}, True),
+        ({"push": {"branches": ["release/*"]}}, False),
+        ("workflow_dispatch", False),
+    ],
+    ids=[
+        "bare-push",
+        "push-list",
+        "push-null",
+        "path-filter",
+        "branches-ignore",
+        "other-branch",
+        "dispatch",
+    ],
+)
+def test_other_trigger_forms_are_recognised(events: Any, expected: bool) -> None:
+    """Detect main pushes in every spelling ``on`` allows."""
+    assert_that(_runs_on_main_or_schedule({"on": events})).is_equal_to(expected)
+
+
+@pytest.mark.parametrize(
+    ("concurrency", "expected"),
+    [
+        (None, False),
+        ("group-only", False),
+        ({"group": "g"}, False),
+        ({"group": "g", "cancel-in-progress": False}, False),
+        ({"group": "g", "cancel-in-progress": True}, True),
+        (
+            {
+                "group": "g",
+                "cancel-in-progress": "${{ github.ref != 'refs/heads/main' }}",
+            },
+            False,
+        ),
+        (
+            {
+                "group": "g",
+                "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+            },
+            False,
+        ),
+        (
+            {
+                "group": "g",
+                "cancel-in-progress": "${{ github.event_name != 'schedule' }}",
+            },
+            True,
+        ),
+    ],
+    ids=[
+        "none",
+        "string",
+        "no-cancel-key",
+        "false",
+        "true",
+        "not-main",
+        "pull-request-only",
+        "unknown-expression",
+    ],
+)
+def test_cancelling_concurrency_is_detected(concurrency: Any, expected: bool) -> None:
+    """Treat any setting not known to queue on main as cancelling."""
+    assert_that(_cancels_on_main(concurrency)).is_equal_to(expected)

@@ -59,14 +59,16 @@ jobs:
       egress-preset: github-tooling
 
   # Durable failure report for main pushes and scheduled runs (#356): the
-  # first failed or cancelled run opens one issue per workflow key, later ones
-  # comment on it. Needs every job above, so a failure anywhere is reported;
-  # an intended skip is neither a failure nor a cancellation and stays quiet.
-  # Pull requests, merge queues, tags and manual runs never report here.
+  # first failed, cancelled or timed-out run opens one issue per workflow key,
+  # later ones comment on it. Needs every job above. Pull requests, merge
+  # queues, tags and manual runs never report here. Why the condition reads
+  # needs.*.result: see the notify-failure job in test-ci.yml.
   notify-failure:
     needs: [quality, publish-quality-summary]
     if: >-
-      (failure() || cancelled())
+      always()
+      && (contains(needs.*.result, 'failure')
+      || contains(needs.*.result, 'cancelled'))
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length

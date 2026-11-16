@@ -114,14 +114,24 @@ jobs:
       actions: write
 
   # Durable failure report for main pushes and scheduled runs (#356): the
-  # first failed or cancelled run opens one issue per workflow key, later ones
-  # comment on it. Needs every job above, so a failure anywhere is reported;
-  # an intended skip is neither a failure nor a cancellation and stays quiet.
-  # Pull requests, merge queues, tags and manual runs never report here.
+  # first failed, cancelled or timed-out run opens one issue per workflow key,
+  # later ones comment on it. Needs every job above. Pull requests, merge
+  # queues, tags and manual runs never report here.
+  #
+  # The condition is shared by every notify-failure job. A job that hits
+  # timeout-minutes concludes cancelled: failure() stays false for it, and
+  # cancelled() is true only when the whole run was cancelled, so
+  # failure() || cancelled() missed timeouts. always() makes this job
+  # evaluate its own condition whatever the needed jobs did (and keeps it
+  # running when the run is cancelled); the needs.*.result clauses then
+  # decide. needs.<job>.result is success, failure, cancelled or skipped, so
+  # an intended skip and a green run stay quiet.
   notify-failure:
     needs: [test, test-coverage, publish-coverage]
     if: >-
-      (failure() || cancelled())
+      always()
+      && (contains(needs.*.result, 'failure')
+      || contains(needs.*.result, 'cancelled'))
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
