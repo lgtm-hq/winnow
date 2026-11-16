@@ -217,15 +217,6 @@ def test_peer_pin_drift_fails(updated_workflows: dict[str, str], peer: str) -> N
         _assert_gate_pins(updated_workflows)
 
 
-def _gate_line(text: str) -> str:
-    """Return the gate workflow's annotated ``uses`` line from scratch text."""
-    return next(
-        line
-        for line in text.splitlines()
-        if line.lstrip().startswith("uses:") and _REUSABLE in line
-    )
-
-
 @pytest.mark.parametrize(
     "elsewhere",
     ["  other:\n{line}\n", "# moved to:\n# {line}\n"],
@@ -236,7 +227,7 @@ def test_annotation_elsewhere_does_not_cover_the_gate(
 ) -> None:
     """Reject a bare gate line even when the annotated line appears elsewhere."""
     text = updated_workflows[_GATE.name]
-    line = _gate_line(text)
+    line = _gate_uses_line(text)
     bare = line.split(" #", 1)[0]
     updated_workflows[_GATE.name] = text.replace(line, bare) + elsewhere.format(
         line=line
@@ -250,7 +241,7 @@ def test_a_comment_repeating_the_reference_is_accepted(
 ) -> None:
     """Allow documentation that quotes the pinned reference next to the gate job."""
     text = updated_workflows[_GATE.name]
-    line = _gate_line(text)
+    line = _gate_uses_line(text)
     updated_workflows[_GATE.name] = text + f"# reviewed pin: {line.strip()}\n"
     _assert_gate_pins(updated_workflows)
 
