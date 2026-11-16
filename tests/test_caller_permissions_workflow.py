@@ -33,6 +33,7 @@ _NEED_ACTIONS_READ = frozenset(
         "reusable-all-checks-gate.yml",
         "reusable-codeql.yml",
         "reusable-docker.yml",
+        "reusable-main-failure-notifier.yml",
         "reusable-release-auto-tag.yml",
         "reusable-release-version-pr.yml",
         "reusable-sbom.yml",

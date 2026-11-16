@@ -115,3 +115,37 @@ jobs:
       id-token: write
       # write: delete stale same-run Pages artifacts on rerun (lgtm-ci#415)
       actions: write
+
+  # Durable failure report for main pushes and scheduled runs (#356): the
+  # first failed, cancelled or timed-out run opens one issue per workflow key,
+  # later ones comment on it. Needs every job above. Pull requests, merge
+  # queues, tags and manual runs never report here.
+  #
+  # The condition is shared by every notify-failure job. A job that hits
+  # timeout-minutes concludes cancelled: failure() stays false for it, and
+  # cancelled() is true only when the whole run was cancelled, so
+  # failure() || cancelled() missed timeouts. always() makes this job
+  # evaluate its own condition whatever the needed jobs did (and keeps it
+  # running when the run is cancelled); the needs.*.result clauses then
+  # decide. needs.<job>.result is success, failure, cancelled or skipped, so
+  # an intended skip and a green run stay quiet.
+  notify-failure:
+    needs: [test, test-coverage, publish-coverage]
+    if: >-
+      always()
+      && (contains(needs.*.result, 'failure')
+      || contains(needs.*.result, 'cancelled'))
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'schedule')
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    permissions:
+      # read: list the run's jobs and steps for the issue body
+      actions: read
+      # read: repository context for the issue body
+      contents: read
+      # write: open or comment on the deduplicated failure issue
+      issues: write
+    with:
+      workflow-key: test-ci
+      egress-policy: block
