@@ -22,9 +22,11 @@ _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _REUSABLE = re.compile(
     r"^lgtm-hq/lgtm-ci/\.github/workflows/(?P<name>[^@]+)@", re.IGNORECASE
 )
-# Reusable workflows in lgtm-ci's current release whose own jobs, or nested
-# reusable jobs, request ``actions: read``. Read from the released workflow
-# files, not from a caller, so a caller that forgets the scope is caught.
+# Reusable workflows winnow calls whose own jobs, or nested reusable jobs,
+# request the ``actions`` scope in lgtm-ci v0.99.0. Read from the released
+# workflow files, not from a caller, so a caller that drops the scope is
+# caught. The list is fixed: when winnow starts calling another reusable, or
+# an lgtm-ci release adds the scope to one, it has to be extended.
 _NEED_ACTIONS_READ = frozenset(
     {
         "reusable-ai-review.yml",
@@ -35,6 +37,7 @@ _NEED_ACTIONS_READ = frozenset(
         "reusable-release-version-pr.yml",
         "reusable-sbom.yml",
         "reusable-scorecards.yml",
+        "reusable-test-python-publish.yml",
         "reusable-test-python.yml",
     }
 )
