@@ -62,10 +62,11 @@ def _mapping_value(node: yaml.Node, key: str) -> yaml.Node:
 
 def _gate_uses_line(text: str) -> str:
     """Return the source line that holds the gate job's own ``uses`` value."""
-    node = yaml.compose(text)
+    node = cast(yaml.Node, yaml.compose(text))
     for key in ("jobs", "gate", "uses"):
         node = _mapping_value(node=node, key=key)
-    return text.splitlines()[node.start_mark.line]
+    line_number = cast(int, node.start_mark.line)
+    return text.splitlines()[line_number]
 
 
 def _assert_gate_pins(workflows: dict[str, str]) -> None:
