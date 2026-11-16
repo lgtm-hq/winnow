@@ -24,11 +24,21 @@ def _workflow(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], data)
 
 
+def _workflow_texts() -> dict[str, str]:
+    """Read every workflow file, whichever YAML extension it uses."""
+    return {
+        path.name: path.read_text()
+        for pattern in ("*.yml", "*.yaml")
+        for path in sorted(_WORKFLOWS.glob(pattern))
+    }
+
+
 def _assert_peer_pins(value: Any, pin: str) -> None:
     """Require every lgtm-ci use and explicit tooling ref to share the gate pin."""
     if isinstance(value, dict):
         uses = value.get("uses", "")
-        if isinstance(uses, str) and uses.startswith("lgtm-hq/lgtm-ci/"):
+        # GitHub resolves owner and repository names case-insensitively.
+        if isinstance(uses, str) and uses.lower().startswith("lgtm-hq/lgtm-ci/"):
             assert_that(uses).ends_with("@" + pin)
         if "tooling-ref" in value:
             assert_that(value["tooling-ref"]).is_equal_to(pin)
@@ -45,8 +55,12 @@ def _assert_gate_pins(workflows: dict[str, str]) -> None:
     gate = yaml.safe_load(text)
     uses = gate["jobs"]["gate"]["uses"]
     assert_that(uses).matches(rf"^{re.escape(_REUSABLE)}@[0-9a-fA-F]{{40}}$")
-    assert_that(text).matches(
-        rf"(?m)^ +uses: +{re.escape(uses)} +# v[0-9]+\.[0-9]+\.[0-9]+[ \t]*$"
+    # The annotation must sit on the gate job's own line: the reference appears
+    # exactly once in the file, and that one line carries the release comment.
+    lines = [line for line in text.splitlines() if uses in line]
+    assert_that(lines).is_length(1)
+    assert_that(lines[0]).matches(
+        rf"^ +uses: +{re.escape(uses)} +# v[0-9]+\.[0-9]+\.[0-9]+[ \t]*$"
     )
     pin = uses.rsplit("@", 1)[1]
     for workflow in workflows.values():
@@ -55,9 +69,7 @@ def _assert_gate_pins(workflows: dict[str, str]) -> None:
 
 def test_gate_uses_an_annotated_commit_pin() -> None:
     """Keep the dedicated read-only caller pinned without freezing a release."""
-    _assert_gate_pins(
-        {path.name: path.read_text() for path in _WORKFLOWS.glob("*.yml")}
-    )
+    _assert_gate_pins(_workflow_texts())
     gate = _workflow(_GATE)
     assert_that(set(gate["jobs"])).is_equal_to({"gate"})
     job = gate["jobs"]["gate"]
@@ -113,12 +125,12 @@ def updated_workflows() -> dict[str, str]:
     """Model a coherent future Renovate update entirely in scratch workflow text."""
     pin = _workflow(_GATE)["jobs"]["gate"]["uses"].rsplit("@", 1)[1]
     return {
-        path.name: re.sub(
+        name: re.sub(
             r"# v[0-9]+\.[0-9]+\.[0-9]+",
             "# v9.8.7",
-            path.read_text().replace(pin, "a" * 40),
+            text.replace(pin, "a" * 40),
         )
-        for path in _WORKFLOWS.glob("*.yml")
+        for name, text in _workflow_texts().items()
     }
 
 
@@ -174,5 +186,29 @@ def test_peer_pin_drift_fails(updated_workflows: dict[str, str], peer: str) -> N
     updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
     _assert_gate_pins(updated_workflows)
     updated_workflows["peer.yml"] = peer.format(pin="b" * 40)
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_annotation_on_another_job_does_not_cover_the_gate(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Reject a gate line without its annotation even if a second job carries one."""
+    text = updated_workflows[_GATE.name]
+    line = next(item for item in text.splitlines() if _REUSABLE in item)
+    bare = line.split(" #", 1)[0]
+    updated_workflows[_GATE.name] = text.replace(line, bare) + f"  other:\n{line}\n"
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_peer_owner_case_does_not_hide_drift(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Treat a differently cased owner as the same repository when checking drift."""
+    peer = "jobs:\n  peer:\n    uses: LGTM-HQ/lgtm-ci/.github/workflows/peer.yml@{pin}"
+    updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
+    _assert_gate_pins(updated_workflows)
+    updated_workflows["peer.yml"] = peer.format(pin="main")
     with pytest.raises(AssertionError):
         _assert_gate_pins(updated_workflows)
