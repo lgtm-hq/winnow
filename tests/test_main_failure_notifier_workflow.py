@@ -220,7 +220,7 @@ def test_only_covered_workflows_call_the_notifier_once() -> None:
     assert_that(notifiers).is_equal_to({name: [_JOB] for name in _COVERED})
 
 
-def test_covered_workflows_run_on_main_or_a_schedule() -> None:
+def test_covered_workflows_have_a_schedule_or_a_branch_push() -> None:
     """A notifier needs a schedule or a branch push, or it would never fire."""
     workflows = _workflows()
     for name in _COVERED:
@@ -229,7 +229,7 @@ def test_covered_workflows_run_on_main_or_a_schedule() -> None:
         ).is_true()
 
 
-def test_every_main_or_scheduled_workflow_reports_or_is_exempt() -> None:
+def test_every_scheduled_or_branch_push_workflow_reports_or_is_exempt() -> None:
     """A new scheduled or branch-push workflow must get a notifier or a reason.
 
     Scope: workflows with a schedule or a push trigger that is not limited to
