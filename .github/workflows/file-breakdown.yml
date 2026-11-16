@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT
+# For license details, see the repository root LICENSE file.
+---
+name: PR - File Breakdown
+
+'on':
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: file-breakdown-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Posts one upserted comment that groups the PR's changed files by
+  # category (default categories; no .github/file-breakdown.yml override).
+  file-breakdown:
+    # Same-repository PRs only: a fork PR's token cannot write comments, and
+    # no fork code is checked out or run with a write token.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-file-breakdown.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    with:
+      # No tooling-ref: the reusable tracks its own pin (job.workflow_sha)
+      # and warns when the deprecated override is set (lgtm-ci #995).
+      comment-history: true
+      comment-history-limit: 3
+      egress-policy: block
+      egress-preset: github-minimal
+    permissions:
+      # read: checkout repository and lgtm-ci tooling
+      contents: read
+      # write: post/update the file breakdown comment on the PR
+      pull-requests: write
