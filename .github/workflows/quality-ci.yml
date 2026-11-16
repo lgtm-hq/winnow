@@ -54,6 +54,9 @@ jobs:
       pull-requests: write
     with:
       exit-code: ${{ needs.quality.outputs.exit-code }}
+      # Keep up to three earlier runs under "Previous runs" (lgtm-ci #1346).
+      comment-history: true
+      comment-history-limit: 3
       tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
       egress-policy: block
       egress-preset: github-tooling
