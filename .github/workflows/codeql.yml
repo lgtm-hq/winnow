@@ -63,6 +63,10 @@ jobs:
         pipelines.actions.githubusercontent.com:443
         release-assets.githubusercontent.com:443
     permissions:
+      # read: the nested SARIF-uploading job requests actions: read
+      # (upload-sarif looks up the workflow run via the Actions API;
+      # lgtm-ci#1310). A caller must grant every scope a nested job asks for.
+      actions: read
       # read: checkout repository for CodeQL analysis
       contents: read
       # write: upload CodeQL findings to the Security tab
