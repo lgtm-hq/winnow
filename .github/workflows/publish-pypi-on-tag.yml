@@ -127,7 +127,6 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             raw.githubusercontent.com:443
-            actions.githubusercontent.com:443
             *.blob.core.windows.net:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
@@ -187,7 +186,6 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             raw.githubusercontent.com:443
-            actions.githubusercontent.com:443
             *.blob.core.windows.net:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
@@ -265,7 +263,6 @@ jobs:
             api.github.com:443
             codeload.github.com:443
             objects.githubusercontent.com:443
-            actions.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
         uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0

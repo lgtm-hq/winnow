@@ -15,12 +15,19 @@ import yaml
 from assertpy import assert_that
 
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
-# Hosts that do not exist. The hardening agent resolves every allowed domain
-# when it starts and exits if one cannot be resolved, so a single dead entry
-# fails the whole job before any step of the project runs. TestPyPI uploads go
-# to test.pypi.org; lgtm-ci removed this name from its presets
-# (lgtm-hq/lgtm-ci#1206), and it blocked the v0.37.8 release here (#419).
-_UNRESOLVABLE = {"upload.test.pypi.org:443"}
+# Names known not to exist, compared without the port. The hardening agent
+# resolves every allowed domain when it starts and exits if one cannot be
+# resolved. Where lgtm-ci verifies the agent, the job then fails before any
+# step of the project runs; where a job starts the agent itself, it carries on
+# with no egress enforcement at all, which is worse. This is a list of the
+# names that have bitten, not a resolution check: the tests stay offline.
+#   upload.test.pypi.org          TestPyPI uploads go to test.pypi.org; lgtm-ci
+#                                 dropped it (lgtm-hq/lgtm-ci#1206); it blocked
+#                                 the v0.37.8 release (#419).
+#   actions.githubusercontent.com only the pipelines. and token. subdomains
+#                                 exist; with it, the v0.37.7 smoke test,
+#                                 upload and Homebrew jobs ran unenforced.
+_KNOWN_DEAD_NAMES = {"upload.test.pypi.org", "actions.githubusercontent.com"}
 # Hosts of lgtm-ci's ``docker`` preset that the Docker caller's own list must
 # carry. The first is where Docker Hub serves some image layers from; without
 # it the BuildKit image pull times out on a blocked connection (#419).
@@ -65,10 +72,29 @@ def test_workflows_carry_their_own_allow_lists() -> None:
     )
 
 
-def test_no_allow_list_names_a_host_that_does_not_resolve() -> None:
-    """One dead entry stops the hardening agent and fails the job."""
+def _names(hosts: set[str]) -> set[str]:
+    """Strip the port from each ``host:port`` entry."""
+    return {host.rsplit(":", 1)[0] if ":" in host else host for host in hosts}
+
+
+def test_no_allow_list_names_a_known_dead_host() -> None:
+    """One dead entry stops the hardening agent, whatever port it names."""
     for where, hosts in _all_allow_lists():
-        assert_that(hosts & _UNRESOLVABLE).described_as(where).is_empty()
+        assert_that(_names(hosts) & _KNOWN_DEAD_NAMES).described_as(where).is_empty()
+
+
+def test_dead_names_are_matched_without_the_port() -> None:
+    """Catch a dead name on another port or with none; keep its subdomains."""
+    hosts = {
+        "upload.test.pypi.org:80",
+        "actions.githubusercontent.com",
+        "pipelines.actions.githubusercontent.com:443",
+        "token.actions.githubusercontent.com:443",
+        "test.pypi.org:443",
+    }
+    assert_that(_names(hosts) & _KNOWN_DEAD_NAMES).is_equal_to(
+        {"upload.test.pypi.org", "actions.githubusercontent.com"},
+    )
 
 
 def test_docker_allow_list_has_the_preset_hosts_it_replaces() -> None:
