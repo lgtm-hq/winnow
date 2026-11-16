@@ -24,13 +24,16 @@ def _workflow(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], data)
 
 
+def _workflow_paths() -> list[Path]:
+    """List every workflow file, whichever YAML extension it uses."""
+    return sorted(
+        path for pattern in ("*.yml", "*.yaml") for path in _WORKFLOWS.glob(pattern)
+    )
+
+
 def _workflow_texts() -> dict[str, str]:
-    """Read every workflow file, whichever YAML extension it uses."""
-    return {
-        path.name: path.read_text()
-        for pattern in ("*.yml", "*.yaml")
-        for path in sorted(_WORKFLOWS.glob(pattern))
-    }
+    """Read every workflow file, keyed by file name."""
+    return {path.name: path.read_text() for path in _workflow_paths()}
 
 
 def _assert_peer_pins(value: Any, pin: str) -> None:
@@ -38,7 +41,9 @@ def _assert_peer_pins(value: Any, pin: str) -> None:
     if isinstance(value, dict):
         uses = value.get("uses", "")
         # GitHub resolves owner and repository names case-insensitively.
-        if isinstance(uses, str) and uses.lower().startswith("lgtm-hq/lgtm-ci/"):
+        if isinstance(uses, str) and uses.strip().lower().startswith(
+            "lgtm-hq/lgtm-ci/"
+        ):
             assert_that(uses).ends_with("@" + pin)
         # Workflow and action input names are case-insensitive too.
         for key, ref in value.items():
@@ -106,7 +111,7 @@ def test_gate_uses_an_annotated_commit_pin() -> None:
 def test_gate_covers_every_pr_activity() -> None:
     """Refresh when any peer workflow can create checks on an unchanged head."""
     activities = set()
-    for path in _WORKFLOWS.glob("*.yml"):
+    for path in _workflow_paths():
         if path == _GATE:
             continue
         events = _workflow(path)["on"]
