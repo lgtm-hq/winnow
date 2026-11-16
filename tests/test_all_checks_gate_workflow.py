@@ -40,8 +40,10 @@ def _assert_peer_pins(value: Any, pin: str) -> None:
         # GitHub resolves owner and repository names case-insensitively.
         if isinstance(uses, str) and uses.lower().startswith("lgtm-hq/lgtm-ci/"):
             assert_that(uses).ends_with("@" + pin)
-        if "tooling-ref" in value:
-            assert_that(value["tooling-ref"]).is_equal_to(pin)
+        # Workflow and action input names are case-insensitive too.
+        for key, ref in value.items():
+            if isinstance(key, str) and key.lower() == "tooling-ref":
+                assert_that(ref).is_equal_to(pin)
         for child in value.values():
             _assert_peer_pins(value=child, pin=pin)
     elif isinstance(value, list):
@@ -49,17 +51,36 @@ def _assert_peer_pins(value: Any, pin: str) -> None:
             _assert_peer_pins(value=child, pin=pin)
 
 
+def _mapping_value(node: yaml.Node, key: str) -> yaml.Node:
+    """Return the value node stored under ``key`` in a YAML mapping node."""
+    assert_that(node).is_instance_of(yaml.MappingNode)
+    for key_node, value_node in cast(yaml.MappingNode, node).value:
+        if key_node.value == key:
+            return cast(yaml.Node, value_node)
+    raise AssertionError(f"missing key: {key}")
+
+
+def _gate_uses_line(text: str) -> str:
+    """Return the source line that holds the gate job's own ``uses`` value."""
+    node = yaml.compose(text)
+    for key in ("jobs", "gate", "uses"):
+        node = _mapping_value(node=node, key=key)
+    return text.splitlines()[node.start_mark.line]
+
+
 def _assert_gate_pins(workflows: dict[str, str]) -> None:
     """Validate the reusable path, immutable pin, annotation and peer agreement."""
     text = workflows[_GATE.name]
     gate = yaml.safe_load(text)
     uses = gate["jobs"]["gate"]["uses"]
-    assert_that(uses).matches(rf"^{re.escape(_REUSABLE)}@[0-9a-fA-F]{{40}}$")
-    # The annotation must sit on the gate job's own line: the reference appears
-    # exactly once in the file, and that one line carries the release comment.
-    lines = [line for line in text.splitlines() if uses in line]
-    assert_that(lines).is_length(1)
-    assert_that(lines[0]).matches(
+    # Owner and repository names are case-insensitive; the path is not.
+    owner_repo, path = _REUSABLE.split("/.github/", 1)
+    assert_that(uses).matches(
+        rf"^(?i:{re.escape(owner_repo)})/\.github/{re.escape(path)}@[0-9a-fA-F]{{40}}$"
+    )
+    # The release comment must sit on the gate job's own line, located from the
+    # parsed document, so a comment or another job elsewhere cannot stand in.
+    assert_that(_gate_uses_line(text)).matches(
         rf"^ +uses: +{re.escape(uses)} +# v[0-9]+\.[0-9]+\.[0-9]+[ \t]*$"
     )
     pin = uses.rsplit("@", 1)[1]
@@ -190,14 +211,69 @@ def test_peer_pin_drift_fails(updated_workflows: dict[str, str], peer: str) -> N
         _assert_gate_pins(updated_workflows)
 
 
-def test_annotation_on_another_job_does_not_cover_the_gate(
+def _gate_line(text: str) -> str:
+    """Return the gate workflow's annotated ``uses`` line from scratch text."""
+    return next(
+        line
+        for line in text.splitlines()
+        if line.lstrip().startswith("uses:") and _REUSABLE in line
+    )
+
+
+@pytest.mark.parametrize(
+    "elsewhere",
+    ["  other:\n{line}\n", "# moved to:\n# {line}\n"],
+    ids=["another-job", "comment"],
+)
+def test_annotation_elsewhere_does_not_cover_the_gate(
+    updated_workflows: dict[str, str], elsewhere: str
+) -> None:
+    """Reject a bare gate line even when the annotated line appears elsewhere."""
+    text = updated_workflows[_GATE.name]
+    line = _gate_line(text)
+    bare = line.split(" #", 1)[0]
+    updated_workflows[_GATE.name] = text.replace(line, bare) + elsewhere.format(
+        line=line
+    )
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_a_comment_repeating_the_reference_is_accepted(
     updated_workflows: dict[str, str],
 ) -> None:
-    """Reject a gate line without its annotation even if a second job carries one."""
+    """Allow documentation that quotes the pinned reference next to the gate job."""
     text = updated_workflows[_GATE.name]
-    line = next(item for item in text.splitlines() if _REUSABLE in item)
-    bare = line.split(" #", 1)[0]
-    updated_workflows[_GATE.name] = text.replace(line, bare) + f"  other:\n{line}\n"
+    line = _gate_line(text)
+    updated_workflows[_GATE.name] = text + f"# reviewed pin: {line.strip()}\n"
+    _assert_gate_pins(updated_workflows)
+
+
+def test_gate_owner_and_repository_case_is_accepted(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Accept another casing of the owner and repository, but not of the path."""
+    text = updated_workflows[_GATE.name]
+    updated_workflows[_GATE.name] = text.replace(
+        "lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml",
+        "LGTM-HQ/LGTM-CI/.github/workflows/reusable-all-checks-gate.yml",
+    )
+    _assert_gate_pins(updated_workflows)
+    updated_workflows[_GATE.name] = text.replace(
+        "reusable-all-checks-gate.yml", "Reusable-All-Checks-Gate.yml"
+    )
+    with pytest.raises(AssertionError):
+        _assert_gate_pins(updated_workflows)
+
+
+def test_tooling_ref_key_case_does_not_hide_drift(
+    updated_workflows: dict[str, str],
+) -> None:
+    """Treat a differently cased tooling-ref input as the same input."""
+    peer = "jobs:\n  peer:\n    with:\n      TOOLING-REF: '{pin}'"
+    updated_workflows["peer.yml"] = peer.format(pin="a" * 40)
+    _assert_gate_pins(updated_workflows)
+    updated_workflows["peer.yml"] = peer.format(pin="main")
     with pytest.raises(AssertionError):
         _assert_gate_pins(updated_workflows)
 
