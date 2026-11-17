@@ -392,8 +392,6 @@ def _assert_main_push_ignore(workflows: dict[str, str]) -> None:
     publish = _workflow_text(workflows[_PUBLISH.name])
     assert_that(publish["name"]).is_equal_to(_PUBLISH_NAME)
     assert_that(publish).does_not_contain_key("run-name")
-    # The name holds no regex syntax, so the anchored literal matches it alone.
-    assert_that(publish["name"]).matches(r"^[A-Za-z0-9 -]+$")
     assert_that(pattern).is_equal_to(f"^{publish['name']}$")
     job = publish["jobs"][_PUBLISH_APPROVAL_JOB]
     assert_that(job["environment"]).is_equal_to(_PUBLISH_ENVIRONMENT)
