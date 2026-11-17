@@ -291,8 +291,11 @@ jobs:
   # cancelled run are all reported; an all-green run only closes an open
   # issue for the tag and files nothing. always() still waits for every
   # needed job to complete, so while Upload to PyPI waits for the pypi
-  # environment approval this job has not started and reports nothing; a
-  # rejected approval fails the upload job and is reported.
+  # environment approval this job has not started and reports nothing. A
+  # rejected approval is reported if GitHub gives the upload job the result
+  # failure, as its documentation says ("the workflow will fail"); no
+  # rejected run has been observed, and a result of skipped would be read
+  # as a successful release.
   #
   # Tag refs only: a tag push, or a manual run started on a tag (a retry of
   # that release). A manual run on a branch builds nothing but the SBOM and
