@@ -15,7 +15,7 @@ import pytest
 from assertpy import assert_that
 from tinytag import TinyTag, TinyTagException
 
-from tests.media.audio_samples import write_ffmpeg_sample, write_id3_sample
+from tests.media.audio_samples import write_id3_sample
 from winnow.exceptions import MediaError
 from winnow.media import audio as audio_module
 from winnow.media.audio import extract_audio_metadata, read_audio_tags
@@ -99,15 +99,16 @@ def test_extract_audio_metadata_unsupported_raises(
 
 
 def test_read_audio_tags_normalizes_year_and_lowercases_keys(
+    fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Tag keys are lowercased and the date field is aliased to year."""
     fake = SimpleNamespace(
         as_dict=lambda: {"TITLE": ["Song"], "date": ["2024"], "duration": 1.0},
     )
-    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda _path: fake))
+    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda *_args, **_kwargs: fake))
 
-    tags = read_audio_tags(Path("does-not-matter.mp3"))
+    tags = read_audio_tags(fixtures_dir / "sample.mp3")
 
     assert_that(tags).contains_key("year")
     assert_that(tags["year"]).is_equal_to("2024")
@@ -156,7 +157,7 @@ def test_tinytag_metadata_handles_exception(
     garbage = tmp_path / "broken.mp3"
     garbage.write_bytes(b"not-audio")
 
-    def _raise(_path: Path) -> None:
+    def _raise(*_args: object, **_kwargs: object) -> None:
         raise TinyTagException("cannot parse")
 
     monkeypatch.setattr(TinyTag, "get", staticmethod(_raise))
@@ -176,11 +177,12 @@ def test_read_audio_tags_handles_unreadable_ogg(tmp_path: Path) -> None:
     assert_that(tags).is_empty()
 
 
-# Field-by-field record of the audio backend (#400). Values were recorded from
-# main (mutagen 1.48.1 primary, tinytag fallback) on ffmpeg 9.0.2 samples and
-# on the committed fixtures. Durations compare to 2 ms and bitrates to 1 %, so
-# a different ffmpeg build writing the same samples still matches. Rows marked
-# "tinytag" or "ffprobe" differ from mutagen on purpose; the comment says why.
+# Field-by-field record of the audio backend (#400). Each row was recorded from
+# main (mutagen 1.48.1 primary, tinytag fallback) on the committed fixtures in
+# tests/media/fixtures/audio (see the README there) and on the older sample.*
+# fixtures. Durations compare to 2 ms and bitrates to 1 %. Rows that differ
+# from main on purpose carry a comment saying what main gave and why. Rows
+# marked needs_ffprobe are read by ffprobe and skip where it is not installed.
 @dataclass(frozen=True, slots=True)
 class _AudioFields:
     duration: float
@@ -188,28 +190,54 @@ class _AudioFields:
     sample_rate: int | None
     channels: int
     codec: str | None
+    needs_ffprobe: bool = False
 
 
-_FFMPEG_EXPECTED: dict[str, _AudioFields] = {
-    "mp3": _AudioFields(0.3396, 63983, 44100, 2, "mp3"),
-    "flac": _AudioFields(0.3, 123786, 44100, 2, "flac"),
-    "wav": _AudioFields(0.3, 128000, 8000, 1, "pcm"),
+_AUDIO_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "audio"
+
+_COMMITTED_EXPECTED: dict[str, _AudioFields] = {
+    "tone.mp3": _AudioFields(0.3396, 63983, 44100, 2, "mp3"),
+    "tone.flac": _AudioFields(0.3, 123786, 44100, 2, "flac"),
+    "tone.wav": _AudioFields(0.3, 128000, 8000, 1, "pcm"),
     # tinytag: 0.3 s, the length ffmpeg wrote; mutagen gave 0.3232 because it
     # counted the AAC priming samples.
-    "m4a-aac": _AudioFields(0.3, 63807, 44100, 2, "aac"),
+    "aac.m4a": _AudioFields(0.3, 63807, 44100, 2, "aac"),
     # tinytag: the codec is ALAC; mutagen labelled every MP4 aac.
-    "m4a-alac": _AudioFields(0.3, 1411200, 44100, 2, "alac"),
+    "alac.m4a": _AudioFields(0.3, 128000, 8000, 1, "alac"),
     # tinytag: bitrate 90 480 against mutagen's 91 680 (they average over
     # different spans), and tinytag knows Opus decodes at 48 kHz where mutagen
     # gave no sample rate.
-    "opus": _AudioFields(0.3, 90480, 48000, 2, "opus"),
-    "aiff": _AudioFields(0.3, 128000, 8000, 1, "pcm"),
-    # ffprobe: tinytag cannot read raw ADTS, so ffprobe does. Its stream
-    # bitrate is 65 853 against mutagen's 63 442 estimate; duration agrees.
-    "adts-aac": _AudioFields(0.325, 65853, 44100, 2, "aac"),
-    # tinytag + ffprobe: MS ADPCM in WAV. mutagen called it pcm and read the
-    # duration as 0.25 ms; tinytag reads 0.3 s and ffprobe names the codec.
-    "wav-adpcm": _AudioFields(0.3, 54613, 8000, 1, "adpcm_ms"),
+    "tone.opus": _AudioFields(0.3, 90480, 48000, 2, "opus"),
+    "tone.aiff": _AudioFields(0.3, 128000, 8000, 1, "pcm"),
+    # tinytag names the WMA codec from the ASF format code; mutagen gave none.
+    "tone.wma": _AudioFields(0.32, 32000, 8000, 1, "wmav2"),
+    # ffprobe: tinytag cannot read raw ADTS. Its stream bitrate is 65 853
+    # against mutagen's 63 442 estimate; duration agrees.
+    "tone.aac": _AudioFields(0.325, 65853, 44100, 2, "aac", needs_ffprobe=True),
+    # ffprobe: MS ADPCM in WAV. tinytag cannot name the codec, so its timing is
+    # not trusted. mutagen called it pcm and read 0.25 ms. ffprobe counts the
+    # whole last ADPCM block (0.512 s); the fact chunk says 0.3 s.
+    "adpcm.wav": _AudioFields(0.512, 32184, 8000, 1, "adpcm_ms", needs_ffprobe=True),
+    # ffprobe: FLAC in Ogg. tinytag reports duration 0 and no bitrate; mutagen
+    # gave 0.3 s and no bitrate. The bitrate is ffprobe's container rate.
+    "flac.oga": _AudioFields(0.3, 34213, 8000, 1, "flac", needs_ffprobe=True),
+    # ffprobe: IMA4 ADPCM in AIFF-C. tinytag reads 0.00475 s and mutagen called
+    # it pcm at 0.00475 s; ffprobe reads 0.304 s.
+    "ima4.aifc": _AudioFields(
+        0.304,
+        34000,
+        8000,
+        1,
+        "adpcm_ima_qt",
+        needs_ffprobe=True,
+    ),
+    # ffprobe: mutagen gave 0.3275 s, two channels and no codec for this mono
+    # AC-3 stream.
+    "tone.ac3": _AudioFields(0.336, 64000, 32000, 1, "ac3", needs_ffprobe=True),
+    # ffprobe: mutagen gave no bitrate, channels or codec for TrueAudio.
+    "tone.tta": _AudioFields(0.3, 49386, 8000, 1, "tta", needs_ffprobe=True),
+    # ffprobe: mutagen gave no bitrate, channels or codec for WavPack.
+    "tone.wv": _AudioFields(0.3, 61600, 8000, 1, "wavpack", needs_ffprobe=True),
 }
 
 _FIXTURE_EXPECTED: dict[str, _AudioFields] = {
@@ -218,6 +246,14 @@ _FIXTURE_EXPECTED: dict[str, _AudioFields] = {
     "sample.ogg": _AudioFields(0.2, 112000, 44100, 2, "vorbis"),
     "sample.wav": _AudioFields(0.2, 128000, 8000, 1, "pcm"),
 }
+
+_HAS_FFPROBE = shutil.which("ffprobe") is not None
+
+
+def _skip_without_ffprobe(expected: _AudioFields) -> None:
+    """Skip a row that ffprobe reads when ffprobe is not installed."""
+    if expected.needs_ffprobe and not _HAS_FFPROBE:
+        pytest.skip("ffprobe not installed")
 
 
 def _assert_fields(metadata: MediaMetadata, expected: _AudioFields) -> None:
@@ -239,21 +275,13 @@ def _assert_fields(metadata: MediaMetadata, expected: _AudioFields) -> None:
     assert_that(metadata.codec).is_equal_to(expected.codec)
 
 
-@pytest.fixture(scope="module")
-def ffmpeg_samples_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Return a directory the ffmpeg samples are written into on demand."""
-    return tmp_path_factory.mktemp("audio-samples")
+@pytest.mark.parametrize("filename", sorted(_COMMITTED_EXPECTED))
+def test_audio_fields_match_previous_backend(filename: str) -> None:
+    """The committed audio fixtures give the recorded technical fields."""
+    expected = _COMMITTED_EXPECTED[filename]
+    _skip_without_ffprobe(expected)
 
-
-@pytest.mark.parametrize("key", sorted(_FFMPEG_EXPECTED))
-def test_audio_fields_match_previous_backend(
-    ffmpeg_samples_dir: Path,
-    key: str,
-) -> None:
-    """ffmpeg-written samples give the recorded technical fields."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, key)
-
-    _assert_fields(extract_audio_metadata(path), _FFMPEG_EXPECTED[key])
+    _assert_fields(extract_audio_metadata(_AUDIO_FIXTURES / filename), expected)
 
 
 @pytest.mark.parametrize("filename", sorted(_FIXTURE_EXPECTED))
@@ -325,80 +353,78 @@ def test_read_audio_tags_id3_dates(
     case: str,
 ) -> None:
     """ID3 date frames map to the recorded tag keys and values."""
-    version, frames = _ID3_CASES[case]
+    id3_version, frames = _ID3_CASES[case]
     path = write_id3_sample(
         tmp_path / "dated.mp3",
         mp3_path=fixtures_dir / "sample.mp3",
         frames=frames,
-        version=version,
+        version=id3_version,
     )
 
     assert_that(read_audio_tags(path)).is_equal_to(_ID3_EXPECTED_TAGS[case])
 
 
-# tinytag adds the encoder fields mutagen's easy mode left out: ID3 TSSE as
-# encoder_settings, MP4 encoded_by, and the RIFF INFO ISFT software field.
-_FFMPEG_EXPECTED_TAGS: dict[str, dict[str, str]] = {
-    "mp3": {
-        "title": "Tone",
-        "artist": "Winnow",
-        "album": "Samples",
-        "year": "2019-07-04",
-        "encoder_settings": "<ffmpeg>",
-    },
-    "flac": {
-        "title": "Tone",
-        "artist": "Winnow",
-        "album": "Samples",
-        "year": "2019-07-04",
-        "encoder": "<ffmpeg>",
-    },
-    "wav": {
-        "title": "Tone",
-        "artist": "Winnow",
-        "album": "Samples",
-        "year": "2019-07-04",
-        "isft": "<ffmpeg>",
-    },
-    "m4a-aac": {
-        "title": "Tone",
-        "artist": "Winnow",
-        "album": "Samples",
-        "year": "2019-07-04",
-        "encoded_by": "<ffmpeg>",
-    },
-    "opus": {
-        "title": "Tone",
-        "artist": "Winnow",
-        "album": "Samples",
-        "year": "2019-07-04",
-        "encoder": "<ffmpeg>",
-    },
-    "aiff": {"title": "Tone"},
-    "adts-aac": {},
+_TONE_TAGS: dict[str, str] = {
+    "title": "Tone",
+    "artist": "Winnow",
+    "album": "Samples",
+    "year": "2019-07-04",
+}
+_SPLIT_TRACK: dict[str, str] = {"track": "3", "track_total": "9"}
+
+# Tags of the committed fixtures. Differences from main (mutagen easy mode):
+# - tinytag splits "3/9" into track "3" and track_total "9"; main gave
+#   track "3/9".
+# - tinytag adds the encoder fields easy mode left out: ID3 TSSE as
+#   encoder_settings, MP4 encoded_by and the RIFF INFO ISFT field.
+# - WMA: main gave author "Winnow, Winnow", wm/albumtitle,
+#   wm/encodingsettings and wm/tracknumber "3/9"; tinytag gives artist,
+#   album and encoder_settings and drops the non-numeric WM/TrackNumber.
+# - WavPack (APEv2 tags) and TrueAudio are not tinytag formats: no tags,
+#   where main read the WavPack tags.
+_COMMITTED_TAGS: dict[str, dict[str, str]] = {
+    "tone.mp3": {**_TONE_TAGS, **_SPLIT_TRACK, "encoder_settings": "Lavf63.1.102"},
+    "tone.flac": {**_TONE_TAGS, **_SPLIT_TRACK, "encoder": "Lavf63.1.102"},
+    "tone.wav": {**_TONE_TAGS, "isft": "Lavf63.1.102"},
+    "adpcm.wav": {**_TONE_TAGS, "isft": "Lavf63.1.102"},
+    "aac.m4a": {**_TONE_TAGS, **_SPLIT_TRACK, "encoded_by": "Lavf63.1.102"},
+    "alac.m4a": {**_TONE_TAGS, **_SPLIT_TRACK, "encoded_by": "Lavf63.1.102"},
+    "tone.opus": {**_TONE_TAGS, **_SPLIT_TRACK, "encoder": "Lavc63.1.102 libopus"},
+    "flac.oga": {**_TONE_TAGS, **_SPLIT_TRACK, "encoder": "Lavc63.1.102 flac"},
+    "tone.aiff": {"title": "Tone"},
+    "ima4.aifc": {"title": "Tone"},
+    "tone.wma": {**_TONE_TAGS, "encoder_settings": "Lavf63.1.102"},
+    "tone.aac": {},
+    "tone.ac3": {},
+    "tone.tta": {},
+    "tone.wv": {},
 }
 
 
-@pytest.mark.parametrize("key", sorted(_FFMPEG_EXPECTED_TAGS))
-def test_read_audio_tags_match_previous_backend(
-    ffmpeg_samples_dir: Path,
-    key: str,
-) -> None:
-    """ffmpeg-written samples give the recorded tag keys and values.
+@pytest.mark.parametrize("filename", sorted(_COMMITTED_TAGS))
+def test_read_audio_tags_match_previous_backend(filename: str) -> None:
+    """The committed fixtures give the recorded tag keys and values."""
+    tags = read_audio_tags(_AUDIO_FIXTURES / filename)
 
-    ``<ffmpeg>`` stands for an encoder string that names the ffmpeg build.
-    """
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, key)
+    assert_that(tags).is_equal_to(_COMMITTED_TAGS[filename])
 
-    tags = read_audio_tags(path)
 
-    expected = _FFMPEG_EXPECTED_TAGS[key]
-    assert_that(sorted(tags)).is_equal_to(sorted(expected))
-    for name, value in expected.items():
-        if value == "<ffmpeg>":
-            assert_that(tags[name]).matches(r"^Lav[cf]")
-        else:
-            assert_that(tags[name]).is_equal_to(value)
+def test_every_committed_fixture_is_recorded() -> None:
+    """Each committed audio fixture has a fields row and a tags row."""
+    committed = sorted(
+        path.name
+        for path in _AUDIO_FIXTURES.iterdir()
+        if path.is_file() and path.suffix not in {".py", ".md"}
+    )
+
+    assert_that(committed).is_equal_to(sorted(_COMMITTED_EXPECTED))
+    assert_that(committed).is_equal_to(sorted(_COMMITTED_TAGS))
+
+
+def test_committed_fixtures_are_small() -> None:
+    """Every committed audio fixture stays under 20 kB."""
+    for path in _AUDIO_FIXTURES.iterdir():
+        assert_that(path.stat().st_size).is_less_than(20_000)
 
 
 # --- tinytag as the primary backend, ffprobe for the gaps (#400) --------------
@@ -459,24 +485,24 @@ def _no_ffprobe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
 
-def test_alac_codec_label(ffmpeg_samples_dir: Path) -> None:
+def test_alac_codec_label() -> None:
     """ALAC in an M4A file is labelled alac, not aac."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, "m4a-alac")
+    path = _AUDIO_FIXTURES / "alac.m4a"
 
     assert_that(extract_audio_metadata(path).codec).is_equal_to("alac")
 
 
-def test_opus_reports_48k_sample_rate(ffmpeg_samples_dir: Path) -> None:
+def test_opus_reports_48k_sample_rate() -> None:
     """Opus reports the 48 kHz rate it always decodes at."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, "opus")
+    path = _AUDIO_FIXTURES / "tone.opus"
 
     assert_that(extract_audio_metadata(path).sample_rate).is_equal_to(48000)
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not installed")
-def test_adts_aac_uses_ffprobe(ffmpeg_samples_dir: Path) -> None:
+@pytest.mark.skipif(not _HAS_FFPROBE, reason="ffprobe not installed")
+def test_adts_aac_uses_ffprobe() -> None:
     """Raw ADTS AAC, which tinytag cannot read, is read by ffprobe."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, "adts-aac")
+    path = _AUDIO_FIXTURES / "tone.aac"
 
     assert_that(audio_module._metadata_from_tinytag(path=path)).is_none()
     metadata = extract_audio_metadata(path)
@@ -486,10 +512,10 @@ def test_adts_aac_uses_ffprobe(ffmpeg_samples_dir: Path) -> None:
     assert_that(float(metadata.duration_seconds or 0.0)).is_greater_than(0.3)
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not installed")
-def test_compressed_wav_is_not_labelled_pcm(ffmpeg_samples_dir: Path) -> None:
+@pytest.mark.skipif(not _HAS_FFPROBE, reason="ffprobe not installed")
+def test_compressed_wav_is_not_labelled_pcm() -> None:
     """A WAV holding MS ADPCM gets its real codec from ffprobe, not pcm."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, "wav-adpcm")
+    path = _AUDIO_FIXTURES / "adpcm.wav"
 
     metadata = extract_audio_metadata(path)
 
@@ -497,19 +523,26 @@ def test_compressed_wav_is_not_labelled_pcm(ffmpeg_samples_dir: Path) -> None:
     assert_that(metadata.bit_depth).is_equal_to(4)
 
 
+@pytest.mark.parametrize("filename", ["adpcm.wav", "ima4.aifc"])
 def test_compressed_wav_without_ffprobe_has_no_codec(
-    ffmpeg_samples_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
+    filename: str,
 ) -> None:
-    """Without ffprobe a compressed WAV keeps tinytag's fields and no codec."""
-    path = write_ffmpeg_sample(ffmpeg_samples_dir, "wav-adpcm")
+    """Without ffprobe a compressed WAV or AIFF-C keeps only its stream header.
+
+    tinytag cannot name the codec, so its duration and bitrate are not known
+    to be right and are reported as unknown, never as tinytag's numbers.
+    """
+    path = _AUDIO_FIXTURES / filename
     _no_ffprobe(monkeypatch)
 
     metadata = extract_audio_metadata(path)
 
     assert_that(metadata.codec).is_none()
     assert_that(metadata.sample_rate).is_equal_to(8000)
-    assert_that(float(metadata.duration_seconds or 0.0)).is_close_to(0.3, 0.002)
+    assert_that(metadata.channels).is_equal_to(1)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.bitrate).is_none()
 
 
 def test_audio_without_ffprobe_degrades(
@@ -544,7 +577,7 @@ def test_tinytag_exception_still_reaches_ffprobe(
 ) -> None:
     """An unsupported-format error from tinytag falls through to ffprobe."""
 
-    def _raise(_path: Path) -> None:
+    def _raise(*_args: object, **_kwargs: object) -> None:
         raise TinyTagException("No tag reader found to support file type")
 
     monkeypatch.setattr(TinyTag, "get", staticmethod(_raise))
@@ -561,18 +594,49 @@ def test_ffprobe_fills_only_fields_tinytag_left_unknown(
     fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A known duration does not stop ffprobe filling a missing codec."""
+    """With a trusted tinytag timing, ffprobe fills only the missing fields."""
     monkeypatch.setattr(
         audio_module,
         "_metadata_from_tinytag",
-        lambda *, path: MediaMetadata(duration_seconds=0.25, channels=1),
+        lambda *, path: MediaMetadata(
+            duration_seconds=0.25,
+            bitrate=96000,
+            channels=1,
+            codec="pcm",
+        ),
     )
     _fake_ffprobe(monkeypatch, _FFPROBE_WAV)
 
     metadata = extract_audio_metadata(fixtures_dir / "sample.wav")
 
     assert_that(metadata.duration_seconds).is_equal_to(0.25)
+    assert_that(metadata.bitrate).is_equal_to(96000)
     assert_that(metadata.codec).is_equal_to("pcm")
+    assert_that(metadata.sample_rate).is_equal_to(8000)
+
+
+def test_unnamed_codec_takes_ffprobe_timing(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When tinytag cannot name the codec, ffprobe's duration and bitrate win."""
+    monkeypatch.setattr(
+        audio_module,
+        "_metadata_from_tinytag",
+        lambda *, path: MediaMetadata(
+            duration_seconds=0.25,
+            bitrate=96000,
+            channels=1,
+        ),
+    )
+    _fake_ffprobe(monkeypatch, _FFPROBE_WAV)
+
+    metadata = extract_audio_metadata(fixtures_dir / "sample.wav")
+
+    assert_that(metadata.duration_seconds).is_equal_to(0.2)
+    assert_that(metadata.bitrate).is_equal_to(128000)
+    assert_that(metadata.codec).is_equal_to("pcm")
+    assert_that(metadata.channels).is_equal_to(1)
     assert_that(metadata.sample_rate).is_equal_to(8000)
 
 
@@ -580,7 +644,10 @@ def test_ffprobe_failure_keeps_tinytag_fields(
     fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When ffprobe fails, the fields tinytag read are still returned."""
+    """When ffprobe fails, tinytag's trusted fields are still returned.
+
+    Its duration is not trusted here (no codec named), so it is unknown.
+    """
     monkeypatch.setattr(
         audio_module,
         "_metadata_from_tinytag",
@@ -590,7 +657,8 @@ def test_ffprobe_failure_keeps_tinytag_fields(
 
     metadata = extract_audio_metadata(fixtures_dir / "sample.wav")
 
-    assert_that(metadata.duration_seconds).is_equal_to(0.25)
+    assert_that(metadata.channels).is_equal_to(1)
+    assert_that(metadata.duration_seconds).is_none()
     assert_that(metadata.codec).is_none()
 
 
@@ -611,11 +679,8 @@ def test_ffprobe_launch_failure_is_not_fatal(
     ).is_none()
 
 
-def test_zero_length_stream_is_kept(
-    fixtures_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A parsed stream with zero duration is a real empty recording."""
+def _fake_zero_length_flac(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make tinytag report a FLAC stream with duration 0 and bitrate 0."""
     fake = SimpleNamespace(
         samplerate=44100,
         channels=2,
@@ -624,13 +689,55 @@ def test_zero_length_stream_is_kept(
         bitdepth=16,
         mime_type="audio/flac",
     )
-    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda _path: fake))
+    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda *_args, **_kwargs: fake))
+
+
+def test_zero_length_stream_is_kept(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parsed stream with zero duration is kept, its duration left unknown.
+
+    tinytag's zero is not reported as a fact: without ffprobe to confirm it,
+    the duration and bitrate are ``None``, while the stream fields remain.
+    """
+    _fake_zero_length_flac(monkeypatch)
     _no_ffprobe(monkeypatch)
 
     metadata = extract_audio_metadata(fixtures_dir / "sample.flac")
 
-    assert_that(metadata.duration_seconds).is_equal_to(0.0)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.bitrate).is_none()
     assert_that(metadata.sample_rate).is_equal_to(44100)
+    assert_that(metadata.codec).is_equal_to("flac")
+
+
+def test_zero_length_stream_confirmed_by_ffprobe(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero duration that ffprobe also reports is a real empty recording."""
+    _fake_zero_length_flac(monkeypatch)
+    payload = json.dumps(
+        {
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "codec_name": "flac",
+                    "sample_rate": "44100",
+                    "channels": 2,
+                    "duration": "0.000000",
+                },
+            ],
+            "format": {"duration": "0.000000"},
+        },
+    )
+    _fake_ffprobe(monkeypatch, payload)
+
+    metadata = extract_audio_metadata(fixtures_dir / "sample.flac")
+
+    assert_that(metadata.duration_seconds).is_equal_to(0.0)
+    assert_that(metadata.bitrate).is_none()
 
 
 def test_no_parsed_stream_is_not_a_result(
@@ -646,7 +753,7 @@ def test_no_parsed_stream_is_not_a_result(
         bitdepth=None,
         mime_type="audio/mpeg",
     )
-    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda _path: fake))
+    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda *_args, **_kwargs: fake))
 
     result = audio_module._metadata_from_tinytag(path=fixtures_dir / "sample.mp3")
 
@@ -666,7 +773,7 @@ def test_old_tinytag_without_mime_type_gets_codec_from_ffprobe(
         bitdepth=16,
         mime_type=None,
     )
-    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda _path: fake))
+    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda *_args, **_kwargs: fake))
     _fake_ffprobe(monkeypatch, _FFPROBE_WAV)
 
     metadata = extract_audio_metadata(fixtures_dir / "sample.wav")
@@ -830,6 +937,7 @@ def test_read_audio_tags_skips_aac_it_cannot_read(tmp_path: Path) -> None:
 
 
 def test_read_audio_tags_joins_multiple_values(
+    fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Several values for one tag are joined, empty values dropped."""
@@ -841,9 +949,9 @@ def test_read_audio_tags_joins_multiple_values(
             "tracknumber": ["7"],
         },
     )
-    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda _path: fake))
+    monkeypatch.setattr(TinyTag, "get", staticmethod(lambda *_args, **_kwargs: fake))
 
-    tags = read_audio_tags(Path("song.mp3"))
+    tags = read_audio_tags(fixtures_dir / "sample.mp3")
 
     assert_that(tags).is_equal_to({"artist": "A, B", "track": "7"})
 

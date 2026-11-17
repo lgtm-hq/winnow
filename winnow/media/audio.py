@@ -1,10 +1,27 @@
 """Audio metadata and tag extraction.
 
-Uses :mod:`tinytag` as the primary backend and ffprobe, when installed, for
-what tinytag cannot read: formats it does not support (raw ADTS ``.aac``),
-files it fails on, and fields it leaves unknown (for example the codec inside
-a WAV or AIFF container that is not plain PCM). Together these cover MP3,
-FLAC, WAV, AIFF, AAC/MP4 (including ALAC), Ogg Vorbis and Opus.
+The container is identified from the file's content, never its name
+(:mod:`winnow.media._audio_sniff`). tinytag reads the containers it parses
+(MPEG, FLAC, MP4, Ogg, WAVE, ASF, AIFF) from an open file object, so its
+extension-based parser choice never applies. ffprobe, when installed, reads
+what tinytag cannot: other formats (raw ADTS AAC, AC-3, TrueAudio, WavPack,
+...), files tinytag fails on, and fields it leaves unknown or that cannot be
+trusted.
+
+Which source is trusted for which field:
+
+- ``sample_rate``, ``channels`` and ``bit_depth``: tinytag, from the stream
+  header it parsed; ffprobe only fills them when tinytag has none.
+- ``codec``: tinytag when its MIME type names the codec; otherwise ffprobe;
+  otherwise unknown.
+- ``duration_seconds`` and ``bitrate``: tinytag only when it named the codec
+  and reported a duration above zero (and, for the bitrate, a bitrate above
+  zero). A container whose codec tinytag cannot name (a compressed WAV or
+  AIFF-C, for example) or a zero duration (FLAC in Ogg) means tinytag's
+  timing is not known to be right, so both come from ffprobe; without
+  ffprobe they are unknown (``None``), never tinytag's guess.
+- A file whose container cannot be established from its content is read by
+  ffprobe alone; without ffprobe, :class:`MediaError` says so.
 """
 
 from __future__ import annotations
@@ -18,6 +35,10 @@ from loguru import logger
 from tinytag import TinyTag, TinyTagException
 
 from winnow.exceptions import MediaError
+from winnow.media._audio_sniff import (
+    sniff_audio_container,
+    wave_subformat,
+)
 from winnow.media._coerce import (
     coerce_non_negative_float,
     coerce_non_negative_int,
@@ -27,11 +48,6 @@ from winnow.models.media import MediaMetadata
 
 _FFPROBE: Final = "ffprobe"
 _PROBE_TIMEOUT_SECONDS: Final = 30.0
-
-_TINYTAG_EXTENSIONS: Final = frozenset(
-    extension.lower() for extension in TinyTag.SUPPORTED_FILE_EXTENSIONS
-)
-"""Extensions tinytag parses; it misreads others (ADTS ``.aac`` as MPEG)."""
 
 _MIME_CODECS: Final[dict[str, str]] = {
     "audio/mpeg": "mp3",
@@ -61,9 +77,24 @@ _WAV_MIME_TYPES: Final = frozenset(
     {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"},
 )
 _AIFF_MIME_TYPES: Final = frozenset({"audio/aiff", "audio/x-aiff", "audio/aifc"})
+_ASF_MIME_TYPES: Final = frozenset(
+    {"application/vnd.ms-asf", "audio/x-ms-wma", "video/x-ms-asf"},
+)
+
+_ASF_CODECS: Final[dict[str, str]] = {
+    "160": "wmav1",
+    "161": "wmav2",
+    "162": "wmapro",
+    "163": "wmalossless",
+}
+"""ASF audio format codes (hexadecimal, as tinytag prints them) for WMA."""
+
+_WAVE_EXTENSIBLE: Final = "fffe"
+"""WAVE format code whose real codec is in the ``fmt `` subformat GUID."""
 
 _WAV_PCM_FORMAT_CODES: Final = frozenset({"1", "3"})
 """WAVE format codes that are plain PCM: 1 integer PCM, 3 IEEE float."""
+_WAV_PCM_SUBFORMATS: Final = frozenset({1, 3})
 
 _AIFF_PCM_COMPRESSION_TYPES: Final = frozenset(
     {"none", "sowt", "twos", "raw ", "fl32", "fl64", "in24", "in32"},
@@ -97,14 +128,20 @@ _TECHNICAL_FIELDS: Final = frozenset(
 )
 """``TinyTag.as_dict`` keys that describe the stream, not tags."""
 
+_TINYTAG_ATTRIBUTES: Final = frozenset(
+    name for name in vars(TinyTag()) if not name.startswith("_")
+)
+"""tinytag's public attributes; an extra field named like one gets a ``_``."""
+
 
 def extract_audio_metadata(path: Path) -> MediaMetadata:
     """Extract technical metadata from an audio file.
 
-    Reads the file with tinytag. When tinytag cannot read it, finds no audio
-    stream, or leaves the duration, sample rate, channels or codec unknown,
-    the missing fields come from ffprobe when it is installed. Missing
-    individual fields are left as ``None`` rather than failing.
+    The container is identified from the content. tinytag reads the
+    containers it parses; ffprobe, when installed, reads everything else and
+    supplies fields tinytag leaves unknown or whose values cannot be trusted
+    (see the module docstring for which source wins for which field). A field
+    no trusted source determines is ``None``.
 
     Args:
         path: Filesystem path to the audio file.
@@ -114,7 +151,8 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
         depth, and a codec label.
 
     Raises:
-        MediaError: If the file is missing or no backend can read it.
+        MediaError: If the file is missing, if no backend can read it, or if
+            reading it needs ffprobe and ffprobe is not installed.
     """
     if not path.is_file():
         raise MediaError(
@@ -127,16 +165,12 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
     if metadata is not None and _is_complete(metadata):
         return metadata
 
-    probed = _metadata_from_ffprobe(path=path)
-    if metadata is None:
-        metadata = probed
-    elif probed is not None:
-        metadata = _fill_missing(metadata, probed)
-    if metadata is not None:
-        return metadata
+    combined = _combine(metadata, _metadata_from_ffprobe(path=path))
+    if combined is not None:
+        return combined
 
     raise MediaError(
-        "unsupported or corrupt audio file",
+        _unreadable_reason(path),
         operation="extract_audio_metadata",
         file_path=path,
     )
@@ -150,7 +184,8 @@ def read_audio_tags(path: Path) -> dict[str, str]:
     ``composer``, ``comment``, ...) and every extra field it reports. Keys are
     lowercase; ``date`` is aliased to ``year``, ``tracknumber`` to ``track`` and
     the ID3 ``TDOR`` frame to ``originaldate``. WAV files return their RIFF
-    ``INFO`` tags. Failures degrade to an empty mapping.
+    ``INFO`` tags. A file whose container tinytag does not parse, or that it
+    fails on, gives an empty mapping.
 
     Args:
         path: Filesystem path to the audio file.
@@ -163,20 +198,25 @@ def read_audio_tags(path: Path) -> dict[str, str]:
 
 
 def _read_tinytag(path: Path) -> TinyTag | None:
-    """Parse a file with tinytag, or return ``None`` when it cannot.
+    """Parse a file with tinytag, choosing the parser from the content.
+
+    tinytag is given an open file object and no file name, so it sniffs the
+    content instead of trusting the extension; and it is only called for a
+    container :func:`sniff_audio_container` established.
 
     Args:
         path: Filesystem path to the audio file.
 
     Returns:
-        The parsed tag, or ``None`` for an unsupported extension or a parse
-        failure.
+        The parsed tag, or ``None`` when the container is not one tinytag
+        parses or parsing fails.
     """
-    if path.suffix.lower() not in _TINYTAG_EXTENSIONS:
-        logger.debug("tinytag does not support {}", path)
+    if sniff_audio_container(path) is None:
+        logger.debug("no tinytag container recognised in the content of {}", path)
         return None
     try:
-        return TinyTag.get(path)
+        with path.open("rb") as handle:
+            return TinyTag.get(file_obj=handle)
     except (TinyTagException, OSError, ValueError) as exc:
         logger.debug("tinytag could not read {}: {}", path, exc)
         return None
@@ -184,6 +224,8 @@ def _read_tinytag(path: Path) -> TinyTag | None:
 
 def _metadata_from_tinytag(*, path: Path) -> MediaMetadata | None:
     """Build metadata from tinytag.
+
+    A bitrate of zero is not a bitrate and is left unknown.
 
     Args:
         path: Filesystem path to the audio file.
@@ -205,42 +247,104 @@ def _metadata_from_tinytag(*, path: Path) -> MediaMetadata | None:
         return None
 
     kbps = coerce_non_negative_float(tag.bitrate)
-    bitrate = int(kbps * 1000) if kbps is not None else None
+    bitrate = int(kbps * 1000) if kbps else None
     return MediaMetadata(
         duration_seconds=coerce_non_negative_float(tag.duration),
         bitrate=bitrate,
         sample_rate=sample_rate,
         channels=channels,
         bit_depth=coerce_non_negative_int(tag.bitdepth),
-        codec=_codec_from_mime_type(tag.mime_type),
+        codec=_codec_from_mime_type(
+            tag.mime_type,
+            subformat=_wave_extensible_subformat(path, tag.mime_type),
+        ),
     )
 
 
-def _codec_from_mime_type(mime_type: str | None) -> str | None:
+def _wave_extensible_subformat(path: Path, mime_type: str | None) -> int | None:
+    """Return the subformat of a ``WAVE_FORMAT_EXTENSIBLE`` file, else ``None``.
+
+    Args:
+        path: The audio file.
+        mime_type: tinytag's MIME type for it.
+
+    Returns:
+        The subformat code when tinytag reported format code ``FFFE``.
+    """
+    if not mime_type:
+        return None
+    media_type, codecs = _parse_mime_type(mime_type)
+    if media_type not in _WAV_MIME_TYPES or codecs[:1] != [_WAVE_EXTENSIBLE]:
+        return None
+    return wave_subformat(path)
+
+
+def _codec_from_mime_type(
+    mime_type: str | None,
+    *,
+    subformat: int | None = None,
+) -> str | None:
     """Map tinytag's MIME type and codecs parameter to a codec label.
 
     Args:
         mime_type: Value such as ``audio/mp4; codecs="mp4a.40.2"``.
+        subformat: For a ``WAVE_FORMAT_EXTENSIBLE`` WAV, the subformat code
+            read from its ``fmt `` chunk.
 
     Returns:
         A label such as ``aac``, ``alac``, ``mp3``, ``flac``, ``vorbis``,
-        ``opus`` or ``pcm``, or ``None`` when the MIME type does not identify
-        the codec (for example a WAV or AIFF holding compressed audio).
+        ``opus``, ``wmav2`` or ``pcm``, or ``None`` when the MIME type does not
+        identify the codec (for example a WAV or AIFF holding compressed
+        audio).
     """
     if not mime_type:
         return None
     media_type, codecs = _parse_mime_type(mime_type)
     if media_type in _WAV_MIME_TYPES:
-        return "pcm" if codecs and codecs[0] in _WAV_PCM_FORMAT_CODES else None
+        return _wave_codec(codecs, subformat)
     if media_type in _AIFF_MIME_TYPES:
         return "pcm" if codecs and codecs[0] in _AIFF_PCM_COMPRESSION_TYPES else None
+    if media_type in _ASF_MIME_TYPES:
+        return _ASF_CODECS.get(codecs[0]) if codecs else None
+    return _codec_from_tokens(codecs) or _MIME_CODECS.get(media_type)
+
+
+def _codec_from_tokens(codecs: list[str]) -> str | None:
+    """Label the first RFC 6381 codecs-parameter token winnow knows.
+
+    Args:
+        codecs: Lowercase codec tokens.
+
+    Returns:
+        The label, or ``None`` when no token is known.
+    """
     for token in codecs:
         if token.startswith("mp4a.40."):
             return "aac"
         label = _CODEC_TOKENS.get(token)
         if label is not None:
             return label
-    return _MIME_CODECS.get(media_type)
+    return None
+
+
+def _wave_codec(codecs: list[str], subformat: int | None) -> str | None:
+    """Label a WAV stream from its format code (and subformat, if extensible).
+
+    Args:
+        codecs: Codec tokens from tinytag's MIME type; the first is the
+            hexadecimal WAVE format code.
+        subformat: The ``WAVE_FORMAT_EXTENSIBLE`` subformat code, if known.
+
+    Returns:
+        ``pcm`` for integer or float PCM, otherwise ``None``.
+    """
+    if not codecs:
+        return None
+    if codecs[0] in _WAV_PCM_FORMAT_CODES:
+        return "pcm"
+    if codecs[0] == _WAVE_EXTENSIBLE and subformat in _WAV_PCM_SUBFORMATS:
+        return "pcm"
+    return None
 
 
 def _parse_mime_type(mime_type: str) -> tuple[str, list[str]]:
@@ -269,21 +373,62 @@ def _parse_mime_type(mime_type: str) -> tuple[str, list[str]]:
     return media_type.strip().lower(), codecs
 
 
-def _is_complete(metadata: MediaMetadata) -> bool:
-    """Return whether tinytag gave every field ffprobe could fill.
+def _timing_is_trusted(metadata: MediaMetadata) -> bool:
+    """Return whether tinytag's duration and bitrate can be reported as facts.
+
+    They are trusted only when tinytag named the codec (so it parsed a stream
+    it understands) and found a duration above zero.
 
     Args:
         metadata: Metadata read by tinytag.
 
     Returns:
-        ``True`` when duration, sample rate, channels and codec are all known.
+        ``True`` when the duration and bitrate may be kept.
     """
-    return None not in (
+    return metadata.codec is not None and bool(metadata.duration_seconds)
+
+
+def _is_complete(metadata: MediaMetadata) -> bool:
+    """Return whether tinytag gave every field ffprobe could fill, all trusted.
+
+    Args:
+        metadata: Metadata read by tinytag.
+
+    Returns:
+        ``True`` when duration, bitrate, sample rate, channels and codec are
+        known and the timing is trusted.
+    """
+    return _timing_is_trusted(metadata) and None not in (
         metadata.duration_seconds,
+        metadata.bitrate,
         metadata.sample_rate,
         metadata.channels,
         metadata.codec,
     )
+
+
+def _combine(
+    metadata: MediaMetadata | None,
+    probed: MediaMetadata | None,
+) -> MediaMetadata | None:
+    """Merge tinytag's and ffprobe's readings by the trust rule.
+
+    Args:
+        metadata: Metadata read by tinytag, if any.
+        probed: Metadata read by ffprobe, if any.
+
+    Returns:
+        The combined metadata, or ``None`` when neither backend read the file.
+    """
+    if metadata is None:
+        return probed
+    if not _timing_is_trusted(metadata):
+        metadata = metadata.model_copy(
+            update={"duration_seconds": None, "bitrate": None},
+        )
+    if probed is None:
+        return metadata
+    return _fill_missing(metadata, probed)
 
 
 def _fill_missing(metadata: MediaMetadata, probed: MediaMetadata) -> MediaMetadata:
@@ -298,6 +443,28 @@ def _fill_missing(metadata: MediaMetadata, probed: MediaMetadata) -> MediaMetada
     """
     known = metadata.model_dump(exclude_none=True)
     return probed.model_copy(update=known)
+
+
+def _unreadable_reason(path: Path) -> str:
+    """Say why no backend could read a file.
+
+    Args:
+        path: The audio file.
+
+    Returns:
+        An error message that names ffprobe when its absence is the reason.
+    """
+    if shutil.which(_FFPROBE) is not None:
+        return "unsupported or corrupt audio file"
+    if sniff_audio_container(path) is None:
+        return (
+            "the audio format cannot be established from the file's content "
+            "without ffprobe, and ffprobe (FFmpeg) is not installed"
+        )
+    return (
+        "tinytag cannot read this audio stream, and ffprobe (FFmpeg), which "
+        "might, is not installed"
+    )
 
 
 def _metadata_from_ffprobe(*, path: Path) -> MediaMetadata | None:
@@ -324,7 +491,9 @@ def _metadata_from_ffprobe(*, path: Path) -> MediaMetadata | None:
                 "json",
                 "-show_format",
                 "-show_streams",
-                str(path),
+                # An absolute path never starts with "-" (an option) or
+                # "name:" (a protocol), so ffprobe reads it as a file.
+                str(path.absolute()),
             ],
             timeout=_PROBE_TIMEOUT_SECONDS,
             operation="extract_audio_metadata",
@@ -443,6 +612,12 @@ def _normalize_tag_key(key: str) -> str:
 def _tags_from_tinytag(*, path: Path) -> dict[str, str]:
     """Read tags via tinytag.
 
+    tinytag stores an extra field whose name clashes with one of its own
+    attributes under that name with a leading underscore (ffmpeg's WMA
+    ``title`` descriptor becomes ``_title`` next to ``title``). Such a field's
+    values are merged into the attribute's key instead of appearing as a
+    separate ``_``-prefixed tag.
+
     Args:
         path: Filesystem path to the audio file.
 
@@ -453,12 +628,21 @@ def _tags_from_tinytag(*, path: Path) -> dict[str, str]:
     if tag is None:
         return {}
 
-    result: dict[str, str] = {}
+    collected: dict[str, list[str]] = {}
     for key, value in tag.as_dict().items():
         if key in _TECHNICAL_FIELDS:
             continue
-        values = value if isinstance(value, list) else [value]
-        joined = ", ".join(str(item) for item in values if item not in (None, ""))
-        if joined:
-            result[_normalize_tag_key(key)] = joined
-    return result
+        values = [
+            str(item)
+            for item in (value if isinstance(value, list) else [value])
+            if item not in (None, "")
+        ]
+        if not values:
+            continue
+        clashing = key.removeprefix("_")
+        if key.startswith("_") and clashing in _TINYTAG_ATTRIBUTES:
+            merged = collected.setdefault(_normalize_tag_key(clashing), [])
+            merged.extend(item for item in values if item not in merged)
+            continue
+        collected[_normalize_tag_key(key)] = values
+    return {key: ", ".join(values) for key, values in collected.items()}
