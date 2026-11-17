@@ -1,18 +1,19 @@
 """Fixture tests for the audio reader against the installed ffprobe.
 
-These need a real ffprobe and are skipped when none is installed. Values that
-depend on the FFmpeg build (reported durations, stream bitrates, benign stderr
-lines) are pinned per major version; on a major without pins the tests fail
-instead of guessing. True values come from the fixture generator's table.
-Truncated and hostile inputs are built here from the committed fixtures.
+These need a real ffprobe and are skipped when none is installed. Every
+reported value is compared with the true value from the fixture generator's
+table (the generation parameters), with the tolerances stated below. What
+depends on the FFmpeg build (the benign stderr lines, which fixtures carry a
+stream bitrate) is pinned per major version; on a major without pins the
+tests fail instead of guessing. Truncated and hostile inputs are built here
+from the committed fixtures.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
-import random
 import shutil
-import subprocess  # nosec B404 - reads `ffprobe -version` only
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,10 +25,18 @@ from assertpy import assert_that
 from tests.media.fixtures.audio.generate_audio_fixtures import (
     CHAINED_OGG,
     FIXTURES,
+    FRAME_CUTS,
+    FRAME_SOURCES,
     AudioFixture,
+    FrameCut,
 )
 from winnow.media import audio as audio_module
-from winnow.media._ffprobe import ffprobe_available, find_binary, parse_version_major
+from winnow.media._ffprobe import (
+    ffprobe_available,
+    ffprobe_version,
+    find_binary,
+    parse_version_major,
+)
 from winnow.media.audio import BENIGN_STDERR_BY_MAJOR, extract_audio_metadata
 from winnow.media.video import extract_video_metadata
 from winnow.models.media import AudioFlag, MediaMetadata
@@ -36,9 +45,8 @@ pytestmark = pytest.mark.skipif(not ffprobe_available(), reason="ffprobe not ins
 
 AUDIO_DIR: Final[Path] = Path(__file__).resolve().parent / "fixtures" / "audio"
 MEDIA_DIR: Final[Path] = Path(__file__).resolve().parent / "fixtures"
-BY_NAME: Final[dict[str, AudioFixture]] = {
-    fixture.name: fixture for fixture in FIXTURES
-}
+HEALTHY: Final[tuple[AudioFixture, ...]] = (*FIXTURES, *FRAME_SOURCES)
+BY_NAME: Final[dict[str, AudioFixture]] = {fixture.name: fixture for fixture in HEALTHY}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,13 +55,12 @@ class Pins:
 
     Args:
         benign: Benign stderr lines.
-        durations: Reported duration per healthy fixture.
-        bitrates: Reported stream bitrate per fixture with a declared duration.
+        stream_bitrate: Fixtures with a declared duration whose primary
+            stream has a ``bit_rate`` in this build.
     """
 
     benign: frozenset[str]
-    durations: dict[str, float]
-    bitrates: dict[str, int]
+    stream_bitrate: frozenset[str]
 
 
 PINS: Final[dict[int, Pins]] = {
@@ -63,49 +70,28 @@ PINS: Final[dict[int, Pins]] = {
                 "Estimating duration from bitrate, this may be inaccurate",
                 "invalid concatenated file detected - using bitrate for duration",
                 "ignoring wrong sample_count",
-                "Ignoring maximum wav data size",
+                "Ignoring maximum wav data size, file may be invalid",
+                "Unsupported codec with id <N> for input stream <M>",
+                "stream 0, timescale not set",
             },
         ),
-        durations={
-            "mp3.mp3": 6.0,
-            "adts.aac": 2.026666,
-            "ac3.ac3": 1.024,
-            "eac3.eac3": 1.024,
-            "flac.flac": 2.0,
-            "wavpack.wv": 2.0,
-            "tta.tta": 2.0,
-            "wav.wav": 1.0,
-            "aiff.aiff": 2.0,
-            "aac.m4a": 2.0,
-            "opus.ogg": 2.0065,
-            "wma.wma": 3.018,
-            "opus.mka": 2.008,
-            "pcm.avi": 1.0,
-            "mp2.m2ts": 2.016,
-            "mp2.mpg": 2.016,
-            "mp3.flv": 2.063,
-            "mp2_named.mp3": 2.016,
-            "alac.m4a": 2.0,
-            "adpcm_ms.wav": 2.0,
-            "ac3_mono.ac3": 1.024,
-            "flac24.flac": 2.0,
-            "two_tracks.mka": 2.0,
-            "cover.mp3": 6.0,
-            "delayed.mkv": 1.014,
-            "delayed.mp4": 1.021333,
-            "vbr_noxing.mp3": 2.037551,
-        },
-        bitrates={
-            "mp3.mp3": 8000,
-            "wav.wav": 64000,
-            "aiff.aiff": 34000,
-            "aac.m4a": 23667,
-            "wma.wma": 24000,
-            "alac.m4a": 320,
-            "adpcm_ms.wav": 32184,
-            "cover.mp3": 8000,
-            "delayed.mp4": 1503,
-        },
+        stream_bitrate=frozenset(
+            {
+                "mp3.mp3",
+                "wav.wav",
+                "aiff.aiff",
+                "aac.m4a",
+                "wma.wma",
+                "alac.m4a",
+                "adpcm_ms.wav",
+                "cover.mp3",
+                "delayed.mp4",
+                "cover.m4a",
+                "timecode.mov",
+                "frames.mp3",
+                "frames.m4a",
+            },
+        ),
     ),
 }
 """Build-dependent values per FFmpeg major, measured on 9.0.2."""
@@ -133,7 +119,19 @@ ALLOWED_EXTENSIONS: Final[tuple[str, ...]] = (
 
 WRONG_EXTENSIONS: Final[tuple[str, ...]] = (".wav", ".flac", ".txt", ".mp4", ".ogg")
 DURATION_TOLERANCE: Final[float] = 0.07
-"""Largest gap between a reported and a true duration among the fixtures."""
+"""Reported minus true duration, in seconds, allowed for a healthy fixture.
+
+Encoders add delay and padding that containers count: the largest is
+``mp3.flv``, a 22.05 kHz MP3 whose LAME delay and end padding come to about
+2.4 frames of 26.1 ms (63 ms).
+"""
+
+BITRATE_TOLERANCE: Final[float] = 0.05
+"""Relative gap allowed between a stream bitrate and the nominal bitrate.
+
+``aac.m4a`` is 1.4 % under its 24 kbit/s target and ``adpcm_ms.wav`` 0.6 %
+over 4 bits per sample (MS ADPCM block headers).
+"""
 
 
 def _installed_major() -> int | None:
@@ -145,15 +143,7 @@ def _installed_major() -> int | None:
     binary = find_binary("ffprobe")
     if binary is None:
         return None
-    completed = subprocess.run(  # nosec B603 - resolved binary, fixed argv
-        [binary, "-version"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-    first = completed.stdout.splitlines()[0] if completed.stdout else ""
-    return parse_version_major(first)
+    return parse_version_major(ffprobe_version(binary) or "")
 
 
 @pytest.fixture(scope="module")
@@ -237,10 +227,10 @@ def test_installed_major_is_pinned(pins: Pins) -> None:
         pytest.fail("ffprobe -version has no release number")
 
     assert_that(BENIGN_STDERR_BY_MAJOR.get(major)).is_equal_to(pins.benign)
-    assert_that(set(pins.durations)).is_equal_to(set(BY_NAME))
+    assert_that(pins.stream_bitrate <= set(BY_NAME)).is_true()
 
 
-@pytest.mark.parametrize("fixture", FIXTURES, ids=lambda fixture: fixture.name)
+@pytest.mark.parametrize("fixture", HEALTHY, ids=lambda fixture: fixture.name)
 def test_healthy_fixture_under_wrong_extensions(
     fixture: AudioFixture,
     pins: Pins,
@@ -265,17 +255,23 @@ def test_healthy_fixture_under_wrong_extensions(
     assert_that(metadata.channels).is_equal_to(fixture.channels)
     assert_that(metadata.bit_depth).is_equal_to(fixture.bit_depth)
     assert_that(metadata.audio_stream_count).is_equal_to(fixture.audio_streams)
-    reported = _duration(metadata)
-    assert_that(reported).is_close_to(pins.durations[fixture.name], 1e-6)
-    assert_that(reported).is_close_to(fixture.duration, DURATION_TOLERANCE)
+    assert_that(_duration(metadata)).is_close_to(fixture.duration, DURATION_TOLERANCE)
     if fixture.estimated:
         assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
         assert_that(metadata.truncated).is_none()
         assert_that(metadata.bitrate).is_none()
-    else:
-        assert_that(_flags(metadata)).is_empty()
-        assert_that(metadata.truncated).is_false()
-        assert_that(metadata.bitrate).is_equal_to(pins.bitrates.get(fixture.name))
+        return
+    assert_that(_flags(metadata)).is_empty()
+    assert_that(metadata.truncated).is_false()
+    if fixture.name not in pins.stream_bitrate:
+        assert_that(metadata.bitrate).is_none()
+        return
+    if metadata.bitrate is None:
+        pytest.fail("the stream bitrate is unknown")
+    assert_that(metadata.bitrate).is_positive()
+    if fixture.bitrate is not None:
+        gap = abs(metadata.bitrate - fixture.bitrate) / fixture.bitrate
+        assert_that(gap).is_less_than_or_equal_to(BITRATE_TOLERANCE)
 
 
 @pytest.mark.parametrize(
@@ -320,8 +316,63 @@ def test_delayed_audio_duration(name: str) -> None:
     """Audio that starts late reports its own length, checked (R5)."""
     metadata = extract_audio_metadata(AUDIO_DIR / name)
 
-    assert_that(_duration(metadata)).is_close_to(1.0, 0.05)
+    assert_that(_duration(metadata)).is_close_to(
+        BY_NAME[name].duration,
+        DURATION_TOLERANCE,
+    )
     assert_that(metadata.truncated).is_false()
+
+
+@pytest.mark.parametrize("name", ["offset.mka", "offset_delayed.mkv"])
+def test_start_offset_is_estimated_not_truncated(name: str) -> None:
+    """A4: a Matroska file that starts after zero is measured, never truncated."""
+    metadata = extract_audio_metadata(AUDIO_DIR / name)
+
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(_duration(metadata)).is_close_to(
+        BY_NAME[name].duration,
+        DURATION_TOLERANCE,
+    )
+
+
+@pytest.mark.parametrize("name", ["cover.m4a", "timecode.mov"])
+def test_warned_but_healthy_mp4_is_read(name: str) -> None:
+    """A2 and A3: the timecode track and covr art no longer hide the facts."""
+    fixture = BY_NAME[name]
+
+    metadata = extract_audio_metadata(AUDIO_DIR / name)
+
+    assert_that((metadata.codec, metadata.sample_rate)).is_equal_to(
+        (fixture.codec, fixture.sample_rate),
+    )
+    assert_that(metadata.audio_stream_count).is_equal_to(1)
+    assert_that(metadata.truncated).is_false()
+    assert_that(_duration(metadata)).is_close_to(fixture.duration, DURATION_TOLERANCE)
+
+
+@pytest.mark.parametrize("cut", FRAME_CUTS, ids=lambda cut: cut.name)
+def test_last_frames_removed(cut: FrameCut) -> None:
+    """Removing the last frames: three are caught, one or two are not.
+
+    The misses are the documented limit: the encoder's end padding is longer
+    than the frames removed, so the audio left still reaches the declared
+    length within one packet.
+    """
+    source = BY_NAME[cut.source]
+
+    metadata = extract_audio_metadata(AUDIO_DIR / cut.name)
+
+    assert_that(metadata.codec).is_equal_to(source.codec)
+    if cut.detected:
+        assert_that(metadata.truncated).is_true()
+        assert_that(metadata.duration_seconds).is_none()
+    else:
+        assert_that(metadata.truncated).is_false()
+        assert_that(_duration(metadata)).is_close_to(
+            source.duration,
+            DURATION_TOLERANCE,
+        )
 
 
 def test_two_tracks_and_cover_art() -> None:
@@ -369,9 +420,8 @@ def _garbage() -> dict[str, bytes]:
     Returns:
         Name to content.
     """
-    rng = random.Random(400)  # nosec B311 - test data, not security
     return {
-        "random": bytes(rng.getrandbits(8) for _ in range(8192)),
+        "random": hashlib.shake_256(b"winnow issue 400").digest(8192),
         "zeros": bytes(8192),
         "text": b"The quick brown fox jumps over the lazy dog.\n" * 200,
         "ff": b"\xff" * 8192,
@@ -440,7 +490,10 @@ def test_scripts_never_reach_the_referenced_file(suffix: str, tmp_path: Path) ->
             )
 
 
-@pytest.mark.parametrize("name", ["mp3.mp3", "aac.m4a", "two_tracks.mka", "tta.tta"])
+@pytest.mark.parametrize(
+    "name",
+    ["mp3.mp3", "aac.m4a", "two_tracks.mka", "tta.tta", "cover.m4a", "timecode.mov"],
+)
 def test_symlink_form_matches_descriptor_form(
     name: str,
     monkeypatch: pytest.MonkeyPatch,

@@ -12,19 +12,24 @@ end of the file and uses a tone, so its audio data outweighs the index.
 Durations and packet sizes are chosen so that cutting 2 % off a file removes
 more than one packet, which is the smallest loss a packet walk can see.
 
-The only byte handling done here is joining two generated Ogg files into a
-chained Ogg file; nothing in this script parses media.
+ffmpeg and ffprobe run through winnow's own runner
+(:func:`winnow.media._ffprobe.run_command`). The only byte handling done
+here is joining two generated Ogg files into a chained Ogg file and cutting
+the last frames off two files at offsets ffprobe reports (:data:`FRAME_CUTS`);
+nothing in this script parses media. Every output is byte for byte the same
+on each run with the same FFmpeg build.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess  # nosec B404 - fixed argv lists only; never shell=True
+import json
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+
+from winnow.media._ffprobe import FFMPEG, FFPROBE, find_binary, run_command
 
 FIXTURE_DIR: Final[Path] = Path(__file__).resolve().parent
 MP4_FORMAT: Final[str] = "mov,mp4,m4a,3gp,3g2,mj2"
@@ -48,6 +53,11 @@ class AudioFixture:
         estimated: ``True`` when the reader must report a measured duration
             flagged as estimated rather than a declared one.
         audio_streams: Number of audio streams in the file.
+        bitrate: Nominal bitrate the parameters fix: the encoder's constant
+            target, or the PCM or ADPCM data rate (sample rate times bits per
+            sample; IMA QT ADPCM packs 64 samples into 34-byte blocks);
+            ``None`` when they fix none (lossless, VBR, or silence that an
+            AAC encoder codes far below its target).
     """
 
     name: str
@@ -61,6 +71,7 @@ class AudioFixture:
     duration: float
     estimated: bool = False
     audio_streams: int = 1
+    bitrate: int | None = None
 
 
 def _silence(*, rate: int, seconds: float, channels: int = 1) -> tuple[str, ...]:
@@ -145,6 +156,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=6.0,
+        bitrate=8000,
     ),
     AudioFixture(
         name="adts.aac",
@@ -232,6 +244,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=8,
         duration=1.0,
+        bitrate=64000,
     ),
     AudioFixture(
         name="aiff.aiff",
@@ -243,6 +256,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=2.0,
+        bitrate=34000,
     ),
     AudioFixture(
         name="aac.m4a",
@@ -254,6 +268,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=2.0,
+        bitrate=24000,
     ),
     AudioFixture(
         name="opus.ogg",
@@ -277,6 +292,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=3.0,
+        bitrate=24000,
     ),
     AudioFixture(
         name="opus.mka",
@@ -304,7 +320,16 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
     AudioFixture(
         name="mp2.m2ts",
         inputs=_silence(rate=48000, seconds=2),
-        outputs=("-c:a", "mp2", "-b:a", "32k", "-f", "mpegts"),
+        outputs=(
+            "-c:a",
+            "mp2",
+            "-b:a",
+            "32k",
+            "-f",
+            "mpegts",
+            "-mpegts_m2ts_mode",
+            "0",
+        ),
         format_name="mpegts",
         codec="mp2",
         sample_rate=48000,
@@ -371,6 +396,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=2.0,
+        bitrate=32000,
     ),
     AudioFixture(
         name="ac3_mono.ac3",
@@ -465,6 +491,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=6.0,
+        bitrate=8000,
     ),
     # Audio that starts one second after the video (R5).
     AudioFixture(
@@ -539,13 +566,249 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=2.0,
         estimated=True,
     ),
+    # Cover art in MP4 (A3): ffprobe prints "stream 0, timescale not set" for
+    # the covr image. The index is at the start so a cut removes audio.
+    AudioFixture(
+        name="cover.m4a",
+        inputs=(
+            *_tone(rate=48000, seconds=2),
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:size=8x8:duration=1",
+        ),
+        outputs=(
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "24k",
+            "-c:v",
+            "png",
+            "-disposition:v",
+            "attached_pic",
+            *_FASTSTART,
+        ),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        bitrate=24000,
+    ),
+    # A timecode (tmcd) data track (A2): ffprobe prints "Unsupported codec
+    # with id 0 for input stream 2" for it.
+    AudioFixture(
+        name="timecode.mov",
+        inputs=(
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:size=16x16:rate=25:duration=2",
+            *_tone(rate=48000, seconds=2),
+        ),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "mpeg4",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "24k",
+            "-timecode",
+            "01:00:00:00",
+            *_FASTSTART,
+        ),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        bitrate=24000,
+    ),
+    # Audio-only Matroska that starts at 5 s (A4): the DURATION tag and
+    # format.duration are end times, so the duration is measured.
+    AudioFixture(
+        name="offset.mka",
+        inputs=_silence(rate=8000, seconds=2),
+        outputs=(
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s16",
+            "-frame_size",
+            "160",
+            "-output_ts_offset",
+            "5",
+        ),
+        format_name=MKV_FORMAT,
+        codec="flac",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=2.0,
+        estimated=True,
+    ),
+    # Delayed audio in a Matroska file that starts at 0.5 s (A4).
+    AudioFixture(
+        name="offset_delayed.mkv",
+        inputs=(
+            *_TINY_VIDEO,
+            "-itsoffset",
+            "1",
+            *_silence(rate=8000, seconds=1),
+        ),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s16",
+            "-frame_size",
+            "160",
+            "-output_ts_offset",
+            "0.5",
+        ),
+        format_name=MKV_FORMAT,
+        codec="flac",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=1.0,
+        estimated=True,
+    ),
 )
-"""Fixtures written by ffmpeg directly."""
+"""Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
+
+
+FRAME_SOURCES: Final[tuple[AudioFixture, ...]] = (
+    AudioFixture(
+        name="frames.mp3",
+        inputs=_tone(rate=44100, seconds=2),
+        outputs=("-c:a", "libmp3lame", "-b:a", "32k"),
+        format_name="mp3",
+        codec="mp3",
+        sample_rate=44100,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        bitrate=32000,
+    ),
+    AudioFixture(
+        name="frames.m4a",
+        inputs=_tone(rate=48000, seconds=2),
+        outputs=("-c:a", "aac", "-b:a", "32k", *_FASTSTART),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        bitrate=32000,
+    ),
+)
+"""Sources for :data:`FRAME_CUTS`: a CBR MP3 with an Info header and a
+faststart AAC M4A, both ending in audio data. They are ordinary files, not
+sized against the 2 % cut, so they are kept out of :data:`FIXTURES`.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCut:
+    """A fixture with its last audio frames removed.
+
+    The header still declares the full length. The cut is at the byte offset
+    ffprobe reports for the first removed packet.
+
+    Args:
+        name: File name inside the fixture directory.
+        source: Name of the healthy fixture it is cut from.
+        frames: Number of audio frames removed from the end.
+        detected: Whether the reader reports ``truncated=true`` on FFmpeg
+            9.0.2. Losses it misses are a known limit: encoder padding at the
+            end of MP3 and AAC hides them.
+    """
+
+    name: str
+    source: str
+    frames: int
+    detected: bool
+
+
+FRAME_CUTS: Final[tuple[FrameCut, ...]] = (
+    FrameCut(name="frames_minus1.mp3", source="frames.mp3", frames=1, detected=False),
+    FrameCut(name="frames_minus2.mp3", source="frames.mp3", frames=2, detected=False),
+    FrameCut(name="frames_minus3.mp3", source="frames.mp3", frames=3, detected=True),
+    FrameCut(name="frames_minus1.m4a", source="frames.m4a", frames=1, detected=False),
+    FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, detected=False),
+    FrameCut(name="frames_minus3.m4a", source="frames.m4a", frames=3, detected=True),
+)
+"""Fixtures with their last one, two, and three frames removed."""
 
 CHAINED_OGG: Final[str] = "chained.ogg"
 """Two one-second Ogg Opus links with different serial numbers, back to back."""
 
 _CHAIN_SERIALS: Final[tuple[str, ...]] = ("100", "200")
+
+
+_TOOL_TIMEOUT_SECONDS: Final[float] = 120.0
+
+
+def _tool(name: str) -> str:
+    """Resolve an FFmpeg tool or stop.
+
+    Args:
+        name: ``ffmpeg`` or ``ffprobe``.
+
+    Returns:
+        The absolute binary path.
+
+    Raises:
+        SystemExit: When the tool is not installed.
+    """
+    binary = find_binary(name)
+    if binary is None:
+        raise SystemExit(f"{name} is required to generate the audio fixtures")
+    return binary
+
+
+def _run(argv: list[str], dest: Path) -> str:
+    """Run an FFmpeg tool through winnow's runner and return its stdout.
+
+    Args:
+        argv: Fixed argument vector with an absolute binary path.
+        dest: File the command writes or reads, for error messages.
+
+    Returns:
+        Captured stdout.
+
+    Raises:
+        SystemExit: When the tool fails.
+    """
+    completed = run_command(
+        argv=argv,
+        timeout=_TOOL_TIMEOUT_SECONDS,
+        operation="generate_audio_fixtures",
+        path=dest,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(f"{argv[0]} failed for {dest}: {completed.stderr}")
+    return completed.stdout
 
 
 def _ffmpeg(*, inputs: tuple[str, ...], outputs: tuple[str, ...], dest: Path) -> None:
@@ -555,15 +818,9 @@ def _ffmpeg(*, inputs: tuple[str, ...], outputs: tuple[str, ...], dest: Path) ->
         inputs: Input arguments.
         outputs: Output arguments.
         dest: Output file.
-
-    Raises:
-        SystemExit: When ffmpeg is not installed.
     """
-    binary = shutil.which("ffmpeg")
-    if binary is None:
-        raise SystemExit("ffmpeg is required to generate the audio fixtures")
     argv = [
-        binary,
+        _tool(FFMPEG),
         "-hide_banner",
         "-loglevel",
         "error",
@@ -576,9 +833,54 @@ def _ffmpeg(*, inputs: tuple[str, ...], outputs: tuple[str, ...], dest: Path) ->
         "-flags",
         "+bitexact",
         *outputs,
-        str(dest),
+        str(dest.absolute()),
     ]
-    subprocess.run(argv, check=True)  # nosec B603 - fixed argv, resolved binary
+    _run(argv, dest)
+
+
+def _packet_offsets(source: Path) -> list[int]:
+    """Return the byte offset of each audio packet, as ffprobe reports it.
+
+    Args:
+        source: A generated fixture.
+
+    Returns:
+        Offsets in packet order.
+    """
+    stdout = _run(
+        [
+            _tool(FFPROBE),
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "packet=pos",
+            "-of",
+            "json",
+            f"file:{source.absolute()}",
+        ],
+        source,
+    )
+    packets = json.loads(stdout)["packets"]
+    return [int(packet["pos"]) for packet in packets]
+
+
+def _cut_frames(cut: FrameCut, directory: Path) -> Path:
+    """Write ``cut``: its source without the last ``cut.frames`` packets.
+
+    Args:
+        cut: The frame cut.
+        directory: Directory holding the source and receiving the cut.
+
+    Returns:
+        The written path.
+    """
+    source = directory / cut.source
+    offset = _packet_offsets(source)[-cut.frames]
+    dest = directory / cut.name
+    dest.write_bytes(source.read_bytes()[:offset])
+    return dest
 
 
 def generate(directory: Path) -> list[Path]:
@@ -591,7 +893,7 @@ def generate(directory: Path) -> list[Path]:
         Paths written.
     """
     written: list[Path] = []
-    for fixture in FIXTURES:
+    for fixture in (*FIXTURES, *FRAME_SOURCES):
         dest = directory / fixture.name
         _ffmpeg(inputs=fixture.inputs, outputs=fixture.outputs, dest=dest)
         written.append(dest)
@@ -609,6 +911,7 @@ def generate(directory: Path) -> list[Path]:
         chained = directory / CHAINED_OGG
         chained.write_bytes(b"".join(part.read_bytes() for part in parts))
         written.append(chained)
+    written.extend(_cut_frames(cut, directory) for cut in FRAME_CUTS)
     return written
 
 

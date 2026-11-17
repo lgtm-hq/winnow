@@ -13,6 +13,7 @@ tests/media/fixtures/**/*.m2ts binary
 tests/media/fixtures/**/*.m4a binary
 tests/media/fixtures/**/*.mka binary
 tests/media/fixtures/**/*.mkv binary
+tests/media/fixtures/**/*.mov binary
 tests/media/fixtures/**/*.mp3 binary
 tests/media/fixtures/**/*.mp4 binary
 tests/media/fixtures/**/*.mpg binary
