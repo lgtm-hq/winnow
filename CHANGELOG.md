@@ -21,6 +21,60 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.11] - 2026-11-17
+
+### Fixed
+
+- **release**: report a failed release as an issue (#424) (808665a)
+
+## [0.37.10] - 2026-11-17
+
+### Fixed
+
+- **ci**: keep the gate on main from failing while a release awaits approval (#423)
+  (d340cac)
+
+## [0.37.9] - 2026-11-16
+
+### Fixed
+
+- **ci**: correct network allow-lists that block tag releases and fail the Docker build
+  (#420) (5d086a8)
+
+## [0.37.8] - 2026-11-16
+
+### Changed
+
+- **ci**: add file breakdown comments and bounded comment history (#415) (42678c1)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.99.0 (minor) (#344) (aeab37a)
+- **workflows**: grant actions read to the callers newer lgtm-ci requires (#413)
+  (08012df)
+- **ci**: validate gate pins without hard-coding a release SHA (#411) (f2977a7)
+- **deps**: lock file maintenance (#410) (9396f08)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.8 (patch) (#347) (f806cea)
+- **deps**: lock file maintenance (#346) (3628611)
+- **deps**: update python:3.15-slim docker digest to 65a65fc (#343) (8691abf)
+- **deps**: update step-security/harden-runner action to v2.22.4 (patch) (#345)
+  (0ead9d3)
+- **deps-dev**: update dependency lintro to 0.177.18 (patch) (#337) (92eb371)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.85.0 (minor) (#339) (395a110)
+- **deps**: update dependency lgtm-hq/lgtm-ci to v0.84.1 (minor) (#318) (2834de7)
+- **deps-dev**: update dependency lintro to 0.177.12 (patch) (#336) (c293b90)
+- **deps-dev**: update dependency lintro to 0.177.10 (patch) (#335) (39ed391)
+- **deps**: update python:3.15-slim docker digest to 8c13a3f (#331) (982aaba)
+- **deps-dev**: update dependency lintro to 0.177.9 (patch) (#334) (7739e26)
+- **deps-dev**: update dependency lintro to 0.177.8 (minor) (#328) (6622279)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.7 (patch) (#332) (d26121b)
+- **deps**: lock file maintenance (#330) (ae1dfae)
+- **deps**: lock file maintenance (#313) (5642bcf)
+- **deps**: update dependency ubuntu to 26.04 (major) (95a9d58)
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.6 (patch) (#314) (1d11975)
+- add all-checks gate workflow (#309) (55067a5)
+
+### Fixed
+
+- **ci**: report failed main and scheduled runs as issues (#416) (543d7d7)
+
 ## [0.37.7] - 2026-10-29
 
 ### Changed

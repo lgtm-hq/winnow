@@ -89,7 +89,6 @@ jobs:
         files.pythonhosted.org:443
         test.pypi.org:443
         upload.pypi.org:443
-        upload.test.pypi.org:443
         astral.sh:443
         releases.astral.sh:443
         github-releases.githubusercontent.com:443
@@ -128,7 +127,6 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             raw.githubusercontent.com:443
-            actions.githubusercontent.com:443
             *.blob.core.windows.net:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
@@ -136,6 +134,7 @@ jobs:
             files.pythonhosted.org:443
             astral.sh:443
             releases.astral.sh:443
+            release-assets.githubusercontent.com:443
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
       - name: Checkout repository
@@ -188,7 +187,6 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             raw.githubusercontent.com:443
-            actions.githubusercontent.com:443
             *.blob.core.windows.net:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
@@ -197,8 +195,10 @@ jobs:
             files.pythonhosted.org:443
             astral.sh:443
             releases.astral.sh:443
+            release-assets.githubusercontent.com:443
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
             oauth2.sigstore.dev:443
@@ -266,7 +266,6 @@ jobs:
             api.github.com:443
             codeload.github.com:443
             objects.githubusercontent.com:443
-            actions.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
         uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
@@ -275,3 +274,64 @@ jobs:
           version: ${{ needs.pypi-build.outputs.version }}
           pypi-package: winnow-media
           token: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
+
+  # Durable failure report for a release (#271, #422): one deduplicated issue
+  # per tag ("fix(release): tag publish failed: <tag> (publish-pypi-on-tag)"),
+  # with a table of every job's result. A later failed attempt for the same
+  # tag comments on it; a later fully green attempt closes it.
+  #
+  # Needs every other job in this file, so a failure anywhere is a row in the
+  # table: when the build fails, every later job is skipped, and a table of
+  # skipped rows alone would read as a green run. Must stay the last job.
+  #
+  # Condition, as the reusable prescribes: always(), because the reusable
+  # decides from toJson(needs) itself. Any result other than success or
+  # skipped is filed, so a failed job, a job that hit timeout-minutes
+  # (concludes cancelled, which failure() and cancelled() both miss) and a
+  # cancelled run are all reported; an all-green run only closes an open
+  # issue for the tag and files nothing. always() still waits for every
+  # needed job to complete, so while Upload to PyPI waits for the pypi
+  # environment approval this job has not started and reports nothing. A
+  # rejected approval is reported if GitHub gives the upload job the result
+  # failure, as its documentation says ("the workflow will fail"); no
+  # rejected run has been observed, and a result of skipped would be read
+  # as a successful release.
+  #
+  # Tag refs only: a tag push, or a manual run started on a tag (a retry of
+  # that release). A manual run on a branch builds nothing but the SBOM and
+  # has no tag to key the issue on, so it is not reported. actions-v tags are
+  # skipped like every other job here.
+  notify-failure:
+    name: Report release failure
+    needs:
+      - sbom
+      - pypi-build
+      - pypi-smoke-test
+      - pypi-upload
+      - github-release
+      - homebrew-dispatch
+    if: >-
+      always() &&
+      github.ref_type == 'tag' &&
+      !startsWith(github.ref_name, 'actions-v')
+    # yamllint disable-line rule:line-length
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-failure-notifier.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    permissions:
+      # read: list the run's jobs and failed-job logs for the issue body
+      actions: read
+      # read: lgtm-ci tooling checkout and repository context
+      contents: read
+      # write: file, comment on and close the deduplicated failure issue
+      issues: write
+    with:
+      workflow-key: publish-pypi-on-tag
+      tag: ${{ github.ref_name }}
+      channels: ${{ toJson(needs) }}
+      # No automatic re-run watches this workflow, so every failed attempt
+      # files at once. If an auto-rerun workflow ever watches "Publish - PyPI
+      # Production", set this to its max-reruns and pass its signatures too.
+      max-reruns: 0
+      # The reusable hardens its own runner with its fixed github-minimal
+      # preset; the caller passes no endpoints. tooling-ref is left unset:
+      # the reusable tracks its own pin.
+      egress-policy: block
