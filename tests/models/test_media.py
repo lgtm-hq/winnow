@@ -10,7 +10,7 @@ from assertpy import assert_that
 from pydantic import ValidationError
 
 from winnow.models import MEDIA_METADATA_SCHEMA_VERSION
-from winnow.models.media import MediaFile, MediaMetadata, MediaType
+from winnow.models.media import AudioFlag, MediaFile, MediaMetadata, MediaType
 
 
 def test_media_file_validation_and_json_round_trip(tmp_path: Path) -> None:
@@ -92,9 +92,51 @@ def test_media_metadata_rejects_negative_stream_fields() -> None:
         MediaMetadata(frame_rate=-1, sample_rate=-1, channels=-1)
 
 
-def test_media_metadata_schema_version_is_one() -> None:
-    """The metadata schema version constant is exported and starts at 1."""
-    assert_that(MEDIA_METADATA_SCHEMA_VERSION).is_equal_to(1)
+def test_media_metadata_schema_version_is_two() -> None:
+    """The schema version was bumped to 2 for the audio fields of #400."""
+    assert_that(MEDIA_METADATA_SCHEMA_VERSION).is_equal_to(2)
+
+
+def test_media_metadata_audio_fields_default_to_unknown() -> None:
+    """Audio fields are unknown, and truncation not checked, by default."""
+    metadata = MediaMetadata()
+
+    assert_that(metadata.container).is_none()
+    assert_that(metadata.audio_stream_count).is_none()
+    assert_that(metadata.probe_score).is_none()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_none()
+    assert_that(metadata.audio_backend_reason).is_none()
+
+
+def test_media_metadata_truncated_has_three_states() -> None:
+    """``truncated`` keeps True, False, and None (not checked) apart."""
+    states = [MediaMetadata(truncated=value).truncated for value in (True, False)]
+
+    assert_that(states).is_equal_to([True, False])
+    assert_that(MediaMetadata(truncated=None).truncated).is_none()
+
+
+def test_media_metadata_audio_flags_sorted_without_repeats() -> None:
+    """Flags are stored in declaration order without repeats."""
+    metadata = MediaMetadata(
+        audio_flags=(AudioFlag.TIMEOUT, AudioFlag.CORRUPT, AudioFlag.TIMEOUT),
+    )
+
+    assert_that(metadata.audio_flags).is_equal_to(
+        (AudioFlag.CORRUPT, AudioFlag.TIMEOUT),
+    )
+    assert_that(metadata.model_dump_json(exclude_none=True)).is_equal_to(
+        '{"audio_flags":["corrupt","timeout"]}',
+    )
+
+
+def test_media_metadata_rejects_out_of_range_probe_score() -> None:
+    """A probe score above 100 or below 0 is rejected."""
+    with pytest.raises(ValidationError):
+        MediaMetadata(probe_score=101)
+    with pytest.raises(ValidationError):
+        MediaMetadata(audio_stream_count=-1)
 
 
 def test_media_metadata_captured_at_defaults_to_none() -> None:
