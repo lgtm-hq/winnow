@@ -14,7 +14,7 @@ from winnow.media.service import DefaultMetadataService, create_metadata_service
 from winnow.models.config import WinnowConfig
 from winnow.models.media import MediaMetadata, MediaType
 
-_WHICH_TARGET = "winnow.media.video.shutil.which"
+_WHICH_TARGET = "winnow.media._ffprobe.shutil.which"
 
 
 @pytest.fixture
