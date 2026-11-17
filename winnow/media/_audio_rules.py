@@ -3,9 +3,9 @@
 Everything here works on ffprobe output that has already been captured:
 stderr filtering against the benign list (R2 with amendments A1 to A3),
 strict JSON parsing (R1), stream selection and facts (R2 to R4), the declared
-duration (R5 with A4), and the packet-walk decision (R6). Nothing here starts
-a process or touches a file; :mod:`winnow.media.audio` runs ffprobe and feeds
-these functions.
+duration (R5 with A4 and A5), and the packet-walk decision (R6 with A5).
+Nothing here starts a process or touches a file; :mod:`winnow.media.audio`
+runs ffprobe and feeds these functions.
 """
 
 from __future__ import annotations
@@ -44,13 +44,20 @@ ACCEPTED_FORMAT_NAMES: Final[frozenset[str]] = frozenset(
 """Exact ``format_name`` values whose facts are accepted (R2)."""
 
 
-MATROSKA_FORMAT_NAME: Final[str] = "matroska,webm"
-
-
 NO_DECLARED_DURATION_FORMATS: Final[frozenset[str]] = frozenset(
     {"ogg", "mpegts", "mpeg", "flv", "aac", "ac3", "eac3"},
 )
 """Containers whose duration is never taken as declared (R5)."""
+
+
+AUDIO_ONLY_DECLARED_FORMATS: Final[frozenset[str]] = frozenset({"avi", "asf"})
+"""Containers whose audio duration is declared only without other streams (A8).
+
+In AVI the audio stream's duration includes a start delay the packet times
+leave out; in ASF it is the whole file's play length, set by the video's end.
+Any non-picture stream besides the primary audio stream makes the duration
+undeclared.
+"""
 
 
 ESTIMATE_STDERR_LINES: Final[frozenset[str]] = frozenset(
@@ -143,8 +150,8 @@ _DECIMAL_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 
 
-_MATROSKA_DURATION: Final[re.Pattern[str]] = re.compile(
-    r"(?P<h>[0-9]{1,6}):(?P<m>[0-5][0-9]):(?P<s>[0-5][0-9](?:\.[0-9]{1,12})?)",
+_TIME_BASE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<num>[0-9]{1,10})/(?P<den>[0-9]{1,10})",
 )
 
 
@@ -157,6 +164,14 @@ MP4_FORMAT_NAME: Final[str] = "mov,mp4,m4a,3gp,3g2,mj2"
 
 
 _THREE: Final[Decimal] = Decimal(3)
+
+
+SHORTFALL_FLOOR_SECONDS: Final[Decimal] = Decimal("0.005")
+"""Smallest shortfall below the declared duration that counts (R6 step 6, A5)."""
+
+
+SHORTFALL_TIME_BASE_UNITS: Final[Decimal] = Decimal(2)
+"""Time-base units of the primary stream a shortfall must exceed (A5)."""
 
 
 class _DuplicateKeyError(ValueError):
@@ -192,8 +207,8 @@ class ProbeHeader:
         bitrate: The primary stream's own ``bit_rate``.
         audio_stream_count: Audio streams other than cover art.
         non_picture_stream_count: Streams of any type other than cover art.
+        time_base: The primary stream's ``time_base`` in seconds.
         stream_duration: The primary stream's ``duration``.
-        tag_duration: The primary stream's Matroska ``DURATION`` tag.
         format_duration: ``format.duration``.
         format_start: ``format.start_time``.
         estimate_warned: ``True`` when stderr says the duration was estimated.
@@ -211,8 +226,8 @@ class ProbeHeader:
     bitrate: int | None
     audio_stream_count: int
     non_picture_stream_count: int
+    time_base: Decimal | None
     stream_duration: Decimal | None
-    tag_duration: Decimal | None
     format_duration: Decimal | None
     format_start: Decimal | None
     estimate_warned: bool
@@ -535,8 +550,8 @@ def header_from_json(
         bitrate=parse_positive_int(primary.get("bit_rate")),
         audio_stream_count=len(audio),
         non_picture_stream_count=len(non_picture),
+        time_base=parse_time_base(primary.get("time_base")),
         stream_duration=parse_positive_decimal(primary.get("duration")),
-        tag_duration=_matroska_tag_duration(primary.get("tags")),
         format_duration=parse_positive_decimal(container_section.get("duration")),
         format_start=parse_decimal(container_section.get("start_time")),
         estimate_warned=estimate_warned,
@@ -640,6 +655,13 @@ def declared_duration(
 ) -> Decimal | None:
     """Return the declared duration R5 allows, if any.
 
+    The stream's own ``duration`` is declared. Otherwise ``format.duration``
+    is declared only for a file with one non-picture stream that starts at
+    zero (A4). A Matroska ``DURATION`` tag is never used (A5): for audio that
+    starts late, the tag minus the lead overshoots the real end by the
+    codec's priming. In AVI and ASF nothing is declared when the file has
+    any non-picture stream besides the primary audio stream (A8).
+
     Args:
         header: Accepted header facts.
         walk: Completed packet walk of the primary stream.
@@ -650,15 +672,14 @@ def declared_duration(
     """
     if estimate_warned or header.container in NO_DECLARED_DURATION_FORMATS:
         return None
+    if (
+        header.container in AUDIO_ONLY_DECLARED_FORMATS
+        and header.non_picture_stream_count > 1
+    ):
+        return None
     if header.stream_duration is not None:
         return header.stream_duration
-    if not _starts_at_zero(header, walk):
-        return None
-    if header.container == MATROSKA_FORMAT_NAME:
-        from_tag = _matroska_declared(header, walk)
-        if from_tag is not None:
-            return from_tag
-    if header.non_picture_stream_count == 1:
+    if header.non_picture_stream_count == 1 and _starts_at_zero(header, walk):
         return header.format_duration
     return None
 
@@ -666,8 +687,8 @@ def declared_duration(
 def _starts_at_zero(header: ProbeHeader, walk: PacketWalk) -> bool:
     """Report whether ``format.start_time`` is zero within one packet (A4).
 
-    The Matroska ``DURATION`` tag and ``format.duration`` are end times, so
-    they are durations only when the file starts at zero.
+    ``format.duration`` is an end time, so it is a duration only when the
+    file starts at zero.
 
     Args:
         header: Accepted header facts.
@@ -721,11 +742,28 @@ def decide_duration(
     declared = declared_duration(header, walk, estimate_warned=warned)
     if declared is None:
         return DurationOutcome(measured, None, (AudioFlag.ESTIMATED,))
-    if declared - measured > median:
+    if declared - measured > shortfall_tolerance(header):
         return DurationOutcome(None, True)
     if measured - declared > _THREE * median:
         return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
     return DurationOutcome(declared, False)
+
+
+def shortfall_tolerance(header: ProbeHeader) -> Decimal:
+    """Return how far below the declared duration a walk may end (A5).
+
+    The tolerance is the larger of 5 ms and two time-base units of the
+    primary stream; without a usable time base it is 5 ms.
+
+    Args:
+        header: Accepted header facts.
+
+    Returns:
+        The tolerance in seconds.
+    """
+    if header.time_base is None:
+        return SHORTFALL_FLOOR_SECONDS
+    return max(SHORTFALL_FLOOR_SECONDS, SHORTFALL_TIME_BASE_UNITS * header.time_base)
 
 
 def _walk_damage(
@@ -802,6 +840,28 @@ def parse_decimal(value: object) -> Decimal | None:
     return None
 
 
+def parse_time_base(value: object) -> Decimal | None:
+    """Parse a ``time_base`` such as ``1/48000`` to seconds.
+
+    Args:
+        value: Raw ffprobe value.
+
+    Returns:
+        The unit in seconds, or ``None`` unless both parts are positive
+        integers.
+    """
+    if not isinstance(value, str):
+        return None
+    match = _TIME_BASE.fullmatch(value)
+    if match is None:
+        return None
+    numerator = int(match.group("num"))
+    denominator = int(match.group("den"))
+    if numerator == 0 or denominator == 0:
+        return None
+    return Decimal(numerator) / Decimal(denominator)
+
+
 def parse_positive_decimal(value: object) -> Decimal | None:
     """Parse a decimal number that must be greater than zero.
 
@@ -813,58 +873,6 @@ def parse_positive_decimal(value: object) -> Decimal | None:
     """
     parsed = parse_decimal(value)
     return parsed if parsed is not None and parsed > 0 else None
-
-
-def _matroska_declared(header: ProbeHeader, walk: PacketWalk) -> Decimal | None:
-    """Return the Matroska ``DURATION`` tag minus the stream's lead (R5).
-
-    The lead is the first packet time minus ``format.start_time``; the tag
-    is used only when the lead is more than three median packet durations.
-
-    Args:
-        header: Accepted header facts.
-        walk: Completed packet walk.
-
-    Returns:
-        The declared duration, or ``None`` when the rule does not apply.
-    """
-    median = walk.median_duration()
-    if (
-        header.tag_duration is None
-        or header.format_start is None
-        or walk.first_time is None
-        or median is None
-    ):
-        return None
-    lead = walk.first_time - header.format_start
-    if lead <= _THREE * median:
-        return None
-    declared = header.tag_duration - lead
-    return declared if declared > 0 else None
-
-
-def _matroska_tag_duration(tags: object) -> Decimal | None:
-    """Parse a Matroska ``DURATION`` stream tag such as ``00:00:02.008000000``.
-
-    Args:
-        tags: The stream's ``tags`` object.
-
-    Returns:
-        The duration in seconds, or ``None`` when absent or malformed.
-    """
-    if not isinstance(tags, dict):
-        return None
-    value = tags.get("DURATION")
-    if not isinstance(value, str):
-        return None
-    match = _MATROSKA_DURATION.fullmatch(value)
-    if match is None:
-        return None
-    hours = Decimal(match.group("h"))
-    minutes = Decimal(match.group("m"))
-    seconds = Decimal(match.group("s"))
-    total = hours * 3600 + minutes * 60 + seconds
-    return total if total > 0 else None
 
 
 def _is_attached_pic(stream: dict[str, object]) -> bool:
@@ -944,6 +952,7 @@ def _reject_constant(name: str) -> object:
 
 __all__ = [
     "ACCEPTED_FORMAT_NAMES",
+    "AUDIO_ONLY_DECLARED_FORMATS",
     "BENIGN_STDERR_BY_MAJOR",
     "BIT_DEPTH_CODECS",
     "CONDITIONAL_STDERR_LINES",
@@ -951,12 +960,13 @@ __all__ = [
     "DATA_TRACK_WARNING",
     "DurationOutcome",
     "ESTIMATE_STDERR_LINES",
-    "MATROSKA_FORMAT_NAME",
     "MAX_DISTINCT_PACKET_DURATIONS",
     "MP4_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
     "PacketWalk",
     "ProbeHeader",
+    "SHORTFALL_FLOOR_SECONDS",
+    "SHORTFALL_TIME_BASE_UNITS",
     "StderrContext",
     "bit_depth_for",
     "decide_duration",
@@ -968,7 +978,9 @@ __all__ = [
     "parse_decimal",
     "parse_positive_decimal",
     "parse_positive_int",
+    "parse_time_base",
     "primary_audio_stream",
+    "shortfall_tolerance",
     "stderr_context",
     "stderr_lines",
 ]

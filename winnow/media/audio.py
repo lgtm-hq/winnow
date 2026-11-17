@@ -19,12 +19,16 @@ runs ffprobe; the decisions on its output live in
   (an unexpected line is ``unrecognized_output``, not ``corrupt``).
 * R3: cover art is never a stream to read; the primary stream is the first
   default audio stream, else the first audio stream.
-* R4/R5/R7: facts come from the primary stream; a declared duration is used
-  only where the container really declares one and, for the end times
-  (Matroska ``DURATION``, ``format.duration``), only when the file starts at
-  zero; bitrate is the stream's own.
+* R4/R5/R7: facts come from the primary stream; a declared duration is the
+  stream's own ``duration``, or ``format.duration`` for a file with one
+  non-picture stream that starts at zero; a Matroska ``DURATION`` tag is
+  never used; in AVI and ASF nothing is declared when the file has another
+  non-picture stream besides the primary audio (A8); bitrate is the
+  stream's own.
 * R6: a packet walk of the primary stream checks the declared duration and
-  measures it where none is declared.
+  measures it where none is declared. A walk that ends more than max(5 ms,
+  two time-base units of the stream) before the declared duration is
+  truncated (A5).
 * R8: both calls are bounded in time and output and are never retried.
 * A6: the file's device, inode, size, and modification time are taken before
   the header call and after the walk; any change makes every fact unknown
@@ -36,11 +40,23 @@ Known limits (not worked around):
 * A damaged header byte can change a declared value (channels, sample rate,
   codec variant, duration) and leave no evidence; ``truncated=false`` means
   only that the audio present matches the declared length.
-* A loss shorter than one packet leaves no evidence. Where a codec pads its
-  last frames (MP3, AAC), the padding hides more: on FFmpeg 9.0.2, MP3 and
-  faststart AAC M4A files with their last one or two frames removed still
-  report ``truncated=false`` with the full declared duration; three frames
-  are caught except at very low MP3 bitrates.
+* A walk that ends no more than max(5 ms, two time-base units of the
+  stream) before the declared duration counts as complete (A5). Where a
+  codec pads its last frames (MP3, AAC), the padding hides more. Measured on
+  FFmpeg 9.0.2 with 99 MP3 files (9 sample rates, 11 CBR and VBR settings)
+  and 36 faststart AAC M4A files: one removed frame is never detected; with
+  two removed, 52 MP3 and 14 M4A still report ``truncated=false``; with
+  three, 5 MP3 and no M4A. The other cut MP3 files are ``truncated`` or
+  ``unrecognized_output``.
+* A Matroska ``DURATION`` tag is never used (A5). Matroska audio without
+  its own stream duration is ``estimated`` unless it is the file's only
+  non-picture stream and the file starts at zero.
+* In AVI and ASF (WMA, WMV) the audio is ``estimated`` when the file has any
+  other non-picture stream (A8): there the audio duration field includes a
+  start delay (AVI) or the whole file's play length (ASF).
+* Stereo PCM in Matroska can come back with the duration unknown and
+  ``inconsistent``: ffprobe gives the last packet no duration.
+* ADTS at 8 kHz is ``estimated`` up to about 170 ms long.
 * MP3 is ``estimated`` only when ffprobe says it estimated the duration (no
   Xing/Info or VBRI header); with such a header the duration is declared and
   checked like any other.
@@ -73,7 +89,6 @@ from winnow.media._audio_rules import (
     BENIGN_STDERR_BY_MAJOR,
     BIT_DEPTH_CODECS,
     ESTIMATE_STDERR_LINES,
-    MATROSKA_FORMAT_NAME,
     NO_DECLARED_DURATION_FORMATS,
     DurationOutcome,
     PacketWalk,
@@ -529,7 +544,6 @@ __all__ = [
     "FileIdentity",
     "HEADER_STDOUT_LIMIT",
     "HEADER_TIMEOUT_SECONDS",
-    "MATROSKA_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
     "PacketWalk",
     "ProbeHeader",

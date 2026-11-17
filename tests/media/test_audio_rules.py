@@ -2,8 +2,8 @@
 
 Hand-built ffprobe output is fed to the functions in
 :mod:`winnow.media._audio_rules`: stderr filtering (R2, A1 to A3), strict JSON
-(R1), stream selection and facts (R2 to R4), the declared duration (R5, A4),
-and the packet-walk decision (R6, A7).
+(R1), stream selection and facts (R2 to R4), the declared duration (R5, A4,
+A5, A8), and the packet-walk decision (R6, A5, A7).
 """
 
 from __future__ import annotations
@@ -19,11 +19,15 @@ from assertpy import assert_that
 from tests.media.audio_support import audio_stream, probe_json, run_result
 from winnow.media import audio as audio_module
 from winnow.media._audio_rules import (
+    AUDIO_ONLY_DECLARED_FORMATS,
     COVER_TIMESCALE_WARNING,
     DATA_TRACK_WARNING,
     MAX_DISTINCT_PACKET_DURATIONS,
+    SHORTFALL_FLOOR_SECONDS,
     StderrContext,
     has_unrecognized_line,
+    parse_time_base,
+    shortfall_tolerance,
     stderr_context,
 )
 from winnow.media.audio import (
@@ -73,8 +77,8 @@ def _header(**overrides: Any) -> ProbeHeader:
         bitrate=900000,
         audio_stream_count=1,
         non_picture_stream_count=1,
+        time_base=Decimal(1) / Decimal(44100),
         stream_duration=Decimal("2.000000"),
-        tag_duration=None,
         format_duration=Decimal("2.000000"),
         format_start=Decimal("0.000000"),
         estimate_warned=False,
@@ -705,28 +709,30 @@ def test_header_from_json_refuses(data: dict[str, object]) -> None:
     assert_that(header_from_json(data, estimate_warned=False)).is_none()
 
 
-def test_header_from_json_parses_matroska_duration_tag() -> None:
-    """A Matroska DURATION tag is parsed to seconds."""
-    data = probe_json(
-        audio_stream(duration=None, tags={"DURATION": "01:02:03.500000000"}),
-        format_name="matroska,webm",
-    )
+def test_header_from_json_parses_time_base() -> None:
+    """The primary stream's time base is kept in seconds (A5)."""
+    data = probe_json(audio_stream(time_base="1/48000"))
 
-    header = _accepted(data)
-
-    assert_that(header.stream_duration).is_none()
-    assert_that(header.tag_duration).is_equal_to(Decimal("3723.500000000"))
+    assert_that(_accepted(data).time_base).is_equal_to(Decimal(1) / Decimal(48000))
 
 
 @pytest.mark.parametrize(
-    "tags",
-    ["nope", {}, {"DURATION": 5}, {"DURATION": "2s"}, {"DURATION": "0:00:00"}],
+    ("value", "expected"),
+    [
+        ("1/1000", Decimal("0.001")),
+        ("3/9", Decimal(3) / Decimal(9)),
+        ("0/1", None),
+        ("1/0", None),
+        ("1/-5", None),
+        ("0.001", None),
+        ("1/12345678901", None),
+        (1000, None),
+        (None, None),
+    ],
 )
-def test_header_ignores_bad_duration_tag(tags: object) -> None:
-    """Missing, malformed, or zero DURATION tags are unknown."""
-    data = probe_json(audio_stream(tags=tags), format_name="matroska,webm")
-
-    assert_that(_accepted(data).tag_duration).is_none()
+def test_parse_time_base(value: object, expected: Decimal | None) -> None:
+    """Only a fraction of two positive integers is a time base."""
+    assert_that(parse_time_base(value)).is_equal_to(expected)
 
 
 def test_interpret_header_flags_nonzero_exit() -> None:
@@ -990,24 +996,12 @@ def test_format_duration_needs_packets() -> None:
     assert_that(declared_duration(header, _walk(), estimate_warned=False)).is_none()
 
 
-def test_matroska_tag_needs_a_zero_start() -> None:
-    """A4: the DURATION tag is an end time, used only from a zero start."""
-    walk = _walk(*_packets(50, start="6.0"))
-    header = _matroska_header(
-        format_start=Decimal(5),
-        tag_duration=Decimal("7.000"),
-    )
-
-    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
-
-
 def test_offset_matroska_is_estimated() -> None:
     """A4 end to end: audio-only Matroska from 5 s is measured, not truncated."""
     header = _matroska_header(
         non_picture_stream_count=1,
         format_start=Decimal(5),
         format_duration=Decimal(7),
-        tag_duration=Decimal(7),
     )
 
     assert_that(
@@ -1027,7 +1021,6 @@ def _matroska_header(**overrides: Any) -> ProbeHeader:
     fields: dict[str, Any] = {
         "container": "matroska,webm",
         "stream_duration": None,
-        "tag_duration": Decimal("2.008"),
         "format_duration": Decimal("2.008"),
         "non_picture_stream_count": 2,
     }
@@ -1035,47 +1028,69 @@ def _matroska_header(**overrides: Any) -> ProbeHeader:
     return _header(**fields)
 
 
-def test_declared_matroska_tag_minus_lead() -> None:
-    """A lead over three packets is subtracted from the DURATION tag."""
+def test_delayed_matroska_declares_nothing() -> None:
+    """A5: delayed Matroska audio with video has no declared duration.
+
+    Its ``DURATION`` tag is never read, so the walk measures the audio.
+    """
     walk = _walk(*_packets(50, start="0.994"))
 
     assert_that(
         declared_duration(_matroska_header(), walk, estimate_warned=False),
-    ).is_equal_to(Decimal("1.014"))
-
-
-def test_declared_matroska_short_lead_falls_through() -> None:
-    """A lead of three packets or less does not use the tag."""
-    walk = _walk(*_packets(50, start="0.060"))
-
-    assert_that(
-        declared_duration(_matroska_header(), walk, estimate_warned=False),
     ).is_none()
+    assert_that(_decide(walk, header=_matroska_header())).is_equal_to(
+        (Decimal("1.000000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+def test_matroska_tag_is_never_read() -> None:
+    """A5: a DURATION tag leaves the header facts unchanged."""
+    plain = probe_json(audio_stream(duration=None), format_name="matroska,webm")
+    tagged = probe_json(
+        audio_stream(duration=None, tags={"DURATION": "00:00:02.008000000"}),
+        format_name="matroska,webm",
+    )
+
+    assert_that(_accepted(tagged)).is_equal_to(_accepted(plain))
+
+
+def test_audio_only_matroska_uses_format_duration() -> None:
+    """One non-picture stream from zero: format.duration is declared (A4)."""
     single = _matroska_header(non_picture_stream_count=1)
+
     assert_that(
-        declared_duration(single, walk, estimate_warned=False),
+        declared_duration(single, _walk(*_packets(50)), estimate_warned=False),
     ).is_equal_to(Decimal("2.008"))
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [{"format_start": None}, {"tag_duration": None}, {"tag_duration": Decimal(1)}],
-    ids=["no_start_time", "no_tag", "tag_shorter_than_lead"],
-)
-def test_declared_matroska_tag_needs_all_parts(overrides: dict[str, Any]) -> None:
-    """Without a start time, a tag, or a positive result the tag is unused."""
-    walk = _walk(*_packets(50, start="1.5"))
+@pytest.mark.parametrize("container", sorted(AUDIO_ONLY_DECLARED_FORMATS))
+def test_avi_and_asf_with_another_stream_declare_nothing(container: str) -> None:
+    """A8: any other non-picture stream makes AVI and ASF undeclared."""
+    alone = _header(container=container, stream_duration=Decimal("1.5"))
+    with_video = replace(alone, non_picture_stream_count=2)
+    walk = _walk(*_packets(50))
 
     assert_that(
-        declared_duration(_matroska_header(**overrides), walk, estimate_warned=False),
-    ).is_none()
+        declared_duration(alone, walk, estimate_warned=False),
+    ).is_equal_to(Decimal("1.5"))
+    assert_that(declared_duration(with_video, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=with_video)).is_equal_to(
+        (Decimal("1.000000"), None, (AudioFlag.ESTIMATED,)),
+    )
 
 
-def test_declared_matroska_without_packets() -> None:
-    """The tag rule needs a first packet time."""
+@pytest.mark.parametrize("container", ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"])
+def test_other_containers_with_video_keep_the_stream_duration(container: str) -> None:
+    """A8 is limited to AVI and ASF: elsewhere the stream's duration stands."""
+    header = _header(
+        container=container,
+        stream_duration=Decimal("1.5"),
+        non_picture_stream_count=2,
+    )
+
     assert_that(
-        declared_duration(_matroska_header(), PacketWalk(), estimate_warned=False),
-    ).is_none()
+        declared_duration(header, _walk(*_packets(50)), estimate_warned=False),
+    ).is_equal_to(Decimal("1.5"))
 
 
 # --- duration decision (R6) -------------------------------------------------
@@ -1178,16 +1193,74 @@ def test_step5_estimate_line_in_walk_stderr() -> None:
     )
 
 
-def test_step6_short_by_more_than_one_packet_is_truncated() -> None:
-    """Step 6: measured more than one median packet short is truncated."""
-    assert_that(_decide(_walk(*_packets(98)))).is_equal_to((None, True, ()))
+def _short_by(shortfall: str) -> PacketWalk:
+    """Build a walk of 100 packets whose last one ends ``shortfall`` early.
+
+    Args:
+        shortfall: Seconds missing before the 2 s declared duration.
+
+    Returns:
+        The walk.
+    """
+    lines = _packets(99)
+    last = Decimal("0.020000") - Decimal(shortfall)
+    return _walk(*lines, f"1.980000,{last:.6f},K__")
 
 
-def test_step6_boundary_one_packet_short_is_not_truncated() -> None:
-    """Exactly one median packet short is not more than one packet."""
-    assert_that(_decide(_walk(*_packets(99)))).is_equal_to(
-        (Decimal("2.000000"), False, ()),
+def test_step6_short_by_one_packet_is_truncated() -> None:
+    """A5: one whole 20 ms packet missing is beyond the 5 ms floor."""
+    assert_that(_decide(_walk(*_packets(99)))).is_equal_to((None, True, ()))
+
+
+@pytest.mark.parametrize(
+    ("shortfall", "truncated"),
+    [("0.005000", False), ("0.005001", True), ("0.000000", False)],
+    ids=["at_floor", "over_floor", "exact"],
+)
+def test_step6_floor_boundary(shortfall: str, truncated: bool) -> None:
+    """A5: a shortfall must exceed max(5 ms, two time-base units)."""
+    duration, flagged, flags = _decide(_short_by(shortfall))
+
+    assert_that(flagged).is_equal_to(truncated)
+    assert_that(flags).is_empty()
+    assert_that(duration).is_equal_to(None if truncated else Decimal("2.000000"))
+
+
+@pytest.mark.parametrize(
+    ("time_base", "shortfall", "truncated"),
+    [("1/100", "0.020000", False), ("1/100", "0.020001", True)],
+    ids=["two_units", "over_two_units"],
+)
+def test_step6_coarse_time_base_boundary(
+    time_base: str,
+    shortfall: str,
+    truncated: bool,
+) -> None:
+    """A5: with a coarse time base two units exceed the 5 ms floor."""
+    header = _header(time_base=parse_time_base(time_base))
+
+    assert_that(_decide(_short_by(shortfall), header=header)[1]).is_equal_to(
+        truncated,
     )
+
+
+@pytest.mark.parametrize(
+    ("time_base", "expected"),
+    [
+        (None, SHORTFALL_FLOOR_SECONDS),
+        ("1/44100", SHORTFALL_FLOOR_SECONDS),
+        ("1/1000", SHORTFALL_FLOOR_SECONDS),
+        ("1/100", Decimal("0.02")),
+        ("1/25", Decimal("0.08")),
+    ],
+)
+def test_shortfall_tolerance(time_base: str | None, expected: Decimal) -> None:
+    """The tolerance is max(5 ms, two time-base units), 5 ms without one."""
+    header = _header(
+        time_base=None if time_base is None else parse_time_base(time_base)
+    )
+
+    assert_that(shortfall_tolerance(header)).is_equal_to(expected)
 
 
 def test_step7_long_by_more_than_three_packets_is_inconsistent() -> None:
