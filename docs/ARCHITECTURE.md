@@ -164,7 +164,11 @@ consumes HTTP only.
 - `config/` owns loading and merging settings into `WinnowConfig`; it does not scan
   media.
 - `media/` extracts metadata and normalizes formats; it does not decide duplicate
-  keep/delete policy.
+  keep/delete policy. Audio and video facts come only from `ffprobe`, started through
+  the shared runner in `media/_ffprobe.py` with fixed argument vectors and absolute
+  paths. The audio reader (`media/audio.py`) never reads media bytes in Python: it hands
+  the file to `ffprobe` without its name, bounds each call in time and output, and
+  reports anything `ffprobe` does not establish as unknown (rules in #400).
 - `hash/` computes digests and manages caches; it does not group duplicates.
 - `dedup/` compares hashes and scores quality; it does not move files.
 - `pipeline/` orchestrates steps and reversible file ops; individual steps delegate to

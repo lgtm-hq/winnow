@@ -67,6 +67,28 @@ winnow live-photos --unpaired ~/Pictures       # orphans only
 winnow live-photos -f json ~/Pictures | jq .   # machine-readable scan
 ```
 
+### `winnow doctor`
+
+Checks the local environment and prints one row per check. Exits 1 when a hard check
+fails.
+
+```text
+winnow doctor
+```
+
+| Check           | Fails when                 | Warns when                                      |
+| --------------- | -------------------------- | ----------------------------------------------- |
+| Python          | older than 3.11            | -                                               |
+| FFmpeg          | `ffmpeg` is not on `PATH`  | -                                               |
+| ffprobe         | `ffprobe` is not on `PATH` | its version is unreadable or outside FFmpeg 9.x |
+| Configuration   | the config file is invalid | -                                               |
+| Cache directory | -                          | the directory or its parent is not writable     |
+| Extras          | -                          | an optional extra is not installed              |
+
+The ffprobe row shows the version banner and whether it is in the tested range. The
+audio reader's rules were measured on FFmpeg 9.0.2; on another major version any ffprobe
+warning makes the audio facts unknown (see [External tools](#external-tools)).
+
 ### `winnow init`
 
 Creates a configuration file through guided prompts.
@@ -136,6 +158,36 @@ Removes entries whose source files no longer exist.
 No stale entries prints `No stale entries.`; a declined prompt prints `Aborted.` and
 exits 0; success prints `Pruned N entries.` (`N` counts rows, so a path cached under
 several algorithms removes more rows than the prompt's path count).
+
+---
+
+## External tools
+
+Audio and video facts come from `ffprobe` (part of FFmpeg); there is no Python fallback.
+Without `ffprobe` every audio fact is unknown and flagged `backend_unavailable`, and
+video metadata is empty.
+
+The audio reader hands the file to `ffprobe` as an open descriptor (or as an
+extension-less link in a private temporary directory when `ffprobe` lacks the `fd`
+protocol), so the file name and extension never influence a value. It reports these
+facts, each unknown when `ffprobe` does not establish it: container, codec, sample rate,
+channels, bit depth (PCM and lossless codecs only), bitrate (the stream's own),
+duration, and the number of audio streams. Flags explain gaps: `corrupt`,
+`inconsistent`, `estimated`, `timeout`, `backend_unavailable`. `truncated` is `true`,
+`false`, or not checked; it is `false` only after a packet walk confirmed the declared
+duration.
+
+Known limits:
+
+- Damage inside an intact packet is not detected; that needs a full decode.
+- A loss shorter than one packet, or a cut exactly on a page or frame boundary (Ogg,
+  MPEG-TS, raw MP3, ADTS, AC-3), leaves no evidence. Those formats are always
+  `estimated`, never `truncated=false`.
+- Chained Ogg reports no duration and `inconsistent`.
+- A WAV written to a pipe is flagged; an MS ADPCM WAV whose `fact` chunk ffprobe ignores
+  is `estimated`.
+
+Audio tags and dates are not read yet; they will come from ExifTool.
 
 ---
 
