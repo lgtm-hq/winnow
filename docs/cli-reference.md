@@ -167,8 +167,12 @@ values alike (`WINNOW_WORKERS="@int 4"`, `workers: "@int 4"`): `@int`, `@float`,
 A `<name>.local.<ext>` file next to the config file (`.winnow-config.local.yaml` for
 `.winnow-config.yaml`) is read after it and overrides it: mappings merge key by key,
 lists are joined, and other values replace. A top-level key containing `.` or `__` sets
-a nested setting (`routing.review: Review`, `routing__review: Review`). `.toml` and
-`.json` config files are read as TOML and JSON, any other file as YAML.
+a nested setting (`routing.review: Review`, `routing__review: Review`).
+
+The config file's format follows its suffix, in any letter case. `.toml` and `.tml`
+(`c.TOML` too) are read as TOML 1.0, and `.json` as JSON. `.ini`, `.conf`, `.properties`
+and `.py` files are rejected with a `ConfigError` that names the format. Any other file,
+with or without a suffix (`.yaml`, `.yml`, `.YAML`, `.txt`, `cfg`), is read as YAML.
 
 ---
 
