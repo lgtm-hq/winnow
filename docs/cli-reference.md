@@ -151,10 +151,24 @@ listed. Relative overrides are taken as given; `~` is expanded.
 
 `WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
 onto configuration fields, not directories. `__` separates nested keys
-(`WINNOW_CACHE__ENABLED=false`). A value is read as a TOML value when it is one (`true`,
-`True`, `42`, `0.5`, `["*.jpg", "*.png"]`, `"quoted"`), and as a plain string otherwise.
-A leading `@int`, `@float`, `@bool`, `@str`, `@json`, `@none` or `@null` casts the rest
-of the value explicitly (`WINNOW_WORKERS="@int 4"`). Other `@` forms are kept as text.
+(`WINNOW_CACHE__ENABLED=false`). A value is read as a TOML 1.0 value when it is one
+(`true`, `True`, `42`, `0.5`, `["*.jpg", "*.png"]`, `"quoted"`), and as a plain string
+otherwise, the same on every Python version.
+
+A leading cast marker casts the rest of a value, in the environment and in config file
+values alike (`WINNOW_WORKERS="@int 4"`, `workers: "@int 4"`): `@int`, `@float`,
+`@bool`, `@str`, `@json`, `@none`, `@null`, `@note`, `@comment`, `@upper`, `@lower`,
+`@title`, `@capitalize`, `@strip`, `@lstrip`, `@rstrip`, `@split`, `@casefold` and
+`@swapcase`. Other markers (`@format`, `@jinja`, `@get`, `@read_file`, `@merge`, `@del`,
+...) are an error.
+
+### Config file layering
+
+A `<name>.local.<ext>` file next to the config file (`.winnow-config.local.yaml` for
+`.winnow-config.yaml`) is read after it and overrides it: mappings merge key by key,
+lists are joined, and other values replace. A top-level key containing `.` or `__` sets
+a nested setting (`routing.review: Review`, `routing__review: Review`). `.toml` and
+`.json` config files are read as TOML and JSON, any other file as YAML.
 
 ---
 
