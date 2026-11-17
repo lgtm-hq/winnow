@@ -8,10 +8,14 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from pydantic import ValidationError
-from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from winnow.config._env import _load_env_data, _sync_symlink_env_overrides
+from winnow.config._env import (
+    _load_env_data,
+    _sync_symlink_env_overrides,
+    warn_about_dynaconf_variables,
+)
+from winnow.config._files import read_config_layers
 from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
 
@@ -61,6 +65,9 @@ def _load_config_data(
 ) -> dict[str, object]:
     """Load raw settings from the config file and environment.
 
+    The config file is read with its ``.local`` companion, flat keys and cast
+    markers as :mod:`winnow.config._files` describes.
+
     Args:
         config_path: Optional config file path to load.
         load_env: Whether to include prefixed environment variables.
@@ -72,8 +79,9 @@ def _load_config_data(
         ConfigError: If the config file cannot be read or parsed, or an
             environment value cannot be cast.
     """
+    warn_about_dynaconf_variables(os.environ)
     try:
-        raw_data = _read_yaml_mapping(config_path) if config_path is not None else {}
+        raw_data = read_config_layers(config_path) if config_path is not None else {}
         env_data, explicit_env_keys = (
             _load_env_data(dict(os.environ)) if load_env else ({}, frozenset())
         )
@@ -89,34 +97,6 @@ def _load_config_data(
     _merge_mapping(normalized_data, env_data)
     _sync_symlink_env_overrides(normalized_data, explicit_env_keys)
     return _drop_unknown_keys(data=normalized_data, file_path=config_path)
-
-
-def _read_yaml_mapping(config_path: Path) -> Mapping[str, object]:
-    """Parse a YAML config file with the safe loader.
-
-    The safe loader builds only plain data (mappings, lists, strings, numbers,
-    booleans, dates and null) and follows YAML 1.2, so ``yes`` stays a string
-    and ``010`` is decimal. A file with no document reads as an empty mapping.
-
-    Args:
-        config_path: Config file to read.
-
-    Returns:
-        The top-level mapping of the document.
-
-    Raises:
-        ValueError: If the top level of the document is not a mapping.
-    """
-    yaml = YAML(typ="safe", pure=True)
-    document: object = yaml.load(config_path.read_text(encoding="utf-8"))
-    if document is None:
-        return {}
-    if not isinstance(document, Mapping):
-        raise ValueError(
-            "the top level of a config file must be a mapping, "
-            f"not {type(document).__name__}",
-        )
-    return document
 
 
 def _merge_mapping(

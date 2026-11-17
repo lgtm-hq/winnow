@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import re
-import tomllib
-from collections.abc import Callable, Mapping
-from datetime import datetime, time
+import logging
+from collections.abc import Mapping
 from typing import Final
 
+import tomli
 from pydantic import TypeAdapter, ValidationError
 
+from winnow.config._markers import cast_marker
 from winnow.config.defaults import (
     CONFIG_DIR_ENVVAR,
     DATA_DIR_ENVVAR,
@@ -25,32 +24,29 @@ _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
 _BOOL_ADAPTER = TypeAdapter(bool)
 _SYMLINK_POLICY_ADAPTER = TypeAdapter(SymlinkPolicy)
-_TRUE_WORDS: Final = frozenset({"t", "true", "enabled", "1", "on", "yes"})
-"""Words the ``@bool`` marker reads as true; anything else is false."""
 _CAPITALIZED_BOOLEANS: Final = frozenset({"True", "False"})
-_TIME_WITH_SECONDS: Final = re.compile(r"\d{2}:\d{2}:\d{2}")
-"""TOML 1.0 times always carry seconds; TOML 1.1 lets them be left out."""
+_DYNACONF_VARIABLE_SUFFIX: Final = "_FOR_DYNACONF"
+_LOGGER = logging.getLogger(__name__)
 
 
-def _cast_bool(text: str) -> bool:
-    """Read a ``@bool`` marker value."""
-    return text.strip().lower() in _TRUE_WORDS
+def warn_about_dynaconf_variables(environ: Mapping[str, str]) -> None:
+    """Warn about Dynaconf's own environment variables, which winnow ignores.
 
+    Until #391 Dynaconf read variables such as ``INCLUDES_FOR_DYNACONF`` or
+    ``SETTINGS_FILE_FOR_DYNACONF`` while loading winnow's config, so they
+    could add files or change how values were read. winnow no longer reads
+    them; a warning names each one that is set so the change is not silent.
 
-def _cast_none(_text: str) -> None:
-    """Read a ``@none`` or ``@null`` marker, whatever follows it."""
-
-
-_CAST_MARKERS: Final[dict[str, Callable[[str], object]]] = {
-    "@str": str,
-    "@int": int,
-    "@float": float,
-    "@bool": _cast_bool,
-    "@json": json.loads,
-    "@none": _cast_none,
-    "@null": _cast_none,
-}
-"""Explicit cast markers: ``WINNOW_WORKERS="@int 4"`` casts the rest as int."""
+    Args:
+        environ: Environment mapping to inspect.
+    """
+    names = sorted(name for name in environ if name.endswith(_DYNACONF_VARIABLE_SUFFIX))
+    if names:
+        _LOGGER.warning(
+            "Ignoring Dynaconf environment variables %s: winnow no longer uses "
+            "Dynaconf and does not read them",
+            names,
+        )
 
 
 def _load_env_data(
@@ -82,16 +78,16 @@ def _load_env_data(
 
 
 def _parse_env_value(*, env_key: str, raw: str) -> object:
-    """Cast one environment string to a config value.
+    """Cast one environment string to a config value, as Dynaconf did.
 
-    A leading cast marker (``@int``, ``@float``, ``@bool``, ``@str``,
-    ``@json``, ``@none``, ``@null``) casts the rest of the string explicitly.
-    Otherwise the string is read as a TOML value, so ``true``, ``42``,
-    ``1.5``, ``[1, 2]``, ``{a = 1}``, ``"quoted"`` and ``2024-01-01`` get their
-    TOML types, with ``True`` and ``False`` accepted as booleans too. Anything
-    that is not a TOML value is kept as the original string. A time or
-    date-time without seconds (``12:30``) stays a string: TOML 1.0 rejects it,
-    and only Python 3.15's TOML 1.1 ``tomllib`` would read it as a time.
+    A leading cast marker (see :mod:`winnow.config._markers`) casts the rest
+    of the string explicitly. Otherwise the string is read as a TOML 1.0 value,
+    so ``true``, ``42``, ``1.5``, ``[1, 2]``, ``{a = 1}``, ``"quoted"`` and
+    ``2024-01-01`` get their TOML types, with ``True`` and ``False`` accepted
+    as booleans too. Anything that is not a TOML 1.0 value is kept as the
+    string. The grammar is tomli 2.3's, the TOML 1.0 parser Dynaconf vendored,
+    on every Python version; the standard library's ``tomllib`` follows TOML
+    1.1 from Python 3.15 and would read ``12:30`` as a time there.
 
     Args:
         env_key: Environment variable name, for error messages.
@@ -101,24 +97,21 @@ def _parse_env_value(*, env_key: str, raw: str) -> object:
         The cast value.
 
     Raises:
-        ValueError: If a cast marker's value cannot be cast.
+        ValueError: If a cast marker's value cannot be cast, or the marker is
+            one winnow does not support.
     """
-    marker, _, rest = raw.partition(" ")
-    cast = _CAST_MARKERS.get(marker)
-    if cast is not None:
-        try:
-            return cast(rest)
-        except ValueError as exc:
-            message = f"{env_key}: cannot cast {rest!r} with {marker}"
-            raise ValueError(message) from exc
     text = raw.lower() if raw.strip() in _CAPITALIZED_BOOLEANS else raw
     try:
-        value = tomllib.loads(f"key={text}")["key"]
-    except tomllib.TOMLDecodeError:
-        return raw
-    if isinstance(value, datetime | time) and not _TIME_WITH_SECONDS.search(text):
-        return raw
-    return value
+        matched, value = cast_marker(text)
+    except ValueError as exc:
+        message = f"{env_key}: {exc}"
+        raise type(exc)(message) from exc
+    if matched:
+        return value
+    try:
+        return tomli.loads(f"key={text}")["key"]
+    except (tomli.TOMLDecodeError, KeyError):
+        return text
 
 
 def _set_env_value(

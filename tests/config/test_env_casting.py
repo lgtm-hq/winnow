@@ -154,39 +154,61 @@ def _load_error(tmp_path: Path) -> Exception:
     pytest.fail("expected load_config to fail")
 
 
-# Dynaconf-only markers. Dynaconf applied string utilities (``@upper abc`` read
-# as ``ABC``), placeholders (``@note x`` read as None) and template, file and
-# merge markers (``@format``, ``@read_file``, ``@merge``, ...), which became
-# Dynaconf objects. winnow no longer interprets any of them: the value is kept
-# as the literal string, and validation decides whether it is acceptable.
-_DROPPED_MARKER_FORMS: list[str] = [
-    "@upper abc",
-    "@lower ABC",
-    "@title ab cd",
-    "@capitalize ab",
-    "@strip  x ",
-    "@lstrip  x",
-    "@rstrip x ",
-    "@casefold AB",
-    "@swapcase aB",
-    "@split a b",
-    "@note x",
-    "@comment x",
-    "@empty",
-    "@format {this}",
-    "@jinja x",
-    "@get foo",
-    "@read_file /etc/hosts",
-    "@del",
-    "@merge [1]",
-    "@merge_unique [1]",
-    "@insert 0 x",
+# Dynaconf's string-transform and placeholder markers, cast exactly as on main.
+_STRING_MARKER_FORMS: list[tuple[str, object]] = [
+    ("@upper abc", "ABC"),
+    ("@lower ABC", "abc"),
+    ("@title ab cd", "Ab Cd"),
+    ("@capitalize ab", "Ab"),
+    ("@strip  x ", "x"),
+    ("@lstrip  x", "x"),
+    ("@rstrip x ", "x"),
+    ("@casefold AB", "ab"),
+    ("@swapcase aB", "Ab"),
+    ("@split a b", ["a", "b"]),
+    ("@note x", None),
+    ("@comment x", None),
 ]
 
 
-@pytest.mark.parametrize("raw", _DROPPED_MARKER_FORMS)
-def test_env_value_dynaconf_only_markers_stay_literal(raw: str) -> None:
-    """Markers winnow does not support are kept as the literal string."""
+@pytest.mark.parametrize(("raw", "expected"), _STRING_MARKER_FORMS)
+def test_env_value_string_markers_match_main(raw: str, expected: object) -> None:
+    """String-transform and placeholder markers are applied as Dynaconf did."""
     data, _ = _load_env_data({"WINNOW_SETTING": raw})
 
-    assert_that(data["setting"]).is_equal_to(raw)
+    assert_that(data["setting"]).is_equal_to(expected)
+
+
+# Markers that need Dynaconf itself: lazy templates (became Dynaconf objects on
+# main), other settings, files, and merge or delete instructions. winnow does
+# not keep them as text either: the value is an error naming the marker.
+_UNSUPPORTED_MARKER_FORMS: list[tuple[str, str]] = [
+    ("@empty", "@empty"),
+    ("@format {this}", "@format"),
+    ("@jinja x", "@jinja"),
+    ("@get foo", "@get"),
+    ("@read_file /etc/hosts", "@read_file"),
+    ("@del", "@del"),
+    ("@merge [1]", "@merge"),
+    ("@merge_unique [1]", "@merge_unique"),
+    ("@insert 0 x", "@insert"),
+    ("@int @format {this.x}", "@format"),
+]
+
+
+@pytest.mark.parametrize(("raw", "marker"), _UNSUPPORTED_MARKER_FORMS)
+def test_env_value_unsupported_markers_are_errors(raw: str, marker: str) -> None:
+    """A Dynaconf-only marker raises an error that names it."""
+    with pytest.raises(ValueError, match=f"WINNOW_SETTING: the {marker} marker"):
+        _load_env_data({"WINNOW_SETTING": raw})
+
+
+def test_env_value_unsupported_marker_is_config_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through ``load_config`` the unsupported marker is a ``ConfigError``."""
+    monkeypatch.setenv("WINNOW_WORKERS", "@format {this.x}")
+
+    with pytest.raises(ConfigError, match="@format"):
+        load_config(cwd=tmp_path, home_config_dir=tmp_path / "home")

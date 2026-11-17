@@ -51,6 +51,10 @@ dependencies = [
   "rich>=15.0.0",
   "ruamel.yaml>=0.19.1",
   "tinytag>=2.3.2",
+  # Casts WINNOW_* values with the TOML 1.0 grammar Dynaconf vendored, the
+  # same on every Python. tomli 2.4 moved to TOML 1.1 (like tomllib on
+  # 3.15), which reads values such as 12:30 differently, hence the cap.
+  "tomli>=2.3.2,<2.4",
 ]
 
 [project.optional-dependencies]

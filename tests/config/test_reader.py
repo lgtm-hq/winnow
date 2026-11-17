@@ -100,8 +100,8 @@ def test_reader_lowercases_mixed_case_keys(tmp_path: Path) -> None:
 
 
 def test_reader_drops_unknown_top_level_keys(tmp_path: Path) -> None:
-    """Keys that are not settings are dropped, including Dynaconf's old ones."""
-    data = _read(tmp_path, "bogus: 1\ndynaconf_merge: true\nworkers: 2\n")
+    """Keys that are not settings are dropped with a warning."""
+    data = _read(tmp_path, "bogus: 1\ndynaconf_namespace: x\nworkers: 2\n")
 
     assert_that(data).is_equal_to({"workers": 2})
 
@@ -201,24 +201,20 @@ def test_reader_rejects_documents_that_are_not_one_mapping(
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ('workers: "@int 4"\n', {"workers": "@int 4"}),
+        ('workers: "@int 4"\n', {"workers": 4}),
         (
             'routing:\n  screenshots: "@upper shots"\n',
-            {"routing": {"screenshots": "@upper shots"}},
+            {"routing": {"screenshots": "SHOTS"}},
         ),
     ],
     ids=["int-marker", "upper-marker"],
 )
-def test_reader_keeps_marker_strings_in_files(
+def test_reader_applies_marker_strings_in_files(
     tmp_path: Path,
     text: str,
     expected: dict[str, object],
 ) -> None:
-    """``@``-markers inside YAML strings are plain text.
-
-    Dynaconf applied them in files too (``"@int 4"`` read as ``4``). YAML has
-    its own types, so the file reader no longer interprets them.
-    """
+    """``@``-markers inside config file strings are applied, as on main."""
     assert_that(_read(tmp_path, text)).is_equal_to(expected)
 
 
