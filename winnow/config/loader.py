@@ -1,7 +1,7 @@
 """Public facade for Winnow configuration loading and mutation.
 
 Implementation lives in sibling modules split by concern: ``_paths`` resolves
-config file locations, ``_reader`` loads and normalizes Dynaconf data,
+config file locations, ``_reader`` reads and normalizes the YAML file,
 ``_env`` overlays ``WINNOW_*`` environment variables, and ``_writer`` handles
 set/reset mutation and file writing.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from winnow.config._paths import _resolve_read_path, find_config_path
-from winnow.config._reader import _load_dynaconf_data, validate_config_data
+from winnow.config._reader import _load_config_data, validate_config_data
 from winnow.config._writer import (
     generate_default_config,
     reset_config,
@@ -59,7 +59,7 @@ def load_config(
         cwd=cwd,
         home_config_dir=home_config_dir,
     )
-    data = _load_dynaconf_data(config_path=resolved_path, load_env=load_env)
+    data = _load_config_data(config_path=resolved_path, load_env=load_env)
     return validate_config_data(data=data, file_path=resolved_path)
 
 

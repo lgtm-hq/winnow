@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+import tomllib
+from collections.abc import Callable, Mapping
+from typing import Final
 
-from dynaconf.utils.parse_conf import boolean_fix, parse_conf_data
 from pydantic import TypeAdapter, ValidationError
 
 from winnow.config.defaults import (
@@ -21,6 +23,30 @@ _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
 _BOOL_ADAPTER = TypeAdapter(bool)
 _SYMLINK_POLICY_ADAPTER = TypeAdapter(SymlinkPolicy)
+_TRUE_WORDS: Final = frozenset({"t", "true", "enabled", "1", "on", "yes"})
+"""Words the ``@bool`` marker reads as true; anything else is false."""
+_CAPITALIZED_BOOLEANS: Final = frozenset({"True", "False"})
+
+
+def _cast_bool(text: str) -> bool:
+    """Read a ``@bool`` marker value."""
+    return text.strip().lower() in _TRUE_WORDS
+
+
+def _cast_none(_text: str) -> None:
+    """Read a ``@none`` or ``@null`` marker, whatever follows it."""
+
+
+_CAST_MARKERS: Final[dict[str, Callable[[str], object]]] = {
+    "@str": str,
+    "@int": int,
+    "@float": float,
+    "@bool": _cast_bool,
+    "@json": json.loads,
+    "@none": _cast_none,
+    "@null": _cast_none,
+}
+"""Explicit cast markers: ``WINNOW_WORKERS="@int 4"`` casts the rest as int."""
 
 
 def _load_env_data(
@@ -45,10 +71,45 @@ def _load_env_data(
             continue
         if len(key_parts) == 1:
             explicit_keys.add(key_parts[0])
-        parsed_value = parse_conf_data(boolean_fix(env_value), tomlfy=True)
+        parsed_value = _parse_env_value(env_key=env_key, raw=env_value)
         _set_env_value(data=data, key_parts=key_parts, value=parsed_value)
 
     return data, frozenset(explicit_keys)
+
+
+def _parse_env_value(*, env_key: str, raw: str) -> object:
+    """Cast one environment string to a config value.
+
+    A leading cast marker (``@int``, ``@float``, ``@bool``, ``@str``,
+    ``@json``, ``@none``, ``@null``) casts the rest of the string explicitly.
+    Otherwise the string is read as a TOML value, so ``true``, ``42``,
+    ``1.5``, ``[1, 2]``, ``{a = 1}``, ``"quoted"`` and ``2024-01-01`` get their
+    TOML types, with ``True`` and ``False`` accepted as booleans too. Anything
+    that is not a TOML value is kept as the original string.
+
+    Args:
+        env_key: Environment variable name, for error messages.
+        raw: Environment variable value.
+
+    Returns:
+        The cast value.
+
+    Raises:
+        ValueError: If a cast marker's value cannot be cast.
+    """
+    marker, _, rest = raw.partition(" ")
+    cast = _CAST_MARKERS.get(marker)
+    if cast is not None:
+        try:
+            return cast(rest)
+        except ValueError as exc:
+            message = f"{env_key}: cannot cast {rest!r} with {marker}"
+            raise ValueError(message) from exc
+    text = raw.lower() if raw.strip() in _CAPITALIZED_BOOLEANS else raw
+    try:
+        return tomllib.loads(f"key={text}")["key"]
+    except tomllib.TOMLDecodeError:
+        return raw
 
 
 def _set_env_value(

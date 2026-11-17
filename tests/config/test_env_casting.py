@@ -119,14 +119,18 @@ def test_env_value_invalid_cast_marker_fails_loading(
     monkeypatch: pytest.MonkeyPatch,
     raw: str,
 ) -> None:
-    """A cast marker whose value cannot be cast stops the config load."""
+    """A cast marker whose value cannot be cast raises ConfigError.
+
+    With Dynaconf, ``DynaconfParseError`` escaped instead of ``ConfigError``.
+    """
     (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\n", encoding="utf-8")
     monkeypatch.setenv("WINNOW_WORKERS", raw)
 
     error = _load_error(tmp_path)
 
-    # On main the parser's own exception escapes instead of ConfigError.
-    assert_that(isinstance(error, ConfigError)).is_false()
+    assert_that(error).is_instance_of(ConfigError)
+    assert_that(str(error)).contains("load_config")
+    assert_that(str(error)).contains("WINNOW_WORKERS")
 
 
 def _load_error(tmp_path: Path) -> Exception:
@@ -145,36 +149,24 @@ def _load_error(tmp_path: Path) -> Exception:
     pytest.fail("expected load_config to fail")
 
 
-# Dynaconf string utilities and placeholders: plain values on main.
-_DYNACONF_ONLY_PLAIN_FORMS: list[tuple[str, object]] = [
-    ("@upper abc", "ABC"),
-    ("@lower ABC", "abc"),
-    ("@title ab cd", "Ab Cd"),
-    ("@capitalize ab", "Ab"),
-    ("@strip  x ", "x"),
-    ("@lstrip  x", "x"),
-    ("@rstrip x ", "x"),
-    ("@casefold AB", "ab"),
-    ("@swapcase aB", "Ab"),
-    ("@split a b", ["a", "b"]),
-    ("@note x", None),
-    ("@comment x", None),
-]
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    _DYNACONF_ONLY_PLAIN_FORMS,
-    ids=[repr(raw) for raw, _ in _DYNACONF_ONLY_PLAIN_FORMS],
-)
-def test_env_value_dynaconf_only_markers(raw: str, expected: object) -> None:
-    """Dynaconf's string-utility and placeholder markers, as cast on main."""
-    data, _ = _load_env_data({"WINNOW_SETTING": raw})
-
-    assert_that(data["setting"]).is_equal_to(expected)
-
-
-_DYNACONF_ONLY_OBJECT_FORMS: list[str] = [
+# Dynaconf-only markers. Dynaconf applied string utilities (``@upper abc`` read
+# as ``ABC``), placeholders (``@note x`` read as None) and template, file and
+# merge markers (``@format``, ``@read_file``, ``@merge``, ...), which became
+# Dynaconf objects. winnow no longer interprets any of them: the value is kept
+# as the literal string, and validation decides whether it is acceptable.
+_DROPPED_MARKER_FORMS: list[str] = [
+    "@upper abc",
+    "@lower ABC",
+    "@title ab cd",
+    "@capitalize ab",
+    "@strip  x ",
+    "@lstrip  x",
+    "@rstrip x ",
+    "@casefold AB",
+    "@swapcase aB",
+    "@split a b",
+    "@note x",
+    "@comment x",
     "@empty",
     "@format {this}",
     "@jinja x",
@@ -187,9 +179,9 @@ _DYNACONF_ONLY_OBJECT_FORMS: list[str] = [
 ]
 
 
-@pytest.mark.parametrize("raw", _DYNACONF_ONLY_OBJECT_FORMS)
-def test_env_value_dynaconf_only_objects(raw: str) -> None:
-    """Template, file and merge markers become Dynaconf objects on main."""
+@pytest.mark.parametrize("raw", _DROPPED_MARKER_FORMS)
+def test_env_value_dynaconf_only_markers_stay_literal(raw: str) -> None:
+    """Markers winnow does not support are kept as the literal string."""
     data, _ = _load_env_data({"WINNOW_SETTING": raw})
 
-    assert_that(type(data["setting"]).__module__).starts_with("dynaconf.")
+    assert_that(data["setting"]).is_equal_to(raw)

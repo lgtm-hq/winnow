@@ -9,7 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from winnow.config._env import _sync_symlink_settings
 from winnow.config._paths import _resolve_write_path
-from winnow.config._reader import _load_dynaconf_data, validate_config_data
+from winnow.config._reader import _load_config_data, validate_config_data
 from winnow.config.defaults import cwd_config_path
 from winnow.config.schema import render_config_yaml
 from winnow.exceptions import ConfigError
@@ -80,7 +80,7 @@ def set_config_value(
         home_config_dir=home_config_dir,
     )
     user_data: dict[str, object] = (
-        _load_dynaconf_data(config_path=target_path, load_env=False)
+        _load_config_data(config_path=target_path, load_env=False)
         if target_path.is_file()
         else {}
     )

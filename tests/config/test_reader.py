@@ -14,7 +14,7 @@ import pytest
 from assertpy import assert_that
 
 from winnow.config import CONFIG_FILE_NAME, load_config
-from winnow.config._reader import _load_dynaconf_data
+from winnow.config._reader import _load_config_data
 from winnow.exceptions import ConfigError
 
 
@@ -30,7 +30,7 @@ def _read(tmp_path: Path, text: str) -> dict[str, object]:
     """
     config_path = tmp_path / CONFIG_FILE_NAME
     config_path.write_text(text, encoding="utf-8")
-    return _load_dynaconf_data(config_path, load_env=False)
+    return _load_config_data(config_path, load_env=False)
 
 
 def _read_error(tmp_path: Path, text: str) -> Exception:
@@ -65,7 +65,7 @@ def test_reader_returns_empty_mapping_for_documents_without_settings(
 
 def test_reader_without_file_returns_empty_mapping() -> None:
     """No config file reads as an empty mapping."""
-    assert_that(_load_dynaconf_data(None, load_env=False)).is_empty()
+    assert_that(_load_config_data(None, load_env=False)).is_empty()
 
 
 def test_reader_keeps_nested_keys(tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ def test_reader_lowercases_mixed_case_keys(tmp_path: Path) -> None:
 
 
 def test_reader_drops_unknown_top_level_keys(tmp_path: Path) -> None:
-    """Keys that are not settings are dropped, including Dynaconf's own."""
+    """Keys that are not settings are dropped, including Dynaconf's old ones."""
     data = _read(tmp_path, "bogus: 1\ndynaconf_merge: true\nworkers: 2\n")
 
     assert_that(data).is_equal_to({"workers": 2})
@@ -186,30 +186,39 @@ def test_reader_rejects_documents_that_are_not_one_mapping(
     tmp_path: Path,
     text: str,
 ) -> None:
-    """Duplicate keys and a non-mapping top level stop the read."""
+    """Duplicate keys and a non-mapping top level raise ConfigError.
+
+    Before Dynaconf was removed these escaped as the backend's own errors
+    (``DuplicateKeyError``, ``AttributeError``) instead of ``ConfigError``.
+    """
     error = _read_error(tmp_path, text)
 
-    # On main these escape as the backend's own errors, not ConfigError.
-    assert_that(isinstance(error, ConfigError)).is_false()
+    assert_that(error).is_instance_of(ConfigError)
+    assert_that(str(error)).contains("load_config")
+    assert_that(str(error)).contains(str(tmp_path / CONFIG_FILE_NAME))
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ('workers: "@int 4"\n', {"workers": 4}),
+        ('workers: "@int 4"\n', {"workers": "@int 4"}),
         (
             'routing:\n  screenshots: "@upper shots"\n',
-            {"routing": {"screenshots": "SHOTS"}},
+            {"routing": {"screenshots": "@upper shots"}},
         ),
     ],
     ids=["int-marker", "upper-marker"],
 )
-def test_reader_applies_dynaconf_markers_in_files(
+def test_reader_keeps_marker_strings_in_files(
     tmp_path: Path,
     text: str,
     expected: dict[str, object],
 ) -> None:
-    """On main, Dynaconf markers inside YAML strings are applied."""
+    """``@``-markers inside YAML strings are plain text.
+
+    Dynaconf applied them in files too (``"@int 4"`` read as ``4``). YAML has
+    its own types, so the file reader no longer interprets them.
+    """
     assert_that(_read(tmp_path, text)).is_equal_to(expected)
 
 
