@@ -433,14 +433,21 @@ class _Supervisor:
         )
 
     def cleanup(self) -> None:
-        """Kill the group if the child still runs, reap it, close the pipes.
+        """Kill the group while anything may run, reap it, close the pipes.
+
+        The group is killed when the child is not yet reaped and also when
+        it is but a reader still waits: then a descendant holds a pipe, as
+        when an interrupt arrives during the wait for the readers.
 
         A pipe still held by a reader thread that did not finish is left
         open: closing it could hand its descriptor number to another file
         while the thread still reads from it.
         """
-        if self._process.returncode is None:
+        if self._process.returncode is None or any(
+            reader.is_alive() for reader in self._readers
+        ):
             self.kill()
+        if self._process.returncode is None:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self._process.wait(timeout=_REAP_TIMEOUT_SECONDS)
         self._join_readers(_REAP_TIMEOUT_SECONDS)

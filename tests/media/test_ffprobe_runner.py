@@ -606,6 +606,38 @@ def test_run_bounded_interrupt_kills_and_reaps(
     assert_that(_alive(pids[0])).is_false()
 
 
+def test_run_bounded_interrupt_after_child_exit_kills_the_group() -> None:
+    """An interrupt during the reader wait kills a pipe-holding descendant.
+
+    The direct child exits at once and is reaped; only the grandchild still
+    holds the pipes, so the run is waiting for the readers when the
+    interrupt arrives. Cleanup must kill the group although the child's
+    exit status is already known, so neither the grandchild nor a reader
+    thread outlives the call.
+    """
+    lines: list[bytes] = []
+    before = set(threading.enumerate())
+    timer = _interrupt_main_thread_after(1.0)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_bounded(
+                _python(_GRANDCHILD.format(tail="pass\n")),
+                stdin=DEVNULL,
+                timeout=60,
+                stdout_limit=1024,
+                stderr_limit=1024,
+                on_stdout_line=lines.append,
+            )
+    finally:
+        timer.cancel()
+    timer.join()
+
+    assert_that(lines).is_length(1)
+    assert_that(_wait_gone(int(lines[0]), seconds=2.0)).is_true()
+    left = [t for t in threading.enumerate() if t not in before and t.is_alive()]
+    assert_that(left).is_empty()
+
+
 def test_run_bounded_reader_start_failure_kills_the_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
