@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.12] - 2026-11-17
+
+### Fixed
+
+- **ci**: rerun failed jobs once after an infrastructure failure (#418) (c005978)
+
 ## [0.37.11] - 2026-11-17
 
 ### Fixed
