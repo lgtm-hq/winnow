@@ -6,7 +6,7 @@
   "packageRules": [
     {
       "description": "Keep tomli below 2.4. winnow casts WINNOW_* values with tomli's TOML 1.0 grammar; tomli 2.4 and later read TOML 1.1 and cast values such as 12:30 differently. The shared preset's rangeStrategy 'replace' would otherwise lift the <2.4 cap in pyproject.toml. Lifting it is a decision for a person, made together with tests/config/env_corpus.json.",
-      "matchManagers": ["pep621", "uv"],
+      "matchManagers": ["pep621"],
       "matchPackageNames": ["tomli"],
       "allowedVersions": "<2.4"
     }
