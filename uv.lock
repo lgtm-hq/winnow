@@ -1875,6 +1875,7 @@ version = "0.37.11"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "defusedxml" },
     { name = "exifread" },
     { name = "imagehash" },
     { name = "loguru" },
@@ -1907,6 +1908,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.3.3" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "exifread", specifier = ">=3.0" },
     { name = "imagehash", specifier = ">=4.3.1" },
     { name = "loguru", specifier = ">=0.7.3" },
