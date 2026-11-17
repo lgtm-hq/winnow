@@ -167,25 +167,50 @@ Audio and video facts come from `ffprobe` (part of FFmpeg); there is no Python f
 Without `ffprobe` every audio fact is unknown and flagged `backend_unavailable`, and
 video metadata is empty.
 
-The audio reader hands the file to `ffprobe` as an open descriptor (or as an
-extension-less link in a private temporary directory when `ffprobe` lacks the `fd`
-protocol), so the file name and extension never influence a value. It reports these
-facts, each unknown when `ffprobe` does not establish it: container, codec, sample rate,
-channels, bit depth (PCM and lossless codecs only), bitrate (the stream's own),
-duration, and the number of audio streams. Flags explain gaps: `corrupt`,
-`inconsistent`, `estimated`, `timeout`, `backend_unavailable`. `truncated` is `true`,
-`false`, or not checked; it is `false` only after a packet walk confirmed the declared
-duration.
+The audio reader opens the file once and hands it to `ffprobe` as its standard input
+(through the `fd` protocol, or through an extension-less link to `/dev/fd/0` in a
+private temporary directory when `ffprobe` lacks that protocol), so the file name and
+extension never influence a value. It reports these facts, each unknown when `ffprobe`
+does not establish it: container, codec, sample rate, channels, bit depth (PCM and
+lossless codecs only), bitrate (the stream's own), duration, and the number of audio
+streams. Flags explain gaps:
+
+- `corrupt`: `ffprobe` exited non-zero, wrote invalid JSON, or flagged a packet.
+- `unrecognized_output`: `ffprobe` wrote a warning that is not known to be harmless for
+  this file. It is not proof of damage, but every value it could affect is unknown.
+- `inconsistent`: packet times contradict each other or the declared duration, or the
+  file changed (device, inode, size, or modification time) while it was read.
+- `estimated`: nothing declares the duration, so it was measured from the packets.
+- `timeout`: an `ffprobe` call ran too long or wrote too much and was stopped.
+- `backend_unavailable`: `ffprobe` is missing or could not start.
+
+`truncated` is `true`, `false`, or not checked. It is `false` only after a packet walk
+found the audio present matches the declared duration; it says nothing more.
+
+Each `ffprobe` call runs in its own process group with a time limit and bounded output;
+on a breach the whole group is stopped. On Linux its address space is capped at 1 GiB.
 
 Known limits:
 
 - Damage inside an intact packet is not detected; that needs a full decode.
-- A loss shorter than one packet, or a cut exactly on a page or frame boundary (Ogg,
-  MPEG-TS, raw MP3, ADTS, AC-3), leaves no evidence. Those formats are always
-  `estimated`, never `truncated=false`.
+- A damaged header byte can change a declared value (channels, sample rate, codec
+  variant, duration) and leave no evidence.
+- A loss shorter than one packet leaves no evidence. Encoder padding hides more: with
+  FFmpeg 9.0.2, MP3 and AAC (M4A) files with their last one or two frames removed still
+  report `truncated=false` with the full duration; three frames are caught, except at
+  very low MP3 bitrates.
+- An MP3 is `estimated` only when `ffprobe` says it estimated the duration (no Xing/Info
+  or VBRI header). With such a header the duration is declared and checked.
+- A cut exactly on a page or frame boundary of Ogg, MPEG-TS, ADTS, or AC-3 leaves no
+  evidence. Those formats are always `estimated`, never `truncated=false`.
+- A Matroska file, or the format-level duration of any file, is checked against a
+  declared duration only when the file starts at zero; otherwise the duration is
+  `estimated`.
 - Chained Ogg reports no duration and `inconsistent`.
 - A WAV written to a pipe is flagged; an MS ADPCM WAV whose `fact` chunk ffprobe ignores
   is `estimated`.
+- A file changed and then restored with the same size and modification time while it is
+  read is not noticed.
 
 Audio tags and dates are not read yet; they will come from ExifTool.
 
