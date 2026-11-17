@@ -14,6 +14,20 @@ _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _GATE = _WORKFLOWS / "all-checks-gate.yml"
 _REUSABLE = "lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml"
 _DEFAULT_PR_TYPES = {"opened", "synchronize", "reopened"}
+# The tag publish workflow, its approval-gated job and that job's environment.
+# A release commit on main carries this workflow's tag run; its upload waits
+# for a person to approve the environment, so the main-push gate leaves it out.
+_PUBLISH = _WORKFLOWS / "publish-pypi-on-tag.yml"
+_PUBLISH_NAME = "Publish - PyPI Production"
+_PUBLISH_APPROVAL_JOB = "pypi-upload"
+_PUBLISH_ENVIRONMENT = "pypi"
+# Pushes to main ignore exactly the publish run; every other event gets an
+# empty pattern, which the reusable reads as "gate everything".
+_PUBLISH_RE = f"^{_PUBLISH_NAME}$"
+_MAIN_PUSH_IGNORE = f"${{{{ github.event_name == 'push' && '{_PUBLISH_RE}' || '' }}}}"
+_IGNORE_EXPRESSION = re.compile(
+    r"^\$\{\{ github\.event_name == 'push' && '(?P<pattern>[^']*)' \|\| '' \}\}$"
+)
 
 
 def _workflow(path: Path) -> dict[str, Any]:
@@ -105,7 +119,9 @@ def test_gate_uses_an_annotated_commit_pin() -> None:
         dict.fromkeys(("actions", "checks", "contents", "statuses"), "read")
     )
     assert_that(job).does_not_contain("secrets")
-    assert_that(job.get("with", {})).is_equal_to({"egress-policy": "block"})
+    assert_that(job.get("with", {})).is_equal_to(
+        {"egress-policy": "block", "ignore-checks": _MAIN_PUSH_IGNORE}
+    )
 
 
 def test_gate_covers_every_pr_activity() -> None:
@@ -349,3 +365,128 @@ def test_both_workflow_extensions_are_read(
         (tmp_path / name).write_text("jobs: {}\n")
     monkeypatch.setattr(f"{__name__}._WORKFLOWS", tmp_path)
     assert_that(sorted(_workflow_texts())).is_equal_to(["a.yaml", "b.yml"])
+
+
+def _workflow_text(text: str) -> dict[str, Any]:
+    """Parse workflow text, including YAML 1.1's unquoted on spelling."""
+    data = yaml.safe_load(text)
+    if "on" not in data:
+        data["on"] = data.pop(True)
+    return cast(dict[str, Any], data)
+
+
+def _assert_main_push_ignore(workflows: dict[str, str]) -> None:
+    """Require the main-push gate to drop exactly the tag publish workflow.
+
+    The reusable matches ``ignore-checks`` against workflow-run names,
+    check-run names and status contexts, and drops a matching run together
+    with its check runs. A run's name is its workflow's ``name`` unless the
+    workflow sets ``run-name``, so the pattern must equal that name exactly.
+    """
+    gate = _workflow_text(workflows[_GATE.name])
+    expression = gate["jobs"]["gate"]["with"]["ignore-checks"]
+    match = _IGNORE_EXPRESSION.match(expression)
+    assert_that(match).is_not_none()
+    pattern = cast(re.Match[str], match).group("pattern")
+
+    publish = _workflow_text(workflows[_PUBLISH.name])
+    assert_that(publish["name"]).is_equal_to(_PUBLISH_NAME)
+    assert_that(publish).does_not_contain_key("run-name")
+    # The name holds no regex syntax, so the anchored literal matches it alone.
+    assert_that(publish["name"]).matches(r"^[A-Za-z0-9 -]+$")
+    assert_that(pattern).is_equal_to(f"^{publish['name']}$")
+    job = publish["jobs"][_PUBLISH_APPROVAL_JOB]
+    assert_that(job["environment"]).is_equal_to(_PUBLISH_ENVIRONMENT)
+    # Publish runs only for a tag or by hand: never on a PR, in the merge
+    # queue or for a branch push, so leaving it out drops no producer there.
+    events = publish["on"]
+    assert_that(set(events)).is_equal_to({"push", "workflow_dispatch"})
+    assert_that(set(events["push"])).is_equal_to({"tags"})
+
+    # Nothing else in the repository can be hidden by the pattern: no other
+    # workflow name, and no job id or job display name anywhere.
+    regex = re.compile(pattern)
+    hidden = set()
+    for name, text in workflows.items():
+        data = _workflow_text(text)
+        if name != _PUBLISH.name and regex.search(str(data.get("name", ""))):
+            hidden.add(f"workflow {name}")
+        for job_id, body in (data.get("jobs") or {}).items():
+            for label in (job_id, str((body or {}).get("name", ""))):
+                if regex.search(label):
+                    hidden.add(f"job {name}:{label}")
+    assert_that(hidden).is_empty()
+
+
+def test_main_push_gate_ignores_only_the_tag_publish_run() -> None:
+    """Keep a release's approval wait from timing out the gate on main (#422)."""
+    _assert_main_push_ignore(_workflow_texts())
+
+
+@pytest.mark.parametrize(
+    ("workflow", "old", "new"),
+    [
+        ("all-checks-gate.yml", "'^Publish - PyPI Production$'", "'^Publish$'"),
+        ("all-checks-gate.yml", "'^Publish - PyPI Production$'", "'Publish'"),
+        (
+            "all-checks-gate.yml",
+            "'^Publish - PyPI Production$'",
+            "'^Publish - TestPyPI Staging$'",
+        ),
+        ("all-checks-gate.yml", "github.event_name == 'push'", "true"),
+        (
+            "all-checks-gate.yml",
+            "github.event_name == 'push'",
+            "github.event_name == 'merge_group'",
+        ),
+        ("all-checks-gate.yml", "|| '' }}", "|| '^Publish' }}"),
+        (
+            "publish-pypi-on-tag.yml",
+            "name: Publish - PyPI Production",
+            "name: Publish - PyPI",
+        ),
+        (
+            "publish-pypi-on-tag.yml",
+            "name: Publish - PyPI Production\n",
+            "name: Publish - PyPI Production\n"
+            "run-name: Release ${{ github.ref_name }}\n",
+        ),
+        (
+            "publish-pypi-on-tag.yml",
+            "  push:\n    tags:",
+            "  push:\n    branches: [main]\n    tags:",
+        ),
+        ("publish-pypi-on-tag.yml", "  workflow_dispatch:", "  merge_group:"),
+        ("publish-pypi-on-tag.yml", "environment: pypi", "environment: release"),
+    ],
+    ids=[
+        "prefix-only",
+        "unanchored",
+        "other-workflow",
+        "every-event",
+        "merge-queue",
+        "non-push-pattern",
+        "renamed-publish",
+        "publish-run-name",
+        "publish-on-main",
+        "publish-in-queue",
+        "other-environment",
+    ],
+)
+def test_main_push_ignore_drift_fails(workflow: str, old: str, new: str) -> None:
+    """A wrong name, scope or trigger for the ignored publish run fails."""
+    workflows = _workflow_texts()
+    assert_that(workflows[workflow]).contains(old)
+    workflows[workflow] = workflows[workflow].replace(old, new)
+    with pytest.raises(AssertionError):
+        _assert_main_push_ignore(workflows)
+
+
+def test_main_push_ignore_hides_no_other_job() -> None:
+    """A job anywhere whose name the pattern matches would go ungated."""
+    workflows = _workflow_texts()
+    workflows["peer.yml"] = (
+        "name: Peer\n'on': push\njobs:\n  peer:\n    name: Publish - PyPI Production\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_main_push_ignore(workflows)
