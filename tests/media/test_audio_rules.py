@@ -1,9 +1,9 @@
 """Unit tests for the pure audio rules (issue #400), no ffprobe needed.
 
 Hand-built ffprobe output is fed to the functions in
-:mod:`winnow.media._audio_rules`: stderr filtering (R2), strict JSON (R1),
-stream selection and facts (R2 to R4), the declared duration (R5), and the
-packet-walk decision (R6).
+:mod:`winnow.media._audio_rules`: stderr filtering (R2, A1 to A3), strict JSON
+(R1), stream selection and facts (R2 to R4), the declared duration (R5, A4),
+and the packet-walk decision (R6, A7).
 """
 
 from __future__ import annotations
@@ -18,6 +18,14 @@ from assertpy import assert_that
 
 from tests.media.audio_support import audio_stream, probe_json, run_result
 from winnow.media import audio as audio_module
+from winnow.media._audio_rules import (
+    COVER_TIMESCALE_WARNING,
+    DATA_TRACK_WARNING,
+    MAX_DISTINCT_PACKET_DURATIONS,
+    StderrContext,
+    has_unrecognized_line,
+    stderr_context,
+)
 from winnow.media.audio import (
     BENIGN_STDERR_BY_MAJOR,
     ESTIMATE_STDERR_LINES,
@@ -166,18 +174,285 @@ def test_benign_stderr_lines_per_major(
 
 
 def test_benign_list_for_9_is_the_issue_list() -> None:
-    """The 9.x pins are exactly the four lines named in R2."""
+    """The 9.x pins are the four R2 lines plus the A2 and A3 pins.
+
+    The WAV line is the exact text ffprobe 9.0.2 prints.
+    """
     assert_that(BENIGN_9).is_equal_to(
         frozenset(
             {
                 "Estimating duration from bitrate, this may be inaccurate",
                 "invalid concatenated file detected - using bitrate for duration",
                 "ignoring wrong sample_count",
-                "Ignoring maximum wav data size",
+                "Ignoring maximum wav data size, file may be invalid",
+                "Unsupported codec with id <N> for input stream <M>",
+                "stream 0, timescale not set",
             },
         ),
     )
     assert_that(ESTIMATE_STDERR_LINES <= BENIGN_9).is_true()
+
+
+def test_wav_data_size_line_is_benign() -> None:
+    """The WAV warning matches as ffprobe prints it."""
+    lines = stderr_lines(
+        b"[wav @ 0x1] Ignoring maximum wav data size, file may be invalid\n",
+    )
+
+    assert_that(
+        has_unrecognized_line(lines, benign=BENIGN_9, context=StderrContext()),
+    ).is_false()
+
+
+# --- conditional pins (A2, A3) -----------------------------------------------
+
+_DATA_LINE = "Unsupported codec with id 0 for input stream 2"
+
+
+def _data_track_json(codec_type: str = "data") -> dict[str, object]:
+    """Build an MOV header with video, audio, and a third track.
+
+    Args:
+        codec_type: Type of stream 2.
+
+    Returns:
+        The header object.
+    """
+    return probe_json(
+        {"index": 0, "codec_type": "video", "codec_name": "mpeg4"},
+        audio_stream(index=1, codec_name="aac"),
+        {"index": 2, "codec_type": codec_type, "codec_name": "unknown"},
+        format_name="mov,mp4,m4a,3gp,3g2,mj2",
+    )
+
+
+@pytest.mark.parametrize(
+    ("codec_type", "line", "unrecognized"),
+    [
+        ("data", _DATA_LINE, False),
+        ("video", _DATA_LINE, False),
+        ("subtitle", _DATA_LINE, False),
+        ("audio", _DATA_LINE, True),
+        ("data", "Unsupported codec with id 0 for input stream 1", True),
+        ("data", "Unsupported codec with id 0 for input stream 7", True),
+        ("data", "Unsupported codec with id 0 for input stream 2 now", True),
+        ("data", "Unsupported codec with id x for input stream 2", True),
+        ("data", DATA_TRACK_WARNING, True),
+    ],
+    ids=[
+        "data_track",
+        "video_track",
+        "subtitle_track",
+        "audio_track",
+        "names_the_audio_stream",
+        "absent_stream",
+        "trailing_text",
+        "non_numeric_id",
+        "pin_text_itself",
+    ],
+)
+def test_data_track_warning(codec_type: str, line: str, unrecognized: bool) -> None:
+    """A2: benign only for a stream the JSON has and that is not audio."""
+    context = stderr_context(_data_track_json(codec_type))
+
+    assert_that(
+        has_unrecognized_line([line], benign=BENIGN_9, context=context),
+    ).is_equal_to(unrecognized)
+
+
+def test_data_track_warning_needs_its_pin() -> None:
+    """On a major without the A2 pin the line is unrecognized."""
+    context = stderr_context(_data_track_json())
+
+    assert_that(
+        has_unrecognized_line(
+            [_DATA_LINE],
+            benign=frozenset({ESTIMATE_LINE}),
+            context=context,
+        ),
+    ).is_true()
+
+
+def test_interpret_header_accepts_data_track_warning() -> None:
+    """A2 in the header call: the facts of the audio stream are accepted."""
+    run = run_result(
+        stdout=json.dumps(_data_track_json()).encode(),
+        stderr=f"{_DATA_LINE}\n".encode(),
+    )
+
+    header, flags = interpret_header(run, benign=BENIGN_9)
+
+    assert_that(flags).is_empty()
+    if header is None:
+        pytest.fail("header was refused")
+    assert_that((header.codec, header.stream_index)).is_equal_to(("aac", 1))
+    assert_that(header.stderr_context.non_audio_indexes).is_equal_to(
+        frozenset({0, 2}),
+    )
+
+
+def test_data_track_warning_in_the_walk() -> None:
+    """A2 in the walk: the header's context decides the walk's lines too."""
+    context = stderr_context(_data_track_json())
+    header = _header(stderr_context=context)
+
+    accepted = _decide(
+        _walk(*_packets(100)),
+        header=header,
+        stderr=f"{_DATA_LINE}\n".encode(),
+    )
+    refused = _decide(
+        _walk(*_packets(100)),
+        header=header,
+        stderr=b"Unsupported codec with id 0 for input stream 1\n",
+    )
+
+    assert_that(accepted).is_equal_to((Decimal("2.000000"), False, ()))
+    assert_that(refused).is_equal_to(
+        (None, None, (AudioFlag.UNRECOGNIZED_OUTPUT,)),
+    )
+
+
+def _cover_json(
+    *,
+    cover: dict[str, object] | None = None,
+    audio: dict[str, object] | None = None,
+    format_name: str = "mov,mp4,m4a,3gp,3g2,mj2",
+) -> dict[str, object]:
+    """Build an M4A header with AAC at index 0 and covr art at index 1.
+
+    Args:
+        cover: Overrides for the cover stream.
+        audio: Overrides for the audio stream.
+        format_name: Container name.
+
+    Returns:
+        The header object.
+    """
+    cover_stream: dict[str, object] = {
+        "index": 1,
+        "codec_type": "video",
+        "codec_name": "png",
+        "id": "0x0",
+        "time_base": "1/90000",
+        "disposition": {"default": 0, "attached_pic": 1},
+    }
+    cover_stream.update(cover or {})
+    audio_fields: dict[str, object] = {
+        "codec_name": "aac",
+        "sample_rate": "48000",
+        "time_base": "1/48000",
+        "id": "0x1",
+        "disposition": {"default": 1, "attached_pic": 0},
+    }
+    audio_fields.update(audio or {})
+    return probe_json(
+        audio_stream(**audio_fields),
+        cover_stream,
+        format_name=format_name,
+    )
+
+
+def test_cover_timescale_warning_is_benign_for_covr_art() -> None:
+    """A3: the covr line is benign when its condition holds."""
+    context = stderr_context(_cover_json())
+
+    assert_that(context.cover_timescale_benign).is_true()
+    assert_that(
+        has_unrecognized_line(
+            [COVER_TIMESCALE_WARNING],
+            benign=BENIGN_9,
+            context=context,
+        ),
+    ).is_false()
+
+
+@pytest.mark.parametrize(
+    ("kwargs"),
+    [
+        {"cover": {"id": "0x2"}},
+        {"cover": {"disposition": {"default": 0, "attached_pic": 0}}},
+        {"audio": {"time_base": "1/1000"}},
+        {"audio": {"time_base": "1/1"}},
+        {"audio": {"time_base": None}},
+        {"audio": {"index": 2}},
+        {"format_name": "matroska,webm"},
+    ],
+    ids=[
+        "picture_is_a_track",
+        "no_attached_picture",
+        "movie_time_scale_fallback",
+        "unit_time_scale_fallback",
+        "no_time_base",
+        "stream_0_is_not_audio",
+        "not_mp4",
+    ],
+)
+def test_cover_timescale_warning_outside_its_condition(
+    kwargs: dict[str, Any],
+) -> None:
+    """A3: without covr art, or with a fallback time base, it is unrecognized."""
+    context = stderr_context(_cover_json(**kwargs))
+
+    assert_that(context.cover_timescale_benign).is_false()
+    assert_that(
+        has_unrecognized_line(
+            [COVER_TIMESCALE_WARNING],
+            benign=BENIGN_9,
+            context=context,
+        ),
+    ).is_true()
+
+
+def test_cover_timescale_warning_needs_primary_stream_0() -> None:
+    """A3: stream 0 must be the primary audio stream."""
+    data = _cover_json(audio={"disposition": {"default": 0, "attached_pic": 0}})
+    streams = data["streams"]
+    if not isinstance(streams, list):
+        pytest.fail("streams is not a list")
+    streams.append(
+        audio_stream(
+            index=2,
+            sample_rate="48000",
+            disposition={"default": 1, "attached_pic": 0},
+        ),
+    )
+
+    assert_that(stderr_context(data).cover_timescale_benign).is_false()
+
+
+def test_cover_timescale_warning_needs_its_pin() -> None:
+    """On a major without the A3 pin the line is unrecognized."""
+    context = stderr_context(_cover_json())
+
+    assert_that(
+        has_unrecognized_line(
+            [COVER_TIMESCALE_WARNING],
+            benign=frozenset({ESTIMATE_LINE}),
+            context=context,
+        ),
+    ).is_true()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{}, {"format": {"format_name": "flac"}, "streams": "x"}, {"format": []}],
+)
+def test_stderr_context_of_malformed_json_is_empty(data: dict[str, object]) -> None:
+    """Without the expected shape no conditional pin can apply."""
+    assert_that(stderr_context(data)).is_equal_to(StderrContext())
+
+
+def test_stderr_context_skips_streams_without_an_integer_index() -> None:
+    """Only streams with an integer index can be named by the A2 line."""
+    data = probe_json(
+        audio_stream(),
+        {"index": True, "codec_type": "data"},
+        {"index": "2", "codec_type": "data"},
+        {"index": 3},
+    )
+
+    assert_that(stderr_context(data).non_audio_indexes).is_empty()
 
 
 # --- strict JSON (R1) -------------------------------------------------------
@@ -464,25 +739,46 @@ def test_interpret_header_flags_nonzero_exit() -> None:
 
 
 def test_interpret_header_flags_unlisted_stderr() -> None:
-    """Exit 0 is not trusted: any unlisted stderr line is corrupt."""
+    """Exit 0 is not trusted: an unlisted stderr line is unrecognized (A1)."""
     run = run_result(
         stdout=json.dumps(probe_json()).encode(),
         stderr=b"[flac @ 0x1] Packet corrupt (stream = 0, dts = 0).\n",
     )
 
     assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
-        (None, (AudioFlag.CORRUPT,)),
+        (None, (AudioFlag.UNRECOGNIZED_OUTPUT,)),
     )
 
 
 def test_interpret_header_without_pins_refuses_benign_line() -> None:
-    """On an unpinned major even a 9.x benign line is corrupt."""
+    """On an unpinned major even a 9.x benign line is unrecognized."""
     run = run_result(
         stdout=json.dumps(probe_json()).encode(),
         stderr=f"[mp3 @ 0x1] {ESTIMATE_LINE}\n".encode(),
     )
 
     assert_that(interpret_header(run, benign=frozenset())).is_equal_to(
+        (None, (AudioFlag.UNRECOGNIZED_OUTPUT,)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [(1, json.dumps(probe_json()).encode()), (0, b"not json")],
+    ids=["nonzero_exit", "invalid_json"],
+)
+def test_interpret_header_corrupt_beats_unrecognized(
+    returncode: int,
+    stdout: bytes,
+) -> None:
+    """A non-zero exit or invalid JSON stays corrupt, whatever stderr says."""
+    run = run_result(
+        returncode=returncode,
+        stdout=stdout,
+        stderr=b"something unexpected\n",
+    )
+
+    assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
         (None, (AudioFlag.CORRUPT,)),
     )
 
@@ -565,6 +861,36 @@ def test_packet_walk_detects_backwards_time_and_corrupt_flag() -> None:
     assert_that(walk.corrupt_packet).is_true()
 
 
+def test_packet_walk_bounds_distinct_durations() -> None:
+    """The walk keeps at most a fixed number of distinct durations (A7)."""
+    walk = PacketWalk()
+    for index in range(MAX_DISTINCT_PACKET_DURATIONS + 10):
+        walk.feed(f"{index}.000000,0.{index + 1:06d},K__".encode())
+
+    assert_that(len(walk.durations)).is_equal_to(MAX_DISTINCT_PACKET_DURATIONS)
+    assert_that(walk.too_varied).is_true()
+    assert_that(walk.packets).is_equal_to(MAX_DISTINCT_PACKET_DURATIONS + 10)
+
+
+def test_packet_walk_repeated_durations_are_not_too_varied() -> None:
+    """Repeating a known duration after the cap is reached is fine."""
+    walk = PacketWalk()
+    for index in range(MAX_DISTINCT_PACKET_DURATIONS):
+        walk.feed(f"{index}.000000,0.{index + 1:06d},K__".encode())
+    walk.feed(b"99999.000000,0.000001,K__")
+
+    assert_that(walk.too_varied).is_false()
+
+
+def test_too_many_distinct_durations_is_inconsistent() -> None:
+    """A walk that gave up on its durations reports inconsistent."""
+    walk = PacketWalk()
+    for index in range(MAX_DISTINCT_PACKET_DURATIONS + 1):
+        walk.feed(f"{index}.000000,0.{index + 1:06d},K__".encode())
+
+    assert_that(_decide(walk)).is_equal_to((None, None, (AudioFlag.INCONSISTENT,)))
+
+
 def test_packet_walk_empty() -> None:
     """An empty walk has no measured duration or median."""
     walk = PacketWalk()
@@ -605,11 +931,88 @@ def test_declared_from_format_only_with_one_stream() -> None:
     """format.duration counts only when the file has one non-picture stream."""
     single = _header(stream_duration=None, format_duration=Decimal(7))
     several = replace(single, non_picture_stream_count=2)
+    walk = _walk(*_packets(100))
 
     assert_that(
-        declared_duration(single, _walk(), estimate_warned=False),
+        declared_duration(single, walk, estimate_warned=False),
     ).is_equal_to(Decimal(7))
-    assert_that(declared_duration(several, _walk(), estimate_warned=False)).is_none()
+    assert_that(declared_duration(several, walk, estimate_warned=False)).is_none()
+
+
+@pytest.mark.parametrize(
+    ("start", "declared"),
+    [
+        ("0.000000", Decimal(7)),
+        ("0.020000", Decimal(7)),
+        ("-0.020000", Decimal(7)),
+        ("0.020001", None),
+        ("5.000000", None),
+        (None, None),
+    ],
+    ids=[
+        "zero",
+        "one_packet",
+        "minus_one_packet",
+        "over_one_packet",
+        "five_seconds",
+        "unknown",
+    ],
+)
+def test_format_duration_needs_a_zero_start(
+    start: str | None,
+    declared: Decimal | None,
+) -> None:
+    """A4: format.duration is an end time, used only from a zero start."""
+    header = _header(
+        stream_duration=None,
+        format_duration=Decimal(7),
+        format_start=None if start is None else Decimal(start),
+    )
+
+    assert_that(
+        declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
+    ).is_equal_to(declared)
+
+
+def test_stream_duration_does_not_need_a_zero_start() -> None:
+    """A4 leaves the stream's own duration alone."""
+    header = _header(format_start=Decimal(5), stream_duration=Decimal(2))
+
+    assert_that(
+        declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
+    ).is_equal_to(Decimal(2))
+
+
+def test_format_duration_needs_packets() -> None:
+    """Without a packet there is no median, so no zero start is shown."""
+    header = _header(stream_duration=None, format_duration=Decimal(7))
+
+    assert_that(declared_duration(header, _walk(), estimate_warned=False)).is_none()
+
+
+def test_matroska_tag_needs_a_zero_start() -> None:
+    """A4: the DURATION tag is an end time, used only from a zero start."""
+    walk = _walk(*_packets(50, start="6.0"))
+    header = _matroska_header(
+        format_start=Decimal(5),
+        tag_duration=Decimal("7.000"),
+    )
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+
+
+def test_offset_matroska_is_estimated() -> None:
+    """A4 end to end: audio-only Matroska from 5 s is measured, not truncated."""
+    header = _matroska_header(
+        non_picture_stream_count=1,
+        format_start=Decimal(5),
+        format_duration=Decimal(7),
+        tag_duration=Decimal(7),
+    )
+
+    assert_that(
+        _decide(_walk(*_packets(100, start="5")), header=header),
+    ).is_equal_to((Decimal("2.000000"), None, (AudioFlag.ESTIMATED,)))
 
 
 def _matroska_header(**overrides: Any) -> ProbeHeader:
@@ -713,12 +1116,21 @@ def test_step1_nonzero_exit_is_corrupt() -> None:
 
 
 def test_step1_unlisted_stderr_beats_other_steps() -> None:
-    """Step 1 wins over steps 2 to 4."""
+    """Step 1 wins over steps 2 to 4; the line is unrecognized (A1)."""
     stderr = b"[flac @ 0x1] File ended prematurely\n"
 
     assert_that(_decide(_walk(), stderr=stderr)).is_equal_to(
-        (None, None, (AudioFlag.CORRUPT,)),
+        (None, None, (AudioFlag.UNRECOGNIZED_OUTPUT,)),
     )
+
+
+def test_step1_nonzero_exit_beats_unrecognized_line() -> None:
+    """A failed walk is corrupt even when its stderr is also unexpected."""
+    stderr = b"[flac @ 0x1] File ended prematurely\n"
+
+    assert_that(
+        _decide(_walk(*_packets(100)), returncode=1, stderr=stderr),
+    ).is_equal_to((None, None, (AudioFlag.CORRUPT,)))
 
 
 def test_step2_no_packets_is_truncated() -> None:

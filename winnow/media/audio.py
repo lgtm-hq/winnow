@@ -2,31 +2,56 @@
 
 ffprobe is the only source of audio facts: container, codec, sample rate,
 channels, bit depth, bitrate, and duration. No Python code here reads a byte
-of the media file; the file is handed to ffprobe as an open descriptor (or, on
-an FFmpeg without the ``fd`` protocol, as an extension-less symlink) so
-ffprobe never sees its name. Anything ffprobe does not establish is reported
-as unknown.
+of the media file. The file is opened once and handed to ffprobe as its
+stdin: through ``-fd 0 fd:``, or, on an FFmpeg without the ``fd`` protocol,
+through an extension-less symlink in a private directory that points at
+``/dev/fd/0`` (at the file's absolute path where ``/dev/fd`` does not exist),
+so ffprobe never sees the file's name. Anything ffprobe does not establish is
+reported as unknown.
 
-The rules are those of issue #400. This module runs ffprobe; the decisions
-on its output live in :mod:`winnow.media._audio_rules`:
+The rules are those of issue #400 and its amendments A1 to A7. This module
+runs ffprobe; the decisions on its output live in
+:mod:`winnow.media._audio_rules`:
 
 * R1/R2: one header call with a format allow-list; every fact is unknown
   unless the call exits 0, names an allowed container, has an audio stream
-  with codec, sample rate, and channels, and writes only benign stderr lines.
+  with codec, sample rate, and channels, and writes only benign stderr lines
+  (an unexpected line is ``unrecognized_output``, not ``corrupt``).
 * R3: cover art is never a stream to read; the primary stream is the first
   default audio stream, else the first audio stream.
 * R4/R5/R7: facts come from the primary stream; a declared duration is used
-  only where the container really declares one; bitrate is the stream's own.
+  only where the container really declares one and, for the end times
+  (Matroska ``DURATION``, ``format.duration``), only when the file starts at
+  zero; bitrate is the stream's own.
 * R6: a packet walk of the primary stream checks the declared duration and
   measures it where none is declared.
 * R8: both calls are bounded in time and output and are never retried.
+* A6: the file's device, inode, size, and modification time are taken before
+  the header call and after the walk; any change makes every fact unknown
+  with ``inconsistent``.
 
-Known limits (not worked around): damage inside an intact packet is not
-detected; a loss shorter than one packet, or a cut exactly on an Ogg page,
-MPEG-TS packet, or raw MP3/ADTS/AC-3 frame boundary, leaves no evidence, so
-those formats are always reported ``estimated``; chained Ogg is reported
-``inconsistent``; a WAV written to a pipe is flagged and an MS ADPCM WAV whose
-``fact`` chunk ffprobe ignores is ``estimated``.
+Known limits (not worked around):
+
+* Damage inside an intact packet is not detected; that needs a full decode.
+* A damaged header byte can change a declared value (channels, sample rate,
+  codec variant, duration) and leave no evidence; ``truncated=false`` means
+  only that the audio present matches the declared length.
+* A loss shorter than one packet leaves no evidence. Where a codec pads its
+  last frames (MP3, AAC), the padding hides more: on FFmpeg 9.0.2, MP3 and
+  faststart AAC M4A files with their last one or two frames removed still
+  report ``truncated=false`` with the full declared duration; three frames
+  are caught except at very low MP3 bitrates.
+* MP3 is ``estimated`` only when ffprobe says it estimated the duration (no
+  Xing/Info or VBRI header); with such a header the duration is declared and
+  checked like any other.
+* A cut exactly on an Ogg page, MPEG-TS packet, or raw ADTS/AC-3 frame
+  boundary leaves no evidence; those formats are always ``estimated``, never
+  ``truncated=false``.
+* Chained Ogg is reported ``inconsistent``.
+* A WAV written to a pipe is flagged; an MS ADPCM WAV whose ``fact`` chunk
+  ffprobe ignores is ``estimated``.
+* The file identity check (A6) cannot see a file that is changed and then
+  restored with the same size and modification time.
 """
 
 from __future__ import annotations
@@ -66,8 +91,8 @@ from winnow.media._audio_rules import (
     stderr_lines,
 )
 from winnow.media._ffprobe import (
-    DEVNULL,
     FFPROBE,
+    BoundedRunError,
     fd_protocol_supported,
     ffprobe_version,
     find_binary,
@@ -89,6 +114,11 @@ HEADER_STDOUT_LIMIT: Final[int] = 8 * 1024 * 1024
 WALK_STDOUT_LIMIT: Final[int] = 256 * 1024 * 1024
 STDERR_LIMIT: Final[int] = 64 * 1024
 
+_DESCRIPTOR_DIR: Final[Path] = Path("/dev/fd")
+
+FileIdentity = tuple[int, ...]
+"""Device, inode, size, and modification time (ns) of the probed file."""
+
 
 @dataclass(frozen=True, slots=True)
 class _ProbeSource:
@@ -99,7 +129,8 @@ class _ProbeSource:
         input_args: Trailing input arguments.
         stdin: Descriptor handed to ffprobe as stdin.
         size: File size in bytes.
-        rewind: Resets the descriptor before each run, when one is used.
+        rewind: Resets the descriptor before each run.
+        identity: Returns the file's current identity (A6).
     """
 
     protocol: str
@@ -107,6 +138,7 @@ class _ProbeSource:
     stdin: int
     size: int
     rewind: Callable[[], None]
+    identity: Callable[[], FileIdentity]
 
 
 def extract_audio_metadata(path: Path) -> MediaMetadata:
@@ -122,7 +154,8 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
         Metadata with the audio facts, flags, and truncation state.
 
     Raises:
-        MediaError: If the path is not a regular file or cannot be opened.
+        MediaError: If the path is not a regular file or cannot be opened,
+            or if ffprobe's output could not be read.
     """
     if not path.is_file():
         raise MediaError(
@@ -136,10 +169,17 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
     benign = benign_stderr_lines(binary)
     with _probe_source(path=path, binary=binary) as source:
         try:
-            return _probe(binary=binary, source=source, benign=benign)
+            return _checked_probe(binary=binary, source=source, benign=benign)
         except OSError as exc:
             logger.debug("ffprobe could not start for {}: {}", path, exc)
             return _unavailable(f"ffprobe could not start: {exc}")
+        except BoundedRunError as exc:
+            raise MediaError(
+                "ffprobe output could not be read",
+                operation="extract_audio_metadata",
+                file_path=path,
+                details={"error": str(exc.__cause__)},
+            ) from exc
 
 
 def benign_stderr_lines(binary: str) -> frozenset[str]:
@@ -168,6 +208,30 @@ def walk_timeout(size: int) -> float:
     """
     seconds = WALK_BASE_TIMEOUT_SECONDS + size / WALK_BYTES_PER_EXTRA_SECOND
     return min(seconds, WALK_MAX_TIMEOUT_SECONDS)
+
+
+def _checked_probe(
+    *,
+    binary: str,
+    source: _ProbeSource,
+    benign: frozenset[str],
+) -> MediaMetadata:
+    """Run :func:`_probe` and discard its result if the file changed (A6).
+
+    Args:
+        binary: Absolute path of the ffprobe binary.
+        source: How ffprobe receives the file.
+        benign: Benign stderr lines for the installed FFmpeg major.
+
+    Returns:
+        The audio metadata, or all unknown with ``inconsistent`` when the
+        file's identity differs after the last call from before the first.
+    """
+    before = source.identity()
+    metadata = _probe(binary=binary, source=source, benign=benign)
+    if source.identity() != before:
+        return MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,))
+    return metadata
 
 
 def _probe(
@@ -299,9 +363,15 @@ def _base_argv(binary: str, source: _ProbeSource) -> list[str]:
 def _probe_source(*, path: Path, binary: str) -> Iterator[_ProbeSource]:
     """Hand the file to ffprobe without its name (R1).
 
-    Uses ``-fd 0 fd:`` with the file open on stdin when ffprobe has the
-    ``fd`` protocol; otherwise a symlink named ``input`` in a private
-    temporary directory, passed as ``file:<absolute path>``.
+    The file is opened in both forms, so an unreadable file fails the same
+    way, and the open descriptor is ffprobe's stdin. With the ``fd``
+    protocol ffprobe reads it through ``-fd 0 fd:``. Otherwise ffprobe gets
+    ``file:<absolute path>`` of a symlink named ``input`` in a private
+    temporary directory; the link points at ``/dev/fd/0``, ffprobe's own
+    stdin, so it reads the file that was opened even if the path is replaced
+    later. Where ``/dev/fd`` does not exist the link points at the file's
+    absolute path, and the path's identity is also compared with the
+    descriptor's (A6).
 
     Args:
         path: The audio file.
@@ -311,37 +381,46 @@ def _probe_source(*, path: Path, binary: str) -> Iterator[_ProbeSource]:
         The probe source.
 
     Raises:
-        MediaError: If the file cannot be opened or is not a regular file.
+        MediaError: If the file cannot be opened or is not a regular file,
+            or the link cannot be made.
     """
-    if fd_protocol_supported(binary):
-        with _open_descriptor(path) as (descriptor, size):
+    with _open_descriptor(path) as (descriptor, size):
+        if fd_protocol_supported(binary):
             yield _ProbeSource(
                 protocol="fd",
                 input_args=("-fd", "0", "fd:"),
                 stdin=descriptor,
                 size=size,
                 rewind=lambda: _rewind(descriptor),
+                identity=lambda: _identity(descriptor),
             )
-        return
-    with tempfile.TemporaryDirectory(prefix="winnow-ffprobe-") as private:
-        link = Path(private) / "input"
-        try:
-            size = path.stat().st_size
-            link.symlink_to(path.absolute())
-        except OSError as exc:
-            raise MediaError(
-                "cannot link audio file for ffprobe",
-                operation="extract_audio_metadata",
-                file_path=path,
-                details={"error": str(exc)},
-            ) from exc
-        yield _ProbeSource(
-            protocol="file",
-            input_args=(f"file:{link}",),
-            stdin=DEVNULL,
-            size=size,
-            rewind=_no_rewind,
-        )
+            return
+        with tempfile.TemporaryDirectory(prefix="winnow-ffprobe-") as private:
+            link = Path(private) / "input"
+            by_descriptor = _DESCRIPTOR_DIR.is_dir()
+            try:
+                link.symlink_to(
+                    _DESCRIPTOR_DIR / "0" if by_descriptor else path.absolute(),
+                )
+            except OSError as exc:
+                raise MediaError(
+                    "cannot link audio file for ffprobe",
+                    operation="extract_audio_metadata",
+                    file_path=path,
+                    details={"error": str(exc)},
+                ) from exc
+            yield _ProbeSource(
+                protocol="file",
+                input_args=(f"file:{link}",),
+                stdin=descriptor,
+                size=size,
+                rewind=lambda: _rewind(descriptor),
+                identity=(
+                    (lambda: _identity(descriptor))
+                    if by_descriptor
+                    else (lambda: _identity(descriptor) + _path_identity(path))
+                ),
+            )
 
 
 @contextlib.contextmanager
@@ -395,8 +474,34 @@ def _rewind(descriptor: int) -> None:
     os.lseek(descriptor, 0, os.SEEK_SET)
 
 
-def _no_rewind() -> None:
-    """Do nothing; the symlink form needs no rewinding."""
+def _identity(descriptor: int) -> FileIdentity:
+    """Return the identity and change data of an open file (A6).
+
+    Args:
+        descriptor: Open file descriptor.
+
+    Returns:
+        Device, inode, size, and modification time in nanoseconds.
+    """
+    info = os.fstat(descriptor)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _path_identity(path: Path) -> FileIdentity:
+    """Return the identity and change data of the file a path names now.
+
+    Args:
+        path: The audio file's path.
+
+    Returns:
+        Device, inode, size, and modification time, or ``(-1,)`` when the
+        path cannot be read, which never equals a real identity.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return (-1,)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
 def _unavailable(reason: str) -> MediaMetadata:
@@ -421,6 +526,7 @@ __all__ = [
     "DurationOutcome",
     "ESTIMATE_STDERR_LINES",
     "FORMAT_WHITELIST",
+    "FileIdentity",
     "HEADER_STDOUT_LIMIT",
     "HEADER_TIMEOUT_SECONDS",
     "MATROSKA_FORMAT_NAME",

@@ -36,7 +36,14 @@ class AudioFlag(StrEnum):
     """Packet times contradict each other or the declared duration."""
 
     CORRUPT = auto()
-    """ffprobe failed, warned outside the benign list, or flagged a packet."""
+    """ffprobe exited non-zero, wrote invalid JSON, or flagged a packet."""
+
+    UNRECOGNIZED_OUTPUT = auto()
+    """ffprobe wrote a stderr line that is not benign for this file.
+
+    An unexpected line is not proof of damage, so it is not ``corrupt``; it
+    still makes every value it could affect unknown.
+    """
 
     ESTIMATED = auto()
     """The duration was measured from packets; nothing declared it."""

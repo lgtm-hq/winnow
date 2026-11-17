@@ -41,6 +41,10 @@ CASES: Final[dict[str, tuple[str, float]]] = {
     "flac_cut_98": ("flac.flac", 0.98),
     "wav_cut_90": ("wav.wav", 0.9),
     "mp3_cut_50": ("mp3.mp3", 0.5),
+    "cover_m4a": ("cover.m4a", 1.0),
+    "timecode_mov": ("timecode.mov", 1.0),
+    "timecode_mov_cut_90": ("timecode.mov", 0.9),
+    "offset_mka": ("offset.mka", 1.0),
 }
 """Recording name to (fixture, fraction of the file kept)."""
 

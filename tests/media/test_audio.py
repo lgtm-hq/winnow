@@ -25,7 +25,7 @@ from tests.media.audio_support import (
 )
 from winnow.exceptions import MediaError
 from winnow.media import audio as audio_module
-from winnow.media._ffprobe import DEVNULL, BoundedRun
+from winnow.media._ffprobe import BoundedRun, BoundedRunError
 from winnow.media.audio import FORMAT_WHITELIST, extract_audio_metadata
 from winnow.media.audio import _open_descriptor as open_descriptor
 from winnow.models.media import AudioFlag, MediaMetadata
@@ -292,31 +292,101 @@ def test_replay_truncated_flac(
     assert_that(known_flags(metadata)).is_empty()
 
 
-@pytest.mark.parametrize("name", ["wav_cut_90", "mp3_cut_50", "garbage"])
+@pytest.mark.parametrize(
+    ("name", "flag"),
+    [
+        ("wav_cut_90", AudioFlag.UNRECOGNIZED_OUTPUT),
+        ("mp3_cut_50", AudioFlag.UNRECOGNIZED_OUTPUT),
+        ("garbage", AudioFlag.CORRUPT),
+    ],
+)
 def test_replay_unlisted_stderr_makes_all_unknown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     name: str,
+    flag: AudioFlag,
 ) -> None:
-    """A header call with an unlisted stderr line or a failure is corrupt."""
+    """An unlisted header stderr line is unrecognized; a failed call corrupt."""
     metadata = _replay(monkeypatch, tmp_path, name)
 
-    assert_that(metadata).is_equal_to(MediaMetadata(audio_flags=(AudioFlag.CORRUPT,)))
+    assert_that(metadata).is_equal_to(MediaMetadata(audio_flags=(flag,)))
 
 
-def test_replay_on_unpinned_major_is_corrupt(
+def test_replay_on_unpinned_major_is_unrecognized(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """On an unpinned major, the ADTS estimate line is not benign."""
+    """On an unpinned major, the ADTS estimate line is not benign (A1)."""
     runner, _banner = _replayer("adts")
     _install(monkeypatch, runner, banner="ffprobe version 10.0 Copyright")
     path = tmp_path / "a.aac"
     path.write_bytes(b"placeholder")
 
     assert_that(extract_audio_metadata(path).audio_flags).is_equal_to(
-        (AudioFlag.CORRUPT,),
+        (AudioFlag.UNRECOGNIZED_OUTPUT,),
     )
+
+
+def test_replay_cover_art_in_m4a(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A3: M4A with covr art and its timescale line reads normally."""
+    metadata = _replay(monkeypatch, tmp_path, "cover_m4a")
+
+    assert_that(
+        (
+            metadata.container,
+            metadata.codec,
+            metadata.sample_rate,
+            metadata.channels,
+            metadata.duration_seconds,
+            metadata.audio_stream_count,
+            metadata.truncated,
+            metadata.audio_flags,
+        ),
+    ).is_equal_to(
+        ("mov,mp4,m4a,3gp,3g2,mj2", "aac", 48000, 1, 2.0, 1, False, ()),
+    )
+    assert_that(metadata.bitrate).is_not_none()
+
+
+def test_replay_timecode_track(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A2: a MOV with a tmcd data track reads normally."""
+    metadata = _replay(monkeypatch, tmp_path, "timecode_mov")
+
+    assert_that((metadata.codec, metadata.sample_rate)).is_equal_to(("aac", 48000))
+    assert_that(metadata.duration_seconds).is_equal_to(2.0)
+    assert_that(metadata.truncated).is_false()
+    assert_that(known_flags(metadata)).is_empty()
+
+
+def test_replay_cut_timecode_track(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A2: the data-track line does not hide a damaged walk."""
+    metadata = _replay(monkeypatch, tmp_path, "timecode_mov_cut_90")
+
+    assert_that(metadata.codec).is_equal_to("aac")
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.UNRECOGNIZED_OUTPUT,))
+
+
+def test_replay_offset_matroska_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A4: audio-only Matroska from 5 s is measured, never truncated."""
+    metadata = _replay(monkeypatch, tmp_path, "offset_mka")
+
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(known_duration(metadata)).is_close_to(2.0, 0.05)
 
 
 def test_missing_file_raises() -> None:
@@ -461,22 +531,34 @@ def test_each_call_starts_at_byte_zero(
     assert_that(offsets).is_equal_to([0, 0])
 
 
+def _link_target(argv: list[str]) -> str:
+    """Return where the private link in a symlink-form argv points.
+
+    Args:
+        argv: The ffprobe argument vector.
+
+    Returns:
+        The link's target as stored.
+    """
+    link = Path(argv[-1].removeprefix("file:"))
+    assert_that(link.name).is_equal_to("input")
+    assert_that(link.is_absolute()).is_true()
+    return os.readlink(link)
+
+
 def test_symlink_form_hides_the_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Without the fd protocol ffprobe gets an extension-less private link."""
-    seen: list[tuple[list[str], int]] = []
+    """Without the fd protocol ffprobe gets a private link to its own stdin."""
+    seen: list[tuple[list[str], int, str]] = []
     header = run_result(stdout=json.dumps(probe_json()).encode())
     path = tmp_path / "secret name.flac"
     path.write_bytes(b"fLaC")
 
     def runner(argv: list[str], *, stdin: int, **kwargs: object) -> BoundedRun:
-        seen.append((argv, stdin))
-        link = Path(argv[-1].removeprefix("file:"))
-        assert_that(link.name).is_equal_to("input")
-        assert_that(link.is_absolute()).is_true()
-        assert_that(link.resolve()).is_equal_to(path.resolve())
+        seen.append((argv, stdin, _link_target(argv)))
+        assert_that(os.fstat(stdin).st_ino).is_equal_to(path.stat().st_ino)
         return header if "-select_streams" not in argv else run_result()
 
     _install(monkeypatch, runner, fd=False)
@@ -484,14 +566,195 @@ def test_symlink_form_hides_the_name(
     extract_audio_metadata(path)
 
     assert_that(seen).is_length(2)
-    for argv, stdin in seen:
+    for argv, _stdin, target in seen:
         position = argv.index("-protocol_whitelist")
         assert_that(argv[position + 1]).is_equal_to("file")
         assert_that(argv[-1]).starts_with("file:")
         assert_that(" ".join(argv)).does_not_contain("secret")
-        assert_that(stdin).is_equal_to(DEVNULL)
+        assert_that(target).is_equal_to("/dev/fd/0")
     link = Path(seen[0][0][-1].removeprefix("file:"))
     assert_that(link.parent.exists()).is_false()
+
+
+def test_symlink_form_without_dev_fd_links_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Where /dev/fd does not exist the link points at the absolute path."""
+    targets: list[str] = []
+    header = run_result(stdout=json.dumps(probe_json()).encode())
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        targets.append(_link_target(argv))
+        return header if "-select_streams" not in argv else run_result()
+
+    _install(monkeypatch, runner, fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(targets).is_equal_to([str(path.absolute())] * 2)
+    assert_that(metadata.codec).is_equal_to("flac")
+
+
+# --- file changed during the read (A6) ----------------------------------------
+
+
+def _changing_runner(change: Callable[[], object]) -> FakeRunner:
+    """Build a runner that changes the file right after the header call.
+
+    Args:
+        change: Changes the file.
+
+    Returns:
+        The fake runner.
+    """
+    header = run_result(stdout=json.dumps(probe_json()).encode())
+    walk = run_result(
+        stdout=b"".join(
+            f"{index * 0.1:.6f},0.100000,K__\n".encode() for index in range(100)
+        ),
+    )
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        if "-select_streams" not in argv:
+            change()
+            return header
+        on_line = kwargs.get("on_stdout_line")
+        if callable(on_line):
+            for line in walk.stdout.splitlines():
+                on_line(line)
+        return run_result()
+
+    return runner
+
+
+@pytest.mark.parametrize("fd", [True, False], ids=["descriptor", "link"])
+def test_file_rewritten_in_place_is_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fd: bool,
+) -> None:
+    """A6: a file rewritten in place between the calls gives all unknown."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC" + b"\0" * 100)
+
+    def rewrite() -> None:
+        with path.open("ab") as handle:
+            handle.write(b"\0" * 100)
+
+    _install(monkeypatch, _changing_runner(rewrite), fd=fd)
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+
+
+def test_file_touched_is_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A6: a changed modification time alone also counts."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    def touch() -> None:
+        info = path.stat()
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+
+    _install(monkeypatch, _changing_runner(touch))
+
+    assert_that(extract_audio_metadata(path).audio_flags).is_equal_to(
+        (AudioFlag.INCONSISTENT,),
+    )
+
+
+def test_unchanged_file_keeps_its_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A6 does not fire when nothing changed."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    _install(monkeypatch, _changing_runner(lambda: None))
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(metadata.codec).is_equal_to("flac")
+    assert_that(metadata.duration_seconds).is_equal_to(10.0)
+    assert_that(metadata.truncated).is_false()
+
+
+def test_replaced_path_keeps_the_opened_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Renaming another file over the path does not change what is read.
+
+    Both input forms read the descriptor opened at the start, so the facts
+    belong to that one file and are kept.
+    """
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    other = tmp_path / "other.flac"
+    other.write_bytes(b"fLaC" + b"\0" * 500)
+    _install(monkeypatch, _changing_runner(lambda: other.replace(path)), fd=False)
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(metadata.codec).is_equal_to("flac")
+    assert_that(metadata.audio_flags).is_equal_to(())
+
+
+def test_replaced_path_without_dev_fd_is_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A6: with a link to the path, replacing the path gives all unknown."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    other = tmp_path / "other.flac"
+    other.write_bytes(b"fLaC")
+    _install(monkeypatch, _changing_runner(lambda: other.replace(path)), fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+
+
+def test_removed_path_without_dev_fd_is_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A6: with a link to the path, deleting the path gives all unknown."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    _install(monkeypatch, _changing_runner(path.unlink), fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+
+    assert_that(extract_audio_metadata(path).audio_flags).is_equal_to(
+        (AudioFlag.INCONSISTENT,),
+    )
+
+
+def test_unreadable_runner_output_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed pipe reader or line callback is an error, never a result."""
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        raise BoundedRunError("ffprobe output could not be read")
+
+    _install(monkeypatch, runner)
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    with pytest.raises(MediaError):
+        extract_audio_metadata(path)
 
 
 def test_symlink_failure_raises(
@@ -512,16 +775,18 @@ def test_symlink_failure_raises(
         extract_audio_metadata(path)
 
 
+@pytest.mark.parametrize("fd", [True, False], ids=["descriptor", "link"])
 def test_unopenable_file_raises(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    fd: bool,
 ) -> None:
-    """A file that cannot be opened raises MediaError."""
+    """A file that cannot be opened raises MediaError in both input forms."""
 
     def refuse(path: object, flags: int) -> int:
         raise PermissionError("denied")
 
-    _install(monkeypatch, _header_then(run_result()))
+    _install(monkeypatch, _header_then(run_result()), fd=fd)
     monkeypatch.setattr("winnow.media.audio.os.open", refuse)
     path = tmp_path / "song.flac"
     path.write_bytes(b"fLaC")

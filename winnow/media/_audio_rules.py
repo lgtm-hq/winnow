@@ -1,10 +1,11 @@
 """Pure rules of the guarded ffprobe audio reader (issue #400).
 
 Everything here works on ffprobe output that has already been captured:
-stderr filtering against the benign list (R2), strict JSON parsing (R1),
-stream selection and facts (R2 to R4), the declared duration (R5), and the
-packet-walk decision (R6). Nothing here starts a process or touches a file;
-:mod:`winnow.media.audio` runs ffprobe and feeds these functions.
+stderr filtering against the benign list (R2 with amendments A1 to A3),
+strict JSON parsing (R1), stream selection and facts (R2 to R4), the declared
+duration (R5 with A4), and the packet-walk decision (R6). Nothing here starts
+a process or touches a file; :mod:`winnow.media.audio` runs ffprobe and feeds
+these functions.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Final
 
@@ -61,14 +62,67 @@ ESTIMATE_STDERR_LINES: Final[frozenset[str]] = frozenset(
 """Benign lines that mean ffprobe estimated the duration (R2, R5)."""
 
 
+DATA_TRACK_WARNING: Final[str] = "Unsupported codec with id <N> for input stream <M>"
+"""Pin for ffprobe's warning about a track it has no decoder for (A2).
+
+A line ``Unsupported codec with id N for input stream M`` is benign only when
+the header JSON has a stream with index M whose ``codec_type`` is not
+``audio``; for an audio stream, or an index the JSON does not have, the line
+is unrecognized.
+"""
+
+
+COVER_TIMESCALE_WARNING: Final[str] = "stream 0, timescale not set"
+"""Pin for the MP4 demuxer's warning about ``covr`` cover art (A3).
+
+In FFmpeg 9.0.2, ``libavformat/mov.c`` ``mov_read_covr`` (lines 232 to 271)
+makes a stream for each ``covr`` image with a zeroed stream context whose
+``ffindex`` and ``time_scale`` are never set. ``mov_read_header`` then calls
+``fix_timescale`` (line 11351) for every stream, and ``fix_timescale``
+(lines 5242 to 5250) prints ``stream %d, timescale not set`` with that
+``ffindex``, so each ``covr`` image prints exactly this line, naming stream 0
+whatever its real index. A real track whose ``mdhd`` time scale is not set
+prints the same text with its own index from ``mov_read_track`` (line 5351)
+and gets the movie time scale, or 1, instead.
+
+The line is benign only when the container is the MP4 family, the JSON has
+an attached picture with ``id`` ``0x0`` (a ``covr`` image; tracks have a
+non-zero track id), and stream 0 is the primary audio stream with
+``time_base`` exactly ``1/<sample_rate>``, so a stream 0 that fell back to
+another time scale is not accepted.
+"""
+
+
 BENIGN_STDERR_BY_MAJOR: Final[dict[int, frozenset[str]]] = {
     9: ESTIMATE_STDERR_LINES
-    | frozenset({"ignoring wrong sample_count", "Ignoring maximum wav data size"}),
+    | frozenset(
+        {
+            "ignoring wrong sample_count",
+            "Ignoring maximum wav data size, file may be invalid",
+            DATA_TRACK_WARNING,
+            COVER_TIMESCALE_WARNING,
+        },
+    ),
 }
 """Stderr lines that do not invalidate a run, per FFmpeg major (R2, R11).
 
 A major without an entry has no benign lines: any stderr line makes the facts
-unknown.
+unknown. :data:`DATA_TRACK_WARNING` and :data:`COVER_TIMESCALE_WARNING` are
+pins for lines that are benign only under their conditions.
+"""
+
+
+CONDITIONAL_STDERR_LINES: Final[frozenset[str]] = frozenset(
+    {DATA_TRACK_WARNING, COVER_TIMESCALE_WARNING},
+)
+"""Pins that are never matched as plain text."""
+
+
+MAX_DISTINCT_PACKET_DURATIONS: Final[int] = 4096
+"""Distinct packet durations a walk keeps before it gives up (A7).
+
+A walk with more distinct durations reports ``inconsistent``; healthy
+fixtures have at most a handful.
 """
 
 
@@ -94,11 +148,33 @@ _MATROSKA_DURATION: Final[re.Pattern[str]] = re.compile(
 )
 
 
+_DATA_TRACK_LINE: Final[re.Pattern[str]] = re.compile(
+    r"Unsupported codec with id [0-9]{1,10} for input stream (?P<stream>[0-9]{1,6})",
+)
+
+
+MP4_FORMAT_NAME: Final[str] = "mov,mp4,m4a,3gp,3g2,mj2"
+
+
 _THREE: Final[Decimal] = Decimal(3)
 
 
 class _DuplicateKeyError(ValueError):
     """Raised when ffprobe JSON repeats a key inside one object."""
+
+
+@dataclass(frozen=True, slots=True)
+class StderrContext:
+    """Facts from the header JSON that decide the conditional pins.
+
+    Args:
+        non_audio_indexes: Stream indexes whose ``codec_type`` is not audio.
+        cover_timescale_benign: Whether :data:`COVER_TIMESCALE_WARNING`'s
+            condition holds.
+    """
+
+    non_audio_indexes: frozenset[int] = frozenset()
+    cover_timescale_benign: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +197,8 @@ class ProbeHeader:
         format_duration: ``format.duration``.
         format_start: ``format.start_time``.
         estimate_warned: ``True`` when stderr says the duration was estimated.
+        stderr_context: Conditions for the conditional stderr pins, used for
+            the walk's stderr too.
     """
 
     container: str
@@ -138,13 +216,16 @@ class ProbeHeader:
     format_duration: Decimal | None
     format_start: Decimal | None
     estimate_warned: bool
+    stderr_context: StderrContext = StderrContext()
 
 
 @dataclass(slots=True)
 class PacketWalk:
     """Running summary of a packet walk, fed one CSV line at a time (R6).
 
-    Only counts and a few times are kept, so a long walk needs little memory.
+    Only counts, a few times, and at most
+    :data:`MAX_DISTINCT_PACKET_DURATIONS` distinct durations are kept, so the
+    memory a walk needs is bounded whatever the file holds.
     """
 
     packets: int = 0
@@ -154,6 +235,7 @@ class PacketWalk:
     missing_time: bool = False
     backwards: bool = False
     corrupt_packet: bool = False
+    too_varied: bool = False
     durations: Counter[Decimal] = field(default_factory=Counter)
 
     def feed(self, raw: bytes) -> None:
@@ -187,6 +269,12 @@ class PacketWalk:
             self.first_time = time
         self.last_time = time
         self.last_duration = duration
+        if (
+            duration not in self.durations
+            and len(self.durations) >= MAX_DISTINCT_PACKET_DURATIONS
+        ):
+            self.too_varied = True
+            return
         self.durations[duration] += 1
 
     def median_duration(self) -> Decimal | None:
@@ -265,6 +353,9 @@ def interpret_header(
 ) -> tuple[ProbeHeader | None, tuple[AudioFlag, ...]]:
     """Apply R2 to R5 and R7 to a finished header call.
 
+    A non-zero exit or JSON that fails strict parsing is ``corrupt``; a
+    stderr line off the benign list is ``unrecognized_output`` (A1).
+
     Args:
         run: The header call; it must not have breached a bound.
         benign: Benign stderr lines for the installed FFmpeg major.
@@ -272,14 +363,116 @@ def interpret_header(
     Returns:
         The accepted header, or ``None`` with the flags that explain why not.
     """
-    lines = stderr_lines(run.stderr)
-    if run.returncode != 0 or any(line not in benign for line in lines):
+    if run.returncode != 0:
         return None, (AudioFlag.CORRUPT,)
     data = load_probe_json(run.stdout)
     if data is None:
         return None, (AudioFlag.CORRUPT,)
+    lines = stderr_lines(run.stderr)
+    context = stderr_context(data)
+    if has_unrecognized_line(lines, benign=benign, context=context):
+        return None, (AudioFlag.UNRECOGNIZED_OUTPUT,)
     estimate_warned = any(line in ESTIMATE_STDERR_LINES for line in lines)
-    return header_from_json(data, estimate_warned=estimate_warned), ()
+    header = header_from_json(data, estimate_warned=estimate_warned)
+    if header is None:
+        return None, ()
+    return replace(header, stderr_context=context), ()
+
+
+def has_unrecognized_line(
+    lines: list[str],
+    *,
+    benign: frozenset[str],
+    context: StderrContext,
+) -> bool:
+    """Report whether any stderr line is off the benign list (R2, A1 to A3).
+
+    Args:
+        lines: Stderr lines after :func:`stderr_lines`.
+        benign: Benign stderr lines for the installed FFmpeg major.
+        context: Conditions for the conditional pins.
+
+    Returns:
+        ``True`` when at least one line is not benign for this file.
+    """
+    return not all(_line_is_benign(line, benign, context) for line in lines)
+
+
+def _line_is_benign(line: str, benign: frozenset[str], context: StderrContext) -> bool:
+    """Decide one stderr line.
+
+    Args:
+        line: A stderr line after :func:`stderr_lines`.
+        benign: Benign stderr lines for the installed FFmpeg major.
+        context: Conditions for the conditional pins.
+
+    Returns:
+        ``True`` when the line is benign for this file.
+    """
+    if line in benign and line not in CONDITIONAL_STDERR_LINES:
+        return True
+    if line == COVER_TIMESCALE_WARNING:
+        return COVER_TIMESCALE_WARNING in benign and context.cover_timescale_benign
+    match = _DATA_TRACK_LINE.fullmatch(line)
+    if match is None or DATA_TRACK_WARNING not in benign:
+        return False
+    return int(match.group("stream")) in context.non_audio_indexes
+
+
+def stderr_context(data: dict[str, object]) -> StderrContext:
+    """Collect the header JSON facts the conditional pins depend on.
+
+    Args:
+        data: Parsed header JSON.
+
+    Returns:
+        The context; empty when the JSON does not have the expected shape.
+    """
+    sections = _accepted_sections(data)
+    if sections is None:
+        return StderrContext()
+    _container_section, container, streams = sections
+    non_audio: set[int] = set()
+    for stream in streams:
+        index = stream.get("index")
+        if (
+            isinstance(index, int)
+            and not isinstance(index, bool)
+            and isinstance(stream.get("codec_type"), str)
+            and stream.get("codec_type") != "audio"
+        ):
+            non_audio.add(index)
+    return StderrContext(
+        non_audio_indexes=frozenset(non_audio),
+        cover_timescale_benign=_cover_timescale_benign(container, streams),
+    )
+
+
+def _cover_timescale_benign(container: str, streams: list[dict[str, object]]) -> bool:
+    """Check the condition of :data:`COVER_TIMESCALE_WARNING` (A3).
+
+    Args:
+        container: ``format_name``.
+        streams: Stream objects of the header JSON.
+
+    Returns:
+        ``True`` for an MP4-family file with ``covr`` cover art whose stream
+        0 is the primary audio stream with time base ``1/<sample_rate>``.
+    """
+    if container != MP4_FORMAT_NAME:
+        return False
+    if not any(_is_attached_pic(s) and s.get("id") == "0x0" for s in streams):
+        return False
+    audio = [
+        stream
+        for stream in streams
+        if not _is_attached_pic(stream) and stream.get("codec_type") == "audio"
+    ]
+    primary = primary_audio_stream(audio)
+    if primary is None or primary.get("index") != 0:
+        return False
+    sample_rate = parse_positive_int(primary.get("sample_rate"))
+    return sample_rate is not None and primary.get("time_base") == f"1/{sample_rate}"
 
 
 def load_probe_json(payload: bytes) -> dict[str, object] | None:
@@ -459,6 +652,8 @@ def declared_duration(
         return None
     if header.stream_duration is not None:
         return header.stream_duration
+    if not _starts_at_zero(header, walk):
+        return None
     if header.container == MATROSKA_FORMAT_NAME:
         from_tag = _matroska_declared(header, walk)
         if from_tag is not None:
@@ -466,6 +661,26 @@ def declared_duration(
     if header.non_picture_stream_count == 1:
         return header.format_duration
     return None
+
+
+def _starts_at_zero(header: ProbeHeader, walk: PacketWalk) -> bool:
+    """Report whether ``format.start_time`` is zero within one packet (A4).
+
+    The Matroska ``DURATION`` tag and ``format.duration`` are end times, so
+    they are durations only when the file starts at zero.
+
+    Args:
+        header: Accepted header facts.
+        walk: Completed packet walk of the primary stream.
+
+    Returns:
+        ``True`` when the start time is known and at most one median packet
+        duration away from zero.
+    """
+    median = walk.median_duration()
+    if header.format_start is None or median is None:
+        return False
+    return abs(header.format_start) <= median
 
 
 def decide_duration(
@@ -487,7 +702,13 @@ def decide_duration(
         The duration outcome; the first matching R6 step wins.
     """
     lines = stderr_lines(run.stderr)
-    damage = _walk_damage(walk, run, lines=lines, benign=benign)
+    damage = _walk_damage(
+        walk,
+        run,
+        lines=lines,
+        benign=benign,
+        context=header.stderr_context,
+    )
     if damage is not None:
         return damage
     measured = walk.measured_duration()
@@ -513,23 +734,31 @@ def _walk_damage(
     *,
     lines: list[str],
     benign: frozenset[str],
+    context: StderrContext,
 ) -> DurationOutcome | None:
     """Apply R6 steps 1 to 4.
+
+    Step 1 is split by A1: a non-zero exit is ``corrupt``, a stderr line off
+    the benign list is ``unrecognized_output``. A walk with more distinct
+    packet durations than it keeps counts as inconsistent (step 3).
 
     Args:
         walk: The walk's packet summary.
         run: The walk call.
         lines: The walk's stderr lines after :func:`stderr_lines`.
         benign: Benign stderr lines for the installed FFmpeg major.
+        context: Conditions for the conditional pins, from the header JSON.
 
     Returns:
         The outcome of the first matching step, or ``None`` when none matches.
     """
-    if run.returncode != 0 or any(line not in benign for line in lines):
+    if run.returncode != 0:
         return DurationOutcome(None, None, (AudioFlag.CORRUPT,))
+    if has_unrecognized_line(lines, benign=benign, context=context):
+        return DurationOutcome(None, None, (AudioFlag.UNRECOGNIZED_OUTPUT,))
     if walk.packets == 0:
         return DurationOutcome(None, True)
-    if walk.missing_time or walk.backwards:
+    if walk.missing_time or walk.backwards or walk.too_varied:
         return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
     if walk.corrupt_packet:
         return DurationOutcome(None, None, (AudioFlag.CORRUPT,))
@@ -717,15 +946,22 @@ __all__ = [
     "ACCEPTED_FORMAT_NAMES",
     "BENIGN_STDERR_BY_MAJOR",
     "BIT_DEPTH_CODECS",
+    "CONDITIONAL_STDERR_LINES",
+    "COVER_TIMESCALE_WARNING",
+    "DATA_TRACK_WARNING",
     "DurationOutcome",
     "ESTIMATE_STDERR_LINES",
     "MATROSKA_FORMAT_NAME",
+    "MAX_DISTINCT_PACKET_DURATIONS",
+    "MP4_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
     "PacketWalk",
     "ProbeHeader",
+    "StderrContext",
     "bit_depth_for",
     "decide_duration",
     "declared_duration",
+    "has_unrecognized_line",
     "header_from_json",
     "interpret_header",
     "load_probe_json",
@@ -733,5 +969,6 @@ __all__ = [
     "parse_positive_decimal",
     "parse_positive_int",
     "primary_audio_stream",
+    "stderr_context",
     "stderr_lines",
 ]
