@@ -31,11 +31,11 @@ wheels = [
 
 [[package]]
 name = "assertpy"
-version = "2.36.0"
+version = "2.36.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a7/de/0bc8194e49b5f545a59f4e61a0f64d56a6050c3e0afa6c875322f6b81877/assertpy-2.36.0.tar.gz", hash = "sha256:94856ca5ec7131e26584115bea06f85c10aacaa5f4c525254f32d6986edf9e0a", size = 1674600, upload-time = "2026-11-05T12:51:43.553Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/f0/092a533dfa0f99df78f2035555b40a8e1461064afe5d7e5fc8cd19a5760a/assertpy-2.36.1.tar.gz", hash = "sha256:43f384b02738c154e36cc16997373e33e27576dce4656e8bc8c13cba7a15761f", size = 1689614, upload-time = "2026-11-16T12:38:11.792Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/52/37db8d747b487838f8423f1b6217132799a7e3f4efe425262992419bc86e/assertpy-2.36.0-py3-none-any.whl", hash = "sha256:073ad96eb5b44e9bce2e021c6ab4f17bf1a602a0601d6b25c362b6f41b371149", size = 488701, upload-time = "2026-11-05T12:51:41.499Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/72/a73e2897558f6ef718af892caecfa939d0f3cd54494efcbafe530cdb1c75/assertpy-2.36.1-py3-none-any.whl", hash = "sha256:7cb54df019bdf27ffc2128eb66fa7d1f3f7de1d3674f6566a9072aeffb65cac3", size = 488696, upload-time = "2026-11-16T12:38:09.987Z" },
 ]
 
 [[package]]
@@ -1122,15 +1122,15 @@ wheels = [
 
 [[package]]
 name = "puremagic"
-version = "2.2.1"
+version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15'",
     "python_full_version >= '3.12' and python_full_version < '3.15'",
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/06/7ff22db9002cfd33740a765a28291ecbb4a688855c940d95ad15c86925f5/puremagic-2.2.1.tar.gz", hash = "sha256:f7ab764fcef4ca76c806e9242ba22bb79ecaa30427874bbb93a99172eca64852", size = 1212219, upload-time = "2026-11-13T18:59:56.225Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/8d/4d60110e23f445e2dc106340f9bd5f422bb6c540f4fb21086d3ee44b52ab/puremagic-2.3.0.tar.gz", hash = "sha256:b54e4a69dd37c50bacc879380f132382ab4e9a935529628c8975abcc73e10640", size = 1214491, upload-time = "2026-11-16T04:55:04.12Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/f8/899cdaeeaa789f9af482cb25e0543e1d110c4d2dc7e12ff0e4ee65537c61/puremagic-2.2.1-py3-none-any.whl", hash = "sha256:cd869c1fe1123ebc58e17ee4c12ced366265099b4f53eb6896bbb3b92531f07e", size = 72361, upload-time = "2026-11-13T18:59:54.54Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/40/72fcaa2f4b850da0207c111be7d2748a57a1c8e8ab149fdc1618323a0b87/puremagic-2.3.0-py3-none-any.whl", hash = "sha256:15ce035fe4c3f23e884a105d07448a5a81dd2e297985bdb636928ddf89bb3fe7", size = 73366, upload-time = "2026-11-16T04:55:02.784Z" },
 ]
 
 [[package]]
@@ -1882,7 +1882,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pillow-heif" },
     { name = "puremagic", version = "1.30", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "puremagic", version = "2.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "puremagic", version = "2.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "ruamel-yaml" },
@@ -1915,7 +1915,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pillow-heif", specifier = ">=1.8.1" },
     { name = "puremagic", marker = "python_full_version < '3.12'", specifier = ">=1.30" },
-    { name = "puremagic", marker = "python_full_version >= '3.12'", specifier = ">=2.2.1" },
+    { name = "puremagic", marker = "python_full_version >= '3.12'", specifier = ">=2.3.0" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.19.1" },
@@ -1925,7 +1925,7 @@ provides-extras = ["face", "ai-detect"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "assertpy", specifier = ">=2.36.0" },
+    { name = "assertpy", specifier = ">=2.36.1" },
     { name = "bandit", specifier = ">=1.9.4" },
     { name = "black", specifier = ">=26.10.1" },
     { name = "hypothesis", specifier = ">=6.170.15" },

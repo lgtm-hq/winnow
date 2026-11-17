@@ -45,7 +45,7 @@ dependencies = [
   "pillow>=13.0.0",
   "pillow-heif>=1.8.1",
   "puremagic>=1.30; python_version < '3.12'",
-  "puremagic>=2.2.1; python_version >= '3.12'",
+  "puremagic>=2.3.0; python_version >= '3.12'",
   "pydantic>=2.14.3",
   "rich>=15.0.0",
   "ruamel.yaml>=0.19.1",
@@ -67,7 +67,7 @@ Issues = "https://github.com/lgtm-hq/winnow/issues"
 
 [dependency-groups]
 dev = [
-  "assertpy>=2.36.0",
+  "assertpy>=2.36.1",
   # Python linters lintro runs locally; lintro no longer depends on them
   # (they moved to its "full" extra), so pin them here for `uv sync`.
   "bandit>=1.9.4",
