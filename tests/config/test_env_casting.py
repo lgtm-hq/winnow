@@ -8,7 +8,7 @@ values users get.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 
@@ -73,6 +73,11 @@ _KEPT_FORMS: list[tuple[str, object]] = [
     # TOML dates and date-times.
     ("2024-01-01", date(2024, 1, 1)),
     ("2024-01-01T10:00:00", datetime(2024, 1, 1, 10, 0)),
+    # Times without seconds are TOML 1.1, which only Python 3.15's tomllib
+    # reads; they stay strings on every version.
+    ("2024-01-01T10:00", "2024-01-01T10:00"),
+    ("10:00", "10:00"),
+    ("10:00:00", time(10, 0)),
     # Explicit cast markers.
     ("@int 5", 5),
     ("@float 1.5", 1.5),

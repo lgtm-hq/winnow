@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from collections.abc import Callable, Mapping
+from datetime import datetime, time
 from typing import Final
 
 from pydantic import TypeAdapter, ValidationError
@@ -26,6 +28,8 @@ _SYMLINK_POLICY_ADAPTER = TypeAdapter(SymlinkPolicy)
 _TRUE_WORDS: Final = frozenset({"t", "true", "enabled", "1", "on", "yes"})
 """Words the ``@bool`` marker reads as true; anything else is false."""
 _CAPITALIZED_BOOLEANS: Final = frozenset({"True", "False"})
+_TIME_WITH_SECONDS: Final = re.compile(r"\d{2}:\d{2}:\d{2}")
+"""TOML 1.0 times always carry seconds; TOML 1.1 lets them be left out."""
 
 
 def _cast_bool(text: str) -> bool:
@@ -85,7 +89,9 @@ def _parse_env_value(*, env_key: str, raw: str) -> object:
     Otherwise the string is read as a TOML value, so ``true``, ``42``,
     ``1.5``, ``[1, 2]``, ``{a = 1}``, ``"quoted"`` and ``2024-01-01`` get their
     TOML types, with ``True`` and ``False`` accepted as booleans too. Anything
-    that is not a TOML value is kept as the original string.
+    that is not a TOML value is kept as the original string. A time or
+    date-time without seconds (``12:30``) stays a string: TOML 1.0 rejects it,
+    and only Python 3.15's TOML 1.1 ``tomllib`` would read it as a time.
 
     Args:
         env_key: Environment variable name, for error messages.
@@ -107,9 +113,12 @@ def _parse_env_value(*, env_key: str, raw: str) -> object:
             raise ValueError(message) from exc
     text = raw.lower() if raw.strip() in _CAPITALIZED_BOOLEANS else raw
     try:
-        return tomllib.loads(f"key={text}")["key"]
+        value = tomllib.loads(f"key={text}")["key"]
     except tomllib.TOMLDecodeError:
         return raw
+    if isinstance(value, datetime | time) and not _TIME_WITH_SECONDS.search(text):
+        return raw
+    return value
 
 
 def _set_env_value(
