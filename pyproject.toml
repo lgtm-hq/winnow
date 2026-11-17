@@ -36,6 +36,10 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.5.1",
+  # Not imported yet: #395 parses untrusted XMP packets with
+  # defusedxml.ElementTree. Declared now so all dependency changes land
+  # together (#409); do not remove it as unused.
+  "defusedxml>=0.7.1",
   "exifread>=3.5.1",
   "imagehash>=4.3.2",
   "loguru>=0.8.0",
