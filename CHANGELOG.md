@@ -21,6 +21,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.13] - 2026-11-17
+
+### Changed
+
+- **deps**: update ghcr.io/astral-sh/uv docker tag to 0.13.9 (patch) (#433) (b71e6e1)
+
+### Fixed
+
+- **deps**: replace the config backend and update every dependency (#427) (b276104)
+
 ## [0.37.12] - 2026-11-17
 
 ### Fixed
