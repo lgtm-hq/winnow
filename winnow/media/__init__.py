@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from winnow.media.audio import extract_audio_metadata, read_audio_tags
+from winnow.media._ffprobe import (
+    TESTED_FFPROBE_MAJORS,
+    ffprobe_version,
+)
+from winnow.media._ffprobe import parse_version_major as parse_ffprobe_major
+from winnow.media.audio import extract_audio_metadata
 from winnow.media.c2pa import (
     AI_SOURCE_TYPE_MARKERS,
     manifest_declares_ai_source,
@@ -52,6 +57,7 @@ __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
     "RAW_IMAGE_MIME_TYPES",
+    "TESTED_FFPROBE_MAJORS",
     "DefaultMetadataService",
     "DirectoryStats",
     "FileInfo",
@@ -67,6 +73,7 @@ __all__ = [
     "extract_video_metadata",
     "ffmpeg_available",
     "ffprobe_available",
+    "ffprobe_version",
     "generate_thumbnail",
     "heif_supported",
     "inspect_file",
@@ -74,7 +81,7 @@ __all__ = [
     "manifest_declares_ai_source",
     "media_type_for_extension",
     "normalize_extension",
-    "read_audio_tags",
+    "parse_ffprobe_major",
     "read_c2pa_manifest",
     "read_exif",
     "read_maker_note_tags",
