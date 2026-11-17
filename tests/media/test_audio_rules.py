@@ -949,17 +949,21 @@ def test_declared_from_format_only_with_one_stream() -> None:
     ("start", "declared"),
     [
         ("0.000000", Decimal(7)),
-        ("0.020000", Decimal(7)),
-        ("-0.020000", Decimal(7)),
-        ("0.020001", None),
+        ("0.005000", Decimal(7)),
+        ("-0.005000", Decimal(7)),
+        ("0.005001", None),
+        ("0.010000", None),
+        ("0.020000", None),
         ("5.000000", None),
         (None, None),
     ],
     ids=[
         "zero",
+        "at_tolerance",
+        "minus_tolerance",
+        "over_tolerance",
+        "half_a_packet",
         "one_packet",
-        "minus_one_packet",
-        "over_one_packet",
         "five_seconds",
         "unknown",
     ],
@@ -990,7 +994,7 @@ def test_stream_duration_does_not_need_a_zero_start() -> None:
 
 
 def test_format_duration_needs_packets() -> None:
-    """Without a packet there is no median, so no zero start is shown."""
+    """Without a packet nothing confirms the stream, so nothing is declared."""
     header = _header(stream_duration=None, format_duration=Decimal(7))
 
     assert_that(declared_duration(header, _walk(), estimate_warned=False)).is_none()
@@ -1282,3 +1286,16 @@ def test_decide_inconsistent_when_no_packet_was_timed() -> None:
     walk = PacketWalk(packets=1)
 
     assert_that(_decide(walk)).is_equal_to((None, None, (AudioFlag.INCONSISTENT,)))
+
+
+def test_small_start_offset_is_estimated_not_truncated() -> None:
+    """A healthy file starting 10 ms late is measured, never called cut short."""
+    header = _matroska_header(
+        non_picture_stream_count=1,
+        format_start=Decimal("0.010"),
+        format_duration=Decimal("2.010"),
+    )
+
+    assert_that(
+        _decide(_walk(*_packets(100, start="0.010")), header=header),
+    ).is_equal_to((Decimal("2.000000"), None, (AudioFlag.ESTIMATED,)))

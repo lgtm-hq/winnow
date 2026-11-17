@@ -685,23 +685,25 @@ def declared_duration(
 
 
 def _starts_at_zero(header: ProbeHeader, walk: PacketWalk) -> bool:
-    """Report whether ``format.start_time`` is zero within one packet (A4).
+    """Report whether ``format.start_time`` is zero within the tolerance (A4).
 
     ``format.duration`` is an end time, so it is a duration only when the
-    file starts at zero.
+    file starts at zero. The start may differ from zero by no more than
+    :func:`shortfall_tolerance`: a larger offset would make the end time
+    exceed the audio's length by more than R6 step 6 allows, and an intact
+    file would look cut short.
 
     Args:
         header: Accepted header facts.
         walk: Completed packet walk of the primary stream.
 
     Returns:
-        ``True`` when the start time is known and at most one median packet
-        duration away from zero.
+        ``True`` when the walk has packets and the start time is known and
+        within the shortfall tolerance of zero.
     """
-    median = walk.median_duration()
-    if header.format_start is None or median is None:
+    if header.format_start is None or walk.median_duration() is None:
         return False
-    return abs(header.format_start) <= median
+    return abs(header.format_start) <= shortfall_tolerance(header)
 
 
 def decide_duration(
