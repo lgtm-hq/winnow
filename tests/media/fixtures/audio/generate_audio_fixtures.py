@@ -522,6 +522,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=1.0,
+        estimated=True,
     ),
     AudioFixture(
         name="delayed.mp4",
@@ -552,6 +553,58 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=1.0,
+    ),
+    # A8: in AVI and ASF with video, the audio duration field is not about
+    # the audio alone, so nothing is declared.
+    AudioFixture(
+        name="delayed.avi",
+        inputs=(
+            *_TINY_VIDEO,
+            "-itsoffset",
+            "1",
+            *_silence(rate=24000, seconds=1),
+        ),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "mpeg4",
+            *_MP3_LOW,
+        ),
+        format_name="avi",
+        codec="mp3",
+        sample_rate=24000,
+        channels=1,
+        bit_depth=None,
+        duration=1.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="video.wmv",
+        inputs=(*_TINY_VIDEO, *_silence(rate=22050, seconds=1)),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "wmv2",
+            "-c:a",
+            "wmav2",
+            "-b:a",
+            "24k",
+            "-f",
+            "asf",
+        ),
+        format_name="asf",
+        codec="wmav2",
+        sample_rate=22050,
+        channels=1,
+        bit_depth=None,
+        duration=1.0,
+        estimated=True,
     ),
     # A VBR MP3 without a Xing header has no declared duration.
     AudioFixture(
@@ -752,10 +805,10 @@ class FrameCut:
 
 FRAME_CUTS: Final[tuple[FrameCut, ...]] = (
     FrameCut(name="frames_minus1.mp3", source="frames.mp3", frames=1, detected=False),
-    FrameCut(name="frames_minus2.mp3", source="frames.mp3", frames=2, detected=False),
+    FrameCut(name="frames_minus2.mp3", source="frames.mp3", frames=2, detected=True),
     FrameCut(name="frames_minus3.mp3", source="frames.mp3", frames=3, detected=True),
     FrameCut(name="frames_minus1.m4a", source="frames.m4a", frames=1, detected=False),
-    FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, detected=False),
+    FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, detected=True),
     FrameCut(name="frames_minus3.m4a", source="frames.m4a", frames=3, detected=True),
 )
 """Fixtures with their last one, two, and three frames removed."""

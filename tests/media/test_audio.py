@@ -261,12 +261,26 @@ def test_replay_delayed_matroska(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Delayed MKV audio: DURATION tag minus the lead, then checked."""
+    """Delayed MKV audio has no declared duration and is measured (A5)."""
     metadata = _replay(monkeypatch, tmp_path, "delayed_mkv")
 
     assert_that(known_duration(metadata)).is_close_to(1.0, 0.05)
-    assert_that(metadata.truncated).is_false()
-    assert_that(known_flags(metadata)).is_empty()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+
+
+@pytest.mark.parametrize("name", ["delayed_avi", "video_wmv"])
+def test_replay_avi_and_asf_with_video_are_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+) -> None:
+    """A8: AVI with delayed MP3 and WMV with video are measured, not truncated."""
+    metadata = _replay(monkeypatch, tmp_path, name)
+
+    assert_that(known_duration(metadata)).is_close_to(1.0, 0.07)
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
 
 
 def test_replay_delayed_mp4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

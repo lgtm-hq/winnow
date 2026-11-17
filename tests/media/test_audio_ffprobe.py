@@ -311,16 +311,33 @@ def test_undeclared_formats_measured_within_50ms(name: str) -> None:
     assert_that(_duration(metadata)).is_close_to(BY_NAME[name].duration, 0.05)
 
 
-@pytest.mark.parametrize("name", ["delayed.mkv", "delayed.mp4"])
-def test_delayed_audio_duration(name: str) -> None:
-    """Audio that starts late reports its own length, checked (R5)."""
+def test_delayed_mp4_duration_is_checked() -> None:
+    """MP4 audio that starts late reports its own length, checked (R5)."""
+    metadata = extract_audio_metadata(AUDIO_DIR / "delayed.mp4")
+
+    assert_that(_duration(metadata)).is_close_to(
+        BY_NAME["delayed.mp4"].duration,
+        DURATION_TOLERANCE,
+    )
+    assert_that(metadata.truncated).is_false()
+
+
+@pytest.mark.parametrize("name", ["delayed.mkv", "delayed.avi", "video.wmv"])
+def test_audio_beside_video_is_estimated_never_truncated(name: str) -> None:
+    """A5 and A8: the audio is measured within the tolerance, never truncated.
+
+    Delayed Matroska audio has no declared duration once the ``DURATION`` tag
+    is unused; in AVI and ASF the audio duration field includes the delay or
+    the video's length, so it is not used beside another stream.
+    """
     metadata = extract_audio_metadata(AUDIO_DIR / name)
 
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
     assert_that(_duration(metadata)).is_close_to(
         BY_NAME[name].duration,
         DURATION_TOLERANCE,
     )
-    assert_that(metadata.truncated).is_false()
 
 
 @pytest.mark.parametrize("name", ["offset.mka", "offset_delayed.mkv"])
@@ -353,11 +370,11 @@ def test_warned_but_healthy_mp4_is_read(name: str) -> None:
 
 @pytest.mark.parametrize("cut", FRAME_CUTS, ids=lambda cut: cut.name)
 def test_last_frames_removed(cut: FrameCut) -> None:
-    """Removing the last frames: three are caught, one or two are not.
+    """Removing the last frames: two and three are caught, one is not.
 
-    The misses are the documented limit: the encoder's end padding is longer
-    than the frames removed, so the audio left still reaches the declared
-    length within one packet.
+    The miss is the documented limit: the encoder's end padding is longer
+    than the frame removed, so the audio left still reaches the declared
+    length within max(5 ms, two time-base units) (A5).
     """
     source = BY_NAME[cut.source]
 

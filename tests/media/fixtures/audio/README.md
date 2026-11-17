@@ -59,8 +59,10 @@ packets, truncation not checked).
 | `flac24.flac`        | `flac`                    | `flac`         | 8000  | 1   | 24   | 2.0      | declared  |
 | `two_tracks.mka`     | `matroska,webm`           | `flac`         | 16000 | 2   | 16   | 2.0      | estimated |
 | `cover.mp3`          | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
-| `delayed.mkv`        | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 1.0      | declared  |
+| `delayed.mkv`        | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 1.0      | estimated |
 | `delayed.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 1.0      | declared  |
+| `delayed.avi`        | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
+| `video.wmv`          | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
 | `vbr_noxing.mp3`     | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | estimated |
 | `cover.m4a`          | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
 | `timecode.mov`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
@@ -78,7 +80,13 @@ Notes:
 - `cover.mp3` carries an 8x8 PNG as an attached picture; it is not a stream to read and
   does not count as a second stream.
 - `delayed.mkv` and `delayed.mp4` hold a 2 s video track and 1 s of audio that starts at
-  1 s.
+  1 s. The MP4 audio declares its own duration and is checked; the Matroska audio has
+  only a `DURATION` tag, which is never used (amendment A5), so it is measured.
+- `delayed.avi` holds a 2 s MPEG-4 video and 1 s of MP3 audio from 1 s. `video.wmv`
+  holds a 2 s WMV2 video and 1 s of WMA audio. In both the audio stream's duration field
+  is not about the audio alone (it includes the delay, or is the whole file's length),
+  so with another stream present nothing is declared and the audio is measured
+  (amendment A8). Without that rule both were reported `truncated`.
 - `mp2_named.mp3` is MPEG-1 Layer II audio in a raw MPEG audio file.
 - `vbr_noxing.mp3` is a VBR MP3 written without a Xing header.
 - `chained.ogg` is two 1 s Ogg Opus links (serial numbers 100 and 200) joined back to
@@ -97,8 +105,8 @@ Notes:
   out of `FIXTURES`. `frames_minus{1,2,3}.mp3` and `.m4a` are the same files cut at the
   byte offset ffprobe reports for the first of the last one, two, or three audio
   packets; the header still declares 2 s. On FFmpeg 9.0.2 the reader reports
-  `truncated=true` for three frames and `truncated=false` with 2.0 s for one and two:
-  the encoder's end padding is longer than the frames removed (a known limit).
+  `truncated=true` for two and three frames and `truncated=false` with 2.0 s for one:
+  the encoder's end padding is longer than the frame removed (a known limit).
 
 ## Recorded ffprobe output
 

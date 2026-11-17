@@ -38,6 +38,8 @@ CASES: Final[dict[str, tuple[str, float]]] = {
     "two_tracks": ("two_tracks.mka", 1.0),
     "delayed_mkv": ("delayed.mkv", 1.0),
     "delayed_mp4": ("delayed.mp4", 1.0),
+    "delayed_avi": ("delayed.avi", 1.0),
+    "video_wmv": ("video.wmv", 1.0),
     "flac_cut_98": ("flac.flac", 0.98),
     "wav_cut_90": ("wav.wav", 0.9),
     "mp3_cut_50": ("mp3.mp3", 0.5),
