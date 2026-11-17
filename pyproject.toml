@@ -38,14 +38,13 @@ dependencies = [
   "exifread>=3.0",
   "imagehash>=4.3.1",
   "loguru>=0.7.3",
-  "mutagen>=1.47",
   "pillow>=11.0",
   "pillow-heif>=0.18",
   "puremagic>=1.30",
   "pydantic>=2.10",
   "rich>=14.0",
   "ruamel.yaml>=0.19.1",
-  "tinytag>=2.0",
+  "tinytag>=2.3.0",
 ]
 
 [project.optional-dependencies]
