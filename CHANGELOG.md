@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.11] - 2026-11-17
+
+### Fixed
+
+- **release**: report a failed release as an issue (#424) (808665a)
+
 ## [0.37.10] - 2026-11-17
 
 ### Fixed
