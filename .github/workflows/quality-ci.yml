@@ -31,7 +31,7 @@ jobs:
       # Org ruleset (checks-winnow): quality / 🛠️ Lintro Code Quality
       job-name: '🛠️ Lintro Code Quality'
       # yamllint disable-line rule:line-length
-      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:d5d93f08d55dce7648ff2da11e7ebb6c91df1d0f3d175dac67931f342c8566f6
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:20c7c6666d0a8ccd53c304958bdb070883d96bbdaf31ceba6436d0e6a49bb57b
       egress-policy: block
       egress-preset: quality
 

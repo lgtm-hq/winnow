@@ -150,7 +150,29 @@ listed. Relative overrides are taken as given; `~` is expanded.
 | `WINNOW_DATA_DIR`   | Per-user data directory (`sessions.db` saga log)  | `$XDG_DATA_HOME/winnow`, then `~/.local/share/winnow` |
 
 `WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
-onto configuration fields, not directories.
+onto configuration fields, not directories. `__` separates nested keys
+(`WINNOW_CACHE__ENABLED=false`). A value is read as a TOML 1.0 value when it is one
+(`true`, `True`, `42`, `0.5`, `["*.jpg", "*.png"]`, `"quoted"`), and as a plain string
+otherwise, the same on every Python version.
+
+A leading cast marker casts the rest of a value, in the environment and in config file
+values alike (`WINNOW_WORKERS="@int 4"`, `workers: "@int 4"`): `@int`, `@float`,
+`@bool`, `@str`, `@json`, `@none`, `@null`, `@note`, `@comment`, `@upper`, `@lower`,
+`@title`, `@capitalize`, `@strip`, `@lstrip`, `@rstrip`, `@split`, `@casefold` and
+`@swapcase`. Other markers (`@format`, `@jinja`, `@get`, `@read_file`, `@merge`, `@del`,
+...) are an error.
+
+### Config file layering
+
+A `<name>.local.<ext>` file next to the config file (`.winnow-config.local.yaml` for
+`.winnow-config.yaml`) is read after it and overrides it: mappings merge key by key,
+lists are joined, and other values replace. A top-level key containing `.` or `__` sets
+a nested setting (`routing.review: Review`, `routing__review: Review`).
+
+The config file's format follows its suffix, in any letter case. `.toml` and `.tml`
+(`c.TOML` too) are read as TOML 1.0, and `.json` as JSON. `.ini`, `.conf`, `.properties`
+and `.py` files are rejected with a `ConfigError` that names the format. Any other file,
+with or without a suffix (`.yaml`, `.yml`, `.YAML`, `.txt`, `cfg`), is read as YAML.
 
 ---
 

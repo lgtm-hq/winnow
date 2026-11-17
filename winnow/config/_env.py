@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
+from typing import Final
 
-from dynaconf.utils.parse_conf import boolean_fix, parse_conf_data
+import tomli
 from pydantic import TypeAdapter, ValidationError
 
+from winnow.config._markers import cast_marker
 from winnow.config.defaults import (
     CONFIG_DIR_ENVVAR,
     DATA_DIR_ENVVAR,
@@ -21,6 +24,29 @@ _FOLLOW_SYMLINKS_KEY = "follow_symlinks"
 _SYMLINK_POLICY_KEY = "symlink_policy"
 _BOOL_ADAPTER = TypeAdapter(bool)
 _SYMLINK_POLICY_ADAPTER = TypeAdapter(SymlinkPolicy)
+_CAPITALIZED_BOOLEANS: Final = frozenset({"True", "False"})
+_DYNACONF_VARIABLE_SUFFIX: Final = "_FOR_DYNACONF"
+_LOGGER = logging.getLogger(__name__)
+
+
+def warn_about_dynaconf_variables(environ: Mapping[str, str]) -> None:
+    """Warn about Dynaconf's own environment variables, which winnow ignores.
+
+    Until #391 Dynaconf read variables such as ``INCLUDES_FOR_DYNACONF`` or
+    ``SETTINGS_FILE_FOR_DYNACONF`` while loading winnow's config, so they
+    could add files or change how values were read. winnow no longer reads
+    them; a warning names each one that is set so the change is not silent.
+
+    Args:
+        environ: Environment mapping to inspect.
+    """
+    names = sorted(name for name in environ if name.endswith(_DYNACONF_VARIABLE_SUFFIX))
+    if names:
+        _LOGGER.warning(
+            "Ignoring Dynaconf environment variables %s: winnow no longer uses "
+            "Dynaconf and does not read them",
+            names,
+        )
 
 
 def _load_env_data(
@@ -45,10 +71,47 @@ def _load_env_data(
             continue
         if len(key_parts) == 1:
             explicit_keys.add(key_parts[0])
-        parsed_value = parse_conf_data(boolean_fix(env_value), tomlfy=True)
+        parsed_value = _parse_env_value(env_key=env_key, raw=env_value)
         _set_env_value(data=data, key_parts=key_parts, value=parsed_value)
 
     return data, frozenset(explicit_keys)
+
+
+def _parse_env_value(*, env_key: str, raw: str) -> object:
+    """Cast one environment string to a config value, as Dynaconf did.
+
+    A leading cast marker (see :mod:`winnow.config._markers`) casts the rest
+    of the string explicitly. Otherwise the string is read as a TOML 1.0 value,
+    so ``true``, ``42``, ``1.5``, ``[1, 2]``, ``{a = 1}``, ``"quoted"`` and
+    ``2024-01-01`` get their TOML types, with ``True`` and ``False`` accepted
+    as booleans too. Anything that is not a TOML 1.0 value is kept as the
+    string. The grammar is tomli 2.3's, the TOML 1.0 parser Dynaconf vendored,
+    on every Python version; the standard library's ``tomllib`` follows TOML
+    1.1 from Python 3.15 and would read ``12:30`` as a time there.
+
+    Args:
+        env_key: Environment variable name, for error messages.
+        raw: Environment variable value.
+
+    Returns:
+        The cast value.
+
+    Raises:
+        ValueError: If a cast marker's value cannot be cast, or the marker is
+            one winnow does not support.
+    """
+    text = raw.lower() if raw.strip() in _CAPITALIZED_BOOLEANS else raw
+    try:
+        matched, value = cast_marker(text)
+    except ValueError as exc:
+        message = f"{env_key}: {exc}"
+        raise type(exc)(message) from exc
+    if matched:
+        return value
+    try:
+        return tomli.loads(f"key={text}")["key"]
+    except (tomli.TOMLDecodeError, KeyError):
+        return text
 
 
 def _set_env_value(

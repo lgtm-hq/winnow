@@ -144,7 +144,7 @@ ADR 0001; nothing below exists in the tree yet unless noted.
 
 | Planned path            | Epic           | Scope                                         |
 | ----------------------- | -------------- | --------------------------------------------- |
-| `winnow/config/`        | [#3][epic-3]   | Dynaconf loader, YAML schema, validation      |
+| `winnow/config/`        | [#3][epic-3]   | YAML loader, schema, validation               |
 | `winnow/security/`      | [#3][epic-3]   | Path validation, symlink policy               |
 | `winnow/fs/`            | [#3][epic-3]   | Atomic moves/copies, backup helpers           |
 | `winnow/media/`         | [#4][epic-4]   | Format registry, image/video/audio processors |

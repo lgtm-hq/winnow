@@ -1,0 +1,1281 @@
+[
+  {
+    "raw": "true",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "false",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "True",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "False",
+    "main": ["bool", false]
+  },
+  {
+    "raw": " True ",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "TRUE",
+    "main": ["str", "TRUE"]
+  },
+  {
+    "raw": "yes",
+    "main": ["str", "yes"]
+  },
+  {
+    "raw": "off",
+    "main": ["str", "off"]
+  },
+  {
+    "raw": "tRue",
+    "main": ["str", "tRue"]
+  },
+  {
+    "raw": " false",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "False ",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "True\n",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "\tFalse",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "true # c",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "false\n# c",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "0",
+    "main": ["int", "0"]
+  },
+  {
+    "raw": "-0",
+    "main": ["int", "0"]
+  },
+  {
+    "raw": "+0",
+    "main": ["int", "0"]
+  },
+  {
+    "raw": "42",
+    "main": ["int", "42"]
+  },
+  {
+    "raw": "-7",
+    "main": ["int", "-7"]
+  },
+  {
+    "raw": "+5",
+    "main": ["int", "5"]
+  },
+  {
+    "raw": "1_000",
+    "main": ["int", "1000"]
+  },
+  {
+    "raw": "1__000",
+    "main": ["str", "1__000"]
+  },
+  {
+    "raw": "_1",
+    "main": ["str", "_1"]
+  },
+  {
+    "raw": "1_",
+    "main": ["str", "1_"]
+  },
+  {
+    "raw": "0x10",
+    "main": ["int", "16"]
+  },
+  {
+    "raw": "0X10",
+    "main": ["str", "0X10"]
+  },
+  {
+    "raw": "0xdead_beef",
+    "main": ["int", "3735928559"]
+  },
+  {
+    "raw": "0xDEADBEEF",
+    "main": ["int", "3735928559"]
+  },
+  {
+    "raw": "0o7",
+    "main": ["int", "7"]
+  },
+  {
+    "raw": "0o8",
+    "main": ["str", "0o8"]
+  },
+  {
+    "raw": "0b11",
+    "main": ["int", "3"]
+  },
+  {
+    "raw": "0b2",
+    "main": ["str", "0b2"]
+  },
+  {
+    "raw": "007",
+    "main": ["str", "007"]
+  },
+  {
+    "raw": "00",
+    "main": ["str", "00"]
+  },
+  {
+    "raw": "9223372036854775807",
+    "main": ["int", "9223372036854775807"]
+  },
+  {
+    "raw": "99999999999999999999",
+    "main": ["int", "99999999999999999999"]
+  },
+  {
+    "raw": "-9223372036854775808",
+    "main": ["int", "-9223372036854775808"]
+  },
+  {
+    "raw": "1e",
+    "main": ["str", "1e"]
+  },
+  {
+    "raw": "0x",
+    "main": ["str", "0x"]
+  },
+  {
+    "raw": "+0x10",
+    "main": ["str", "+0x10"]
+  },
+  {
+    "raw": "-0b1",
+    "main": ["str", "-0b1"]
+  },
+  {
+    "raw": "1 2",
+    "main": ["str", "1 2"]
+  },
+  {
+    "raw": "1,000",
+    "main": ["str", "1,000"]
+  },
+  {
+    "raw": "3.14",
+    "main": ["float", "3.14"]
+  },
+  {
+    "raw": "1e3",
+    "main": ["float", "1000.0"]
+  },
+  {
+    "raw": "1E3",
+    "main": ["float", "1000.0"]
+  },
+  {
+    "raw": "-1.5e-3",
+    "main": ["float", "-0.0015"]
+  },
+  {
+    "raw": "inf",
+    "main": ["float", "inf"]
+  },
+  {
+    "raw": "+inf",
+    "main": ["float", "inf"]
+  },
+  {
+    "raw": "-inf",
+    "main": ["float", "-inf"]
+  },
+  {
+    "raw": "nan",
+    "main": ["float", "nan"]
+  },
+  {
+    "raw": "+nan",
+    "main": ["float", "nan"]
+  },
+  {
+    "raw": "-nan",
+    "main": ["float", "nan"]
+  },
+  {
+    "raw": ".5",
+    "main": ["str", ".5"]
+  },
+  {
+    "raw": "5.",
+    "main": ["str", "5."]
+  },
+  {
+    "raw": "1.0e+10",
+    "main": ["float", "10000000000.0"]
+  },
+  {
+    "raw": "6.626e-34",
+    "main": ["float", "6.626e-34"]
+  },
+  {
+    "raw": "1_000.5",
+    "main": ["float", "1000.5"]
+  },
+  {
+    "raw": "1.5_0",
+    "main": ["float", "1.5"]
+  },
+  {
+    "raw": "0.0",
+    "main": ["float", "0.0"]
+  },
+  {
+    "raw": "-0.0",
+    "main": ["float", "-0.0"]
+  },
+  {
+    "raw": "1e1_0",
+    "main": ["float", "10000000000.0"]
+  },
+  {
+    "raw": "3.14159265358979323846264338327950288",
+    "main": ["float", "3.141592653589793"]
+  },
+  {
+    "raw": "1e309",
+    "main": ["float", "inf"]
+  },
+  {
+    "raw": "-1e309",
+    "main": ["float", "-inf"]
+  },
+  {
+    "raw": "Infinity",
+    "main": ["str", "Infinity"]
+  },
+  {
+    "raw": "NaN",
+    "main": ["str", "NaN"]
+  },
+  {
+    "raw": "1.e5",
+    "main": ["str", "1.e5"]
+  },
+  {
+    "raw": "1e+",
+    "main": ["str", "1e+"]
+  },
+  {
+    "raw": "0.1.2",
+    "main": ["str", "0.1.2"]
+  },
+  {
+    "raw": "+.5",
+    "main": ["str", "+.5"]
+  },
+  {
+    "raw": "2024-01-01",
+    "main": ["date", "2024-01-01"]
+  },
+  {
+    "raw": "2024-1-1",
+    "main": ["str", "2024-1-1"]
+  },
+  {
+    "raw": "2024-01-01T10:00:00",
+    "main": ["datetime", "2024-01-01T10:00:00"]
+  },
+  {
+    "raw": "2024-01-01 10:00:00",
+    "main": ["datetime", "2024-01-01T10:00:00"]
+  },
+  {
+    "raw": "2024-01-01T10:00",
+    "main": ["str", "2024-01-01T10:00"]
+  },
+  {
+    "raw": "2024-01-01 10:00",
+    "main": ["str", "2024-01-01 10:00"]
+  },
+  {
+    "raw": "2024-01-01T10:00:00Z",
+    "main": ["datetime", "2024-01-01T10:00:00+00:00"]
+  },
+  {
+    "raw": "2024-01-01T10:00:00+01:00",
+    "main": ["datetime", "2024-01-01T10:00:00+01:00"]
+  },
+  {
+    "raw": "2024-01-01T10:00:00.123456",
+    "main": ["datetime", "2024-01-01T10:00:00.123456"]
+  },
+  {
+    "raw": "2024-01-01T10:00:00.1234567",
+    "main": ["datetime", "2024-01-01T10:00:00.123456"]
+  },
+  {
+    "raw": "10:00:00",
+    "main": ["time", "10:00:00"]
+  },
+  {
+    "raw": "12:30",
+    "main": ["str", "12:30"]
+  },
+  {
+    "raw": "12:30:00.5",
+    "main": ["time", "12:30:00.500000"]
+  },
+  {
+    "raw": "24:00:00",
+    "main": ["str", "24:00:00"]
+  },
+  {
+    "raw": "2024-02-30",
+    "main": ["str", "2024-02-30"]
+  },
+  {
+    "raw": "1979-05-27T07:32:00-08:00",
+    "main": ["datetime", "1979-05-27T07:32:00-08:00"]
+  },
+  {
+    "raw": "2024-01-01t10:00:00z",
+    "main": ["datetime", "2024-01-01T10:00:00+00:00"]
+  },
+  {
+    "raw": "2024-01-01T10:00Z",
+    "main": ["str", "2024-01-01T10:00Z"]
+  },
+  {
+    "raw": "2024-01-01T10:00+01:00",
+    "main": ["str", "2024-01-01T10:00+01:00"]
+  },
+  {
+    "raw": "07:32",
+    "main": ["str", "07:32"]
+  },
+  {
+    "raw": "7:32:00",
+    "main": ["str", "7:32:00"]
+  },
+  {
+    "raw": "2024-01-01T25:00:00",
+    "main": ["str", "2024-01-01T25:00:00"]
+  },
+  {
+    "raw": "0000-01-01",
+    "main": ["str", "0000-01-01"]
+  },
+  {
+    "raw": "9999-12-31T23:59:59.999999",
+    "main": ["datetime", "9999-12-31T23:59:59.999999"]
+  },
+  {
+    "raw": "\"quoted\"",
+    "main": ["str", "quoted"]
+  },
+  {
+    "raw": "'single'",
+    "main": ["str", "single"]
+  },
+  {
+    "raw": "\"\\e\"",
+    "main": ["str", "\"\\e\""]
+  },
+  {
+    "raw": "\"\\x41\"",
+    "main": ["str", "\"\\x41\""]
+  },
+  {
+    "raw": "\"\\u0041\"",
+    "main": ["str", "A"]
+  },
+  {
+    "raw": "\"\\U0001F600\"",
+    "main": ["str", "😀"]
+  },
+  {
+    "raw": "\"\\t\"",
+    "main": ["str", "\t"]
+  },
+  {
+    "raw": "\"a\\\"b\"",
+    "main": ["str", "a\"b"]
+  },
+  {
+    "raw": "'''multi'''",
+    "main": ["str", "multi"]
+  },
+  {
+    "raw": "\"\"\"multi\"\"\"",
+    "main": ["str", "multi"]
+  },
+  {
+    "raw": "\"\"\"a\nb\"\"\"",
+    "main": ["str", "a\nb"]
+  },
+  {
+    "raw": "\"unterminated",
+    "main": ["str", "\"unterminated"]
+  },
+  {
+    "raw": "'x",
+    "main": ["str", "'x"]
+  },
+  {
+    "raw": "\"\"",
+    "main": ["str", ""]
+  },
+  {
+    "raw": "''",
+    "main": ["str", ""]
+  },
+  {
+    "raw": "\"a\" \"b\"",
+    "main": ["str", "\"a\" \"b\""]
+  },
+  {
+    "raw": "\"a\"b",
+    "main": ["str", "\"a\"b"]
+  },
+  {
+    "raw": "\"\\q\"",
+    "main": ["str", "\"\\q\""]
+  },
+  {
+    "raw": "\"\\\\\"",
+    "main": ["str", "\\"]
+  },
+  {
+    "raw": "'\\\\'",
+    "main": ["str", "\\\\"]
+  },
+  {
+    "raw": "\"\\n\"",
+    "main": ["str", "\n"]
+  },
+  {
+    "raw": "\"é\"",
+    "main": ["str", "é"]
+  },
+  {
+    "raw": "'it''s'",
+    "main": ["str", "'it''s'"]
+  },
+  {
+    "raw": "\"a\nb\"",
+    "main": ["str", "\"a\nb\""]
+  },
+  {
+    "raw": "\"\\uD800\"",
+    "main": ["str", "\"\\uD800\""]
+  },
+  {
+    "raw": "\"\\u00e9\"",
+    "main": ["str", "é"]
+  },
+  {
+    "raw": "\"\\b\\f\\r\"",
+    "main": ["str", "\b\f\r"]
+  },
+  {
+    "raw": "12:30 # 01:02:03",
+    "main": ["str", "12:30 # 01:02:03"]
+  },
+  {
+    "raw": "1 # c",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "\"x\" # c",
+    "main": ["str", "x"]
+  },
+  {
+    "raw": "# only",
+    "main": ["str", "# only"]
+  },
+  {
+    "raw": "1#c",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "[1, # c\n 2]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        ["int", "2"]
+      ]
+    ]
+  },
+  {
+    "raw": "{a = 1} # c",
+    "main": ["dict", [["a", ["int", "1"]]]]
+  },
+  {
+    "raw": "true #",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "inf # inf",
+    "main": ["float", "inf"]
+  },
+  {
+    "raw": "\"#notacomment\"",
+    "main": ["str", "#notacomment"]
+  },
+  {
+    "raw": "a # b",
+    "main": ["str", "a # b"]
+  },
+  {
+    "raw": "[1, 2]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        ["int", "2"]
+      ]
+    ]
+  },
+  {
+    "raw": "[]",
+    "main": ["list", []]
+  },
+  {
+    "raw": "[ ]",
+    "main": ["list", []]
+  },
+  {
+    "raw": "[1,]",
+    "main": ["list", [["int", "1"]]]
+  },
+  {
+    "raw": "[1,,2]",
+    "main": ["str", "[1,,2]"]
+  },
+  {
+    "raw": "[\"a\", \"b\"]",
+    "main": [
+      "list",
+      [
+        ["str", "a"],
+        ["str", "b"]
+      ]
+    ]
+  },
+  {
+    "raw": "[1, \"a\", true]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        ["str", "a"],
+        ["bool", true]
+      ]
+    ]
+  },
+  {
+    "raw": "[a, b]",
+    "main": ["str", "[a, b]"]
+  },
+  {
+    "raw": "[[1], [2]]",
+    "main": [
+      "list",
+      [
+        ["list", [["int", "1"]]],
+        ["list", [["int", "2"]]]
+      ]
+    ]
+  },
+  {
+    "raw": "[1, 2.0]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        ["float", "2.0"]
+      ]
+    ]
+  },
+  {
+    "raw": "[\n1,\n2\n]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        ["int", "2"]
+      ]
+    ]
+  },
+  {
+    "raw": "[{a=1}]",
+    "main": ["list", [["dict", [["a", ["int", "1"]]]]]]
+  },
+  {
+    "raw": "[1 2]",
+    "main": ["str", "[1 2]"]
+  },
+  {
+    "raw": "[[]]",
+    "main": ["list", [["list", []]]]
+  },
+  {
+    "raw": "[2024-01-01T10:00]",
+    "main": ["str", "[2024-01-01T10:00]"]
+  },
+  {
+    "raw": "[12:30]",
+    "main": ["str", "[12:30]"]
+  },
+  {
+    "raw": "[10:00:00]",
+    "main": ["list", [["time", "10:00:00"]]]
+  },
+  {
+    "raw": "[inf, nan]",
+    "main": [
+      "list",
+      [
+        ["float", "inf"],
+        ["float", "nan"]
+      ]
+    ]
+  },
+  {
+    "raw": "[1, [2, [3]]]",
+    "main": [
+      "list",
+      [
+        ["int", "1"],
+        [
+          "list",
+          [
+            ["int", "2"],
+            ["list", [["int", "3"]]]
+          ]
+        ]
+      ]
+    ]
+  },
+  {
+    "raw": "[\"C:\\\\x\"]",
+    "main": ["list", [["str", "C:\\x"]]]
+  },
+  {
+    "raw": "['C:\\x']",
+    "main": ["list", [["str", "C:\\x"]]]
+  },
+  {
+    "raw": "[true, false]",
+    "main": [
+      "list",
+      [
+        ["bool", true],
+        ["bool", false]
+      ]
+    ]
+  },
+  {
+    "raw": "[True]",
+    "main": ["str", "[True]"]
+  },
+  {
+    "raw": "[,]",
+    "main": ["str", "[,]"]
+  },
+  {
+    "raw": "[1",
+    "main": ["str", "[1"]
+  },
+  {
+    "raw": "{a = 1}",
+    "main": ["dict", [["a", ["int", "1"]]]]
+  },
+  {
+    "raw": "{}",
+    "main": ["dict", []]
+  },
+  {
+    "raw": "{ }",
+    "main": ["dict", []]
+  },
+  {
+    "raw": "{a=1,}",
+    "main": ["str", "{a=1,}"]
+  },
+  {
+    "raw": "{a = 1,\n b = 2}",
+    "main": ["str", "{a = 1,\n b = 2}"]
+  },
+  {
+    "raw": "{\"a\": 1}",
+    "main": ["str", "{\"a\": 1}"]
+  },
+  {
+    "raw": "{a.b = 1}",
+    "main": ["dict", [["a", ["dict", [["b", ["int", "1"]]]]]]]
+  },
+  {
+    "raw": "{a = {b = 1}}",
+    "main": ["dict", [["a", ["dict", [["b", ["int", "1"]]]]]]]
+  },
+  {
+    "raw": "{a = [1]}",
+    "main": ["dict", [["a", ["list", [["int", "1"]]]]]]
+  },
+  {
+    "raw": "{a=1, a=2}",
+    "main": ["str", "{a=1, a=2}"]
+  },
+  {
+    "raw": "{\"a b\" = 1}",
+    "main": ["dict", [["a b", ["int", "1"]]]]
+  },
+  {
+    "raw": "{a = }",
+    "main": ["str", "{a = }"]
+  },
+  {
+    "raw": "{a = 12:30}",
+    "main": ["str", "{a = 12:30}"]
+  },
+  {
+    "raw": "{a = 2024-01-01}",
+    "main": ["dict", [["a", ["date", "2024-01-01"]]]]
+  },
+  {
+    "raw": "{a = true, b = 'x'}",
+    "main": [
+      "dict",
+      [
+        ["a", ["bool", true]],
+        ["b", ["str", "x"]]
+      ]
+    ]
+  },
+  {
+    "raw": "{ a = 1 , b = 2 }",
+    "main": [
+      "dict",
+      [
+        ["a", ["int", "1"]],
+        ["b", ["int", "2"]]
+      ]
+    ]
+  },
+  {
+    "raw": "{a=1 b=2}",
+    "main": ["str", "{a=1 b=2}"]
+  },
+  {
+    "raw": "{1 = 2}",
+    "main": ["dict", [["1", ["int", "2"]]]]
+  },
+  {
+    "raw": "{a = {}}",
+    "main": ["dict", [["a", ["dict", []]]]]
+  },
+  {
+    "raw": "{a.b.c = 1, a.d = 2}",
+    "main": [
+      "dict",
+      [
+        [
+          "a",
+          [
+            "dict",
+            [
+              ["b", ["dict", [["c", ["int", "1"]]]]],
+              ["d", ["int", "2"]]
+            ]
+          ]
+        ]
+      ]
+    ]
+  },
+  {
+    "raw": "{a = 1, a.b = 2}",
+    "main": ["str", "{a = 1, a.b = 2}"]
+  },
+  {
+    "raw": "C:\\Users\\x",
+    "main": ["str", "C:\\Users\\x"]
+  },
+  {
+    "raw": "\"C:\\Users\\x\"",
+    "main": ["str", "\"C:\\Users\\x\""]
+  },
+  {
+    "raw": "'C:\\Users\\x'",
+    "main": ["str", "C:\\Users\\x"]
+  },
+  {
+    "raw": "C:/x",
+    "main": ["str", "C:/x"]
+  },
+  {
+    "raw": "\\\\server\\share",
+    "main": ["str", "\\\\server\\share"]
+  },
+  {
+    "raw": "\"\\\\server\"",
+    "main": ["str", "\\server"]
+  },
+  {
+    "raw": "D:\\",
+    "main": ["str", "D:\\"]
+  },
+  {
+    "raw": "\"C:\\\\x\"",
+    "main": ["str", "C:\\x"]
+  },
+  {
+    "raw": "C:",
+    "main": ["str", "C:"]
+  },
+  {
+    "raw": "'D:\\Media Files\\'",
+    "main": ["str", "D:\\Media Files\\"]
+  },
+  {
+    "raw": "\\\\?\\C:\\long",
+    "main": ["str", "\\\\?\\C:\\long"]
+  },
+  {
+    "raw": "%APPDATA%\\winnow",
+    "main": ["str", "%APPDATA%\\winnow"]
+  },
+  {
+    "raw": "hello",
+    "main": ["str", "hello"]
+  },
+  {
+    "raw": "hello world",
+    "main": ["str", "hello world"]
+  },
+  {
+    "raw": "/usr/local",
+    "main": ["str", "/usr/local"]
+  },
+  {
+    "raw": "~/x",
+    "main": ["str", "~/x"]
+  },
+  {
+    "raw": "*.jpg",
+    "main": ["str", "*.jpg"]
+  },
+  {
+    "raw": "a=b",
+    "main": ["str", "a=b"]
+  },
+  {
+    "raw": "key=1",
+    "main": ["str", "key=1"]
+  },
+  {
+    "raw": "x\nkey=2",
+    "main": ["str", "x\nkey=2"]
+  },
+  {
+    "raw": "1\nfoo=2",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "1\nkey=2",
+    "main": ["str", "1\nkey=2"]
+  },
+  {
+    "raw": "=",
+    "main": ["str", "="]
+  },
+  {
+    "raw": "==",
+    "main": ["str", "=="]
+  },
+  {
+    "raw": "a,b",
+    "main": ["str", "a,b"]
+  },
+  {
+    "raw": "1,2",
+    "main": ["str", "1,2"]
+  },
+  {
+    "raw": "@foo bar",
+    "main": ["str", "@foo bar"]
+  },
+  {
+    "raw": "@",
+    "main": ["str", "@"]
+  },
+  {
+    "raw": "@@int 4",
+    "main": ["str", "@@int 4"]
+  },
+  {
+    "raw": "-",
+    "main": ["str", "-"]
+  },
+  {
+    "raw": "--",
+    "main": ["str", "--"]
+  },
+  {
+    "raw": "+",
+    "main": ["str", "+"]
+  },
+  {
+    "raw": ".",
+    "main": ["str", "."]
+  },
+  {
+    "raw": "...",
+    "main": ["str", "..."]
+  },
+  {
+    "raw": "null",
+    "main": ["str", "null"]
+  },
+  {
+    "raw": "None",
+    "main": ["str", "None"]
+  },
+  {
+    "raw": "nil",
+    "main": ["str", "nil"]
+  },
+  {
+    "raw": "1/2",
+    "main": ["str", "1/2"]
+  },
+  {
+    "raw": "1:2",
+    "main": ["str", "1:2"]
+  },
+  {
+    "raw": "v1.2.3",
+    "main": ["str", "v1.2.3"]
+  },
+  {
+    "raw": "é",
+    "main": ["str", "é"]
+  },
+  {
+    "raw": "ü1",
+    "main": ["str", "ü1"]
+  },
+  {
+    "raw": "中文",
+    "main": ["str", "中文"]
+  },
+  {
+    "raw": "a\tb",
+    "main": ["str", "a\tb"]
+  },
+  {
+    "raw": "😀",
+    "main": ["str", "😀"]
+  },
+  {
+    "raw": "x = 1",
+    "main": ["str", "x = 1"]
+  },
+  {
+    "raw": "[section]",
+    "main": ["str", "[section]"]
+  },
+  {
+    "raw": "[[a]]",
+    "main": ["str", "[[a]]"]
+  },
+  {
+    "raw": "key",
+    "main": ["str", "key"]
+  },
+  {
+    "raw": "a.b",
+    "main": ["str", "a.b"]
+  },
+  {
+    "raw": "http://x/y",
+    "main": ["str", "http://x/y"]
+  },
+  {
+    "raw": "s3://bucket/key",
+    "main": ["str", "s3://bucket/key"]
+  },
+  {
+    "raw": "a\\b",
+    "main": ["str", "a\\b"]
+  },
+  {
+    "raw": "$HOME/x",
+    "main": ["str", "$HOME/x"]
+  },
+  {
+    "raw": "${HOME}",
+    "main": ["str", "${HOME}"]
+  },
+  {
+    "raw": "`cmd`",
+    "main": ["str", "`cmd`"]
+  },
+  {
+    "raw": "a'b",
+    "main": ["str", "a'b"]
+  },
+  {
+    "raw": "a\"b",
+    "main": ["str", "a\"b"]
+  },
+  {
+    "raw": "@int 4",
+    "main": ["int", "4"]
+  },
+  {
+    "raw": "@int  4",
+    "main": ["int", "4"]
+  },
+  {
+    "raw": "@int 4.0",
+    "main": ["error"]
+  },
+  {
+    "raw": "@int -3",
+    "main": ["int", "-3"]
+  },
+  {
+    "raw": "@int 0x10",
+    "main": ["error"]
+  },
+  {
+    "raw": "@int",
+    "main": ["error"]
+  },
+  {
+    "raw": "@float 1",
+    "main": ["float", "1.0"]
+  },
+  {
+    "raw": "@float nan",
+    "main": ["float", "nan"]
+  },
+  {
+    "raw": "@float 1e3",
+    "main": ["float", "1000.0"]
+  },
+  {
+    "raw": "@float x",
+    "main": ["error"]
+  },
+  {
+    "raw": "@bool yes",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "@bool 0",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "@bool",
+    "main": ["bool", false]
+  },
+  {
+    "raw": "@bool On",
+    "main": ["bool", true]
+  },
+  {
+    "raw": "@json [1]",
+    "main": ["list", [["int", "1"]]]
+  },
+  {
+    "raw": "@json {\"a\":1}",
+    "main": ["dict", [["a", ["int", "1"]]]]
+  },
+  {
+    "raw": "@json {'a': 1}",
+    "main": ["dict", [["a", ["int", "1"]]]]
+  },
+  {
+    "raw": "@json {'a': True}",
+    "main": ["dict", [["a", ["bool", true]]]]
+  },
+  {
+    "raw": "@json bad",
+    "main": ["error"]
+  },
+  {
+    "raw": "@json 1",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "@json \"s\"",
+    "main": ["str", "s"]
+  },
+  {
+    "raw": "@json null",
+    "main": ["none"]
+  },
+  {
+    "raw": "@json x {\"a\": 1} y",
+    "main": ["dict", [["a", ["int", "1"]]]]
+  },
+  {
+    "raw": "@str 1",
+    "main": ["str", "1"]
+  },
+  {
+    "raw": "@str",
+    "main": ["str", ""]
+  },
+  {
+    "raw": "@str  spaced ",
+    "main": ["str", " spaced "]
+  },
+  {
+    "raw": "@none",
+    "main": ["none"]
+  },
+  {
+    "raw": "@null x",
+    "main": ["none"]
+  },
+  {
+    "raw": "@upper ab",
+    "main": ["str", "AB"]
+  },
+  {
+    "raw": "@lower AB",
+    "main": ["str", "ab"]
+  },
+  {
+    "raw": "@split a b",
+    "main": [
+      "list",
+      [
+        ["str", "a"],
+        ["str", "b"]
+      ]
+    ]
+  },
+  {
+    "raw": "@note",
+    "main": ["none"]
+  },
+  {
+    "raw": "@comment x",
+    "main": ["none"]
+  },
+  {
+    "raw": "@title a b",
+    "main": ["str", "A B"]
+  },
+  {
+    "raw": "@strip  x ",
+    "main": ["str", "x"]
+  },
+  {
+    "raw": "@format x",
+    "main": ["other", "Lazy"],
+    "winnow": ["error"],
+    "why": "main returned an unevaluated Dynaconf template object; winnow rejects the marker"
+  },
+  {
+    "raw": "@del",
+    "main": ["other", "Del"],
+    "winnow": ["error"],
+    "why": "main returned Dynaconf's delete instruction object; winnow rejects the marker"
+  },
+  {
+    "raw": "@merge 1",
+    "main": ["other", "Merge"],
+    "winnow": ["error"],
+    "why": "main returned Dynaconf's merge instruction object; winnow rejects the marker"
+  },
+  {
+    "raw": "@int @format x",
+    "main": ["other", "Lazy"],
+    "winnow": ["error"],
+    "why": "main returned an unevaluated Dynaconf template object; winnow rejects the marker"
+  },
+  {
+    "raw": "@INT 4",
+    "main": ["str", "@INT 4"]
+  },
+  {
+    "raw": "@int\t4",
+    "main": ["str", "@int\t4"]
+  },
+  {
+    "raw": " @int 4",
+    "main": ["str", " @int 4"]
+  },
+  {
+    "raw": "@empty",
+    "main": ["other", "Empty"],
+    "winnow": ["error"],
+    "why": "main returned Dynaconf's empty sentinel; winnow rejects the marker"
+  },
+  {
+    "raw": "@jinja x",
+    "main": ["other", "Lazy"],
+    "winnow": ["error"],
+    "why": "main returned an unevaluated Dynaconf template object; winnow rejects the marker"
+  },
+  {
+    "raw": "",
+    "main": ["str", ""]
+  },
+  {
+    "raw": " ",
+    "main": ["str", " "]
+  },
+  {
+    "raw": "\t",
+    "main": ["str", "\t"]
+  },
+  {
+    "raw": "\n",
+    "main": ["str", "\n"]
+  },
+  {
+    "raw": " 1",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "1 ",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": " [1] ",
+    "main": ["list", [["int", "1"]]]
+  },
+  {
+    "raw": "\r\n",
+    "main": ["str", "\r\n"]
+  },
+  {
+    "raw": "1\r\n",
+    "main": ["int", "1"]
+  },
+  {
+    "raw": "\u00a01",
+    "main": ["str", "\u00a01"]
+  }
+]
