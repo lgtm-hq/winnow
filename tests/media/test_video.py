@@ -28,7 +28,7 @@ from winnow.media.video import (
 from winnow.media.video import _parse_frame_rate as parse_frame_rate
 
 _WHICH_TARGET = "winnow.media._ffprobe.shutil.which"
-_RUN_TARGET = "winnow.media._ffprobe.subprocess.run"
+_RUN_TARGET = "winnow.media._ffprobe._capture"
 
 _FFPROBE_JSON = json.dumps(
     {

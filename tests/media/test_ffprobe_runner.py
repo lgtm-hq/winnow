@@ -9,20 +9,24 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from assertpy import assert_that
 
+from winnow.exceptions import MediaError
 from winnow.media import _ffprobe
 from winnow.media import audio as audio_module
 from winnow.media._ffprobe import (
     ADDRESS_SPACE_LIMIT_BYTES,
     DEVNULL,
+    BoundedRunError,
     fd_protocol_supported,
     ffprobe_available,
     ffprobe_version,
@@ -31,6 +35,7 @@ from winnow.media._ffprobe import (
     parse_version_major,
     probe_environment,
     run_bounded,
+    run_command,
 )
 from winnow.media.audio import extract_audio_metadata
 from winnow.models.media import AudioFlag, MediaMetadata
@@ -49,6 +54,37 @@ def _python(code: str) -> list[str]:
         The argument vector.
     """
     return [PYTHON, "-c", code]
+
+
+def _recording_spawn(
+    spawned: list[object],
+    options: list[dict[str, object]],
+) -> Callable[..., object]:
+    """Wrap the real launcher so each started process is kept.
+
+    Args:
+        spawned: Receives each started process.
+        options: Receives the keyword options of each start.
+
+    Returns:
+        A drop-in replacement for ``_spawn``.
+    """
+    real_spawn = _ffprobe._spawn
+
+    def spawn(
+        argv: list[str],
+        *,
+        stdin: int | None,
+        text: bool,
+        env: Mapping[str, str] | None = None,
+        isolate: bool = False,
+    ) -> object:
+        options.append({"stdin": stdin, "text": text, "isolate": isolate})
+        process = real_spawn(argv, stdin=stdin, text=text, env=env, isolate=isolate)
+        spawned.append(process)
+        return process
+
+    return spawn
 
 
 @pytest.fixture(autouse=True)
@@ -146,14 +182,18 @@ def _fake_resource(hard: int, infinity: int = -1) -> SimpleNamespace:
         infinity: Value of ``RLIM_INFINITY``.
 
     Returns:
-        The fake module; ``calls`` lists each ``setrlimit`` argument.
+        The fake module; ``calls`` lists each ``prlimit`` argument tuple.
     """
-    calls: list[tuple[int, tuple[int, int]]] = []
+    calls: list[tuple[object, ...]] = []
+
+    def prlimit(*args: object) -> tuple[int, int]:
+        calls.append(args)
+        return (infinity, hard)
+
     return SimpleNamespace(
         RLIMIT_AS=9,
         RLIM_INFINITY=infinity,
-        getrlimit=lambda which: (infinity, hard),
-        setrlimit=lambda which, limits: calls.append((which, limits)),
+        prlimit=prlimit,
         calls=calls,
     )
 
@@ -161,13 +201,16 @@ def _fake_resource(hard: int, infinity: int = -1) -> SimpleNamespace:
 def test_limit_address_space_sets_one_gibibyte(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no hard limit the soft limit becomes 1 GiB."""
+    """On Linux, with no hard limit, the child's soft limit becomes 1 GiB."""
     fake = _fake_resource(hard=-1)
     monkeypatch.setitem(sys.modules, "resource", fake)
+    monkeypatch.setattr("winnow.media._ffprobe.sys.platform", "linux")
 
-    limit_address_space()
+    limit_address_space(4242)
 
-    assert_that(fake.calls).is_equal_to([(9, (ADDRESS_SPACE_LIMIT_BYTES, -1))])
+    assert_that(fake.calls).is_equal_to(
+        [(4242, 9), (4242, 9, (ADDRESS_SPACE_LIMIT_BYTES, -1))],
+    )
 
 
 def test_limit_address_space_keeps_lower_hard_limit(
@@ -176,25 +219,92 @@ def test_limit_address_space_keeps_lower_hard_limit(
     """A hard limit below 1 GiB is kept."""
     fake = _fake_resource(hard=4096)
     monkeypatch.setitem(sys.modules, "resource", fake)
+    monkeypatch.setattr("winnow.media._ffprobe.sys.platform", "linux")
 
-    limit_address_space()
+    limit_address_space(7)
 
-    assert_that(fake.calls).is_equal_to([(9, (4096, 4096))])
+    assert_that(fake.calls[-1]).is_equal_to((7, 9, (4096, 4096)))
 
 
-@pytest.mark.parametrize(
-    ("platform", "expected"),
-    [("linux", limit_address_space), ("darwin", None), ("win32", None)],
-)
-def test_preexec_only_on_linux(
+def test_limit_address_space_ignores_an_exited_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child that is already gone needs no limit."""
+
+    def gone(*args: object) -> tuple[int, int]:
+        raise ProcessLookupError(args)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "resource",
+        SimpleNamespace(RLIMIT_AS=9, RLIM_INFINITY=-1, prlimit=gone),
+    )
+    monkeypatch.setattr("winnow.media._ffprobe.sys.platform", "linux")
+
+    limit_address_space(7)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_limit_address_space_only_on_linux(
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
-    expected: object,
 ) -> None:
-    """The address-space cap is applied on Linux only."""
+    """Off Linux nothing is limited and ``resource`` is not used."""
+    fake = _fake_resource(hard=-1)
+    monkeypatch.setitem(sys.modules, "resource", fake)
     monkeypatch.setattr("winnow.media._ffprobe.sys.platform", platform)
 
-    assert_that(_ffprobe._preexec()).is_equal_to(expected)
+    limit_address_space(7)
+
+    assert_that(fake.calls).is_empty()
+
+
+def test_run_bounded_limits_the_started_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The limit is applied to the child's pid from the parent, no preexec."""
+    limited: list[int] = []
+    spawned: list[object] = []
+    options: list[dict[str, object]] = []
+    monkeypatch.setattr(_ffprobe, "limit_address_space", limited.append)
+    monkeypatch.setattr(_ffprobe, "_spawn", _recording_spawn(spawned, options))
+
+    run = run_bounded(
+        _python("print(1)"),
+        stdin=DEVNULL,
+        timeout=30,
+        stdout_limit=1024,
+        stderr_limit=1024,
+    )
+
+    assert_that(run.returncode).is_equal_to(0)
+    assert_that(limited).is_equal_to([getattr(spawned[0], "pid", None)])
+    assert_that(options[0]["isolate"]).is_true()
+
+
+def test_run_bounded_kills_the_child_when_the_limit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """If the limit cannot be set, the child is killed and the error raised."""
+    marker = tmp_path / "pid"
+
+    def refuse(pid: int) -> None:
+        marker.write_text(str(pid))
+        raise PermissionError("prlimit refused")
+
+    monkeypatch.setattr(_ffprobe, "limit_address_space", refuse)
+
+    with pytest.raises(PermissionError):
+        run_bounded(
+            _python("import time; time.sleep(60)"),
+            stdin=DEVNULL,
+            timeout=30,
+            stdout_limit=1024,
+            stderr_limit=1024,
+        )
+
+    assert_that(_alive(int(marker.read_text()))).is_false()
 
 
 # --- run_bounded ------------------------------------------------------------
@@ -237,7 +347,7 @@ def test_run_bounded_streams_lines_to_callback() -> None:
     lines: list[bytes] = []
 
     run = run_bounded(
-        _python("import sys; sys.stdout.write('a,1\\nb,2\\n' + 'c' * 70000)"),
+        _python("import sys; sys.stdout.write('a,1\\nb,2\\n' + 'c' * 4000)"),
         stdin=DEVNULL,
         timeout=30,
         stdout_limit=1_000_000,
@@ -245,8 +355,121 @@ def test_run_bounded_streams_lines_to_callback() -> None:
         on_stdout_line=lines.append,
     )
 
-    assert_that(lines).is_equal_to([b"a,1", b"b,2", b"c" * 70000])
+    assert_that(lines).is_equal_to([b"a,1", b"b,2", b"c" * 4000])
     assert_that(run.stdout).is_empty()
+    assert_that(run.breached).is_false()
+
+
+@pytest.mark.parametrize("newline", ["", "\\n"])
+def test_run_bounded_caps_one_pending_line(newline: str) -> None:
+    """A line longer than the cap is an overflow, finished or not (A7)."""
+    lines: list[bytes] = []
+    started = time.monotonic()
+
+    run = run_bounded(
+        _python(
+            "import sys, time\n"
+            f"sys.stdout.write('x' * 100000 + '{newline}'); sys.stdout.flush()\n"
+            "time.sleep(60)",
+        ),
+        stdin=DEVNULL,
+        timeout=60,
+        stdout_limit=1 << 30,
+        stderr_limit=1024,
+        on_stdout_line=lines.append,
+        line_limit=4096,
+    )
+
+    assert_that(time.monotonic() - started).is_less_than(30)
+    assert_that(run.overflowed).is_true()
+    assert_that(run.timed_out).is_false()
+    assert_that(lines).is_empty()
+
+
+def test_run_bounded_default_line_cap() -> None:
+    """The default cap is a few KiB."""
+    run = run_bounded(
+        _python("import sys; sys.stdout.write('y' * 5000)"),
+        stdin=DEVNULL,
+        timeout=30,
+        stdout_limit=1 << 20,
+        stderr_limit=1024,
+        on_stdout_line=lambda line: None,
+    )
+
+    assert_that(_ffprobe.LINE_LIMIT_BYTES).is_equal_to(4096)
+    assert_that(run.overflowed).is_true()
+
+
+def test_run_bounded_callback_error_fails_the_call() -> None:
+    """A line callback that raises never yields a normal result (A7)."""
+
+    def sink(line: bytes) -> None:
+        raise RuntimeError("sink failed")
+
+    with pytest.raises(BoundedRunError) as caught:
+        run_bounded(
+            _python("print('a'); print('b')"),
+            stdin=DEVNULL,
+            timeout=30,
+            stdout_limit=1024,
+            stderr_limit=1024,
+            on_stdout_line=sink,
+        )
+
+    assert_that(str(caught.value.__cause__)).is_equal_to("sink failed")
+
+
+def test_run_bounded_callback_error_on_last_line_fails_the_call() -> None:
+    """The final line without a newline goes through the same check."""
+
+    def sink(line: bytes) -> None:
+        raise ValueError(line)
+
+    with pytest.raises(BoundedRunError):
+        run_bounded(
+            _python("import sys; sys.stdout.write('tail')"),
+            stdin=DEVNULL,
+            timeout=30,
+            stdout_limit=1024,
+            stderr_limit=1024,
+            on_stdout_line=sink,
+        )
+
+
+def test_run_bounded_reader_error_kills_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failing pipe read kills the group and fails the call."""
+    pid_file = tmp_path / "pid"
+    real_read = os.read
+    failing = threading.Event()
+
+    def read(fd: int, size: int) -> bytes:
+        if failing.is_set():
+            raise OSError("pipe read failed")
+        return real_read(fd, size)
+
+    def remember(pid: int) -> None:
+        pid_file.write_text(str(pid))
+        failing.set()
+
+    monkeypatch.setattr(_ffprobe, "limit_address_space", remember)
+    monkeypatch.setattr("winnow.media._ffprobe.os.read", read)
+    started = time.monotonic()
+
+    with pytest.raises(BoundedRunError):
+        run_bounded(
+            _python("import time; time.sleep(60)"),
+            stdin=DEVNULL,
+            timeout=60,
+            stdout_limit=1024,
+            stderr_limit=1024,
+        )
+
+    assert_that(time.monotonic() - started).is_less_than(30)
+    assert_that(_alive(int(pid_file.read_text()))).is_false()
 
 
 def test_run_bounded_reads_stdin_descriptor(tmp_path: Path) -> None:
@@ -266,6 +489,225 @@ def test_run_bounded_reads_stdin_descriptor(tmp_path: Path) -> None:
         os.close(descriptor)
 
     assert_that(run.stdout).is_equal_to(b"payload")
+
+
+def _interrupt_main_thread_after(seconds: float) -> threading.Timer:
+    """Start a timer that sends SIGINT to the main thread.
+
+    ``pthread_kill`` targets the main thread, so a blocking call there is
+    interrupted the way a terminal Ctrl-C interrupts it.
+
+    Args:
+        seconds: Delay before the signal.
+
+    Returns:
+        The started timer.
+    """
+    main = threading.main_thread().ident
+    if main is None:
+        pytest.fail("the main thread has no ident")
+    timer = threading.Timer(seconds, signal.pthread_kill, args=(main, signal.SIGINT))
+    timer.start()
+    return timer
+
+
+def _alive(pid: int) -> bool:
+    """Report whether a process id still names a running process.
+
+    Args:
+        pid: Process id.
+
+    Returns:
+        ``True`` while the process exists and is not a zombie we reaped.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_gone(pid: int, seconds: float = 5.0) -> bool:
+    """Wait until a process id no longer exists.
+
+    Args:
+        pid: Process id.
+        seconds: How long to wait.
+
+    Returns:
+        ``True`` when the process is gone in time.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+_GRANDCHILD = (
+    "import subprocess, sys\n"
+    "child = subprocess.Popen([sys.executable, '-c', "
+    "'import os, time; print(os.getpid(), flush=True); time.sleep(60)'])\n"
+    "{tail}"
+)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["import time; time.sleep(60)\n", "pass\n"],
+    ids=["parent-sleeps", "parent-exits"],
+)
+def test_run_bounded_kills_a_grandchild_holding_the_pipes(tail: str) -> None:
+    """A descendant that keeps stdout open is killed with the group (A7).
+
+    In the second case the direct child exits at once, so only the
+    grandchild holds the pipes; the run still ends at the time-out.
+    """
+    lines: list[bytes] = []
+    started = time.monotonic()
+
+    run = run_bounded(
+        _python(_GRANDCHILD.format(tail=tail)),
+        stdin=DEVNULL,
+        timeout=1.0,
+        stdout_limit=1024,
+        stderr_limit=1024,
+        on_stdout_line=lines.append,
+    )
+
+    elapsed = time.monotonic() - started
+    assert_that(run.timed_out).is_true()
+    assert_that(elapsed).is_less_than(4)
+    assert_that(lines).is_length(1)
+    assert_that(_wait_gone(int(lines[0]))).is_true()
+
+
+def test_run_bounded_interrupt_kills_and_reaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KeyboardInterrupt during the wait kills the child before it propagates."""
+    pids: list[int] = []
+    monkeypatch.setattr(_ffprobe, "limit_address_space", pids.append)
+    timer = _interrupt_main_thread_after(0.5)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_bounded(
+                _python("import time; time.sleep(60)"),
+                stdin=DEVNULL,
+                timeout=60,
+                stdout_limit=1024,
+                stderr_limit=1024,
+            )
+    finally:
+        timer.cancel()
+
+    assert_that(pids).is_length(1)
+    assert_that(_alive(pids[0])).is_false()
+
+
+def test_run_bounded_reader_start_failure_kills_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure while starting the readers kills the child (A7)."""
+    pids: list[int] = []
+    monkeypatch.setattr(_ffprobe, "limit_address_space", pids.append)
+    starts = 0
+    real_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    with pytest.raises(RuntimeError):
+        run_bounded(
+            _python("import time; time.sleep(60)"),
+            stdin=DEVNULL,
+            timeout=60,
+            stdout_limit=1024,
+            stderr_limit=1024,
+        )
+
+    assert_that(_alive(pids[0])).is_false()
+
+
+def test_run_bounded_setup_failure_abandons_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure before supervision starts still kills and reaps the child."""
+    spawned: list[object] = []
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("supervisor failed")
+
+    monkeypatch.setattr(_ffprobe, "_spawn", _recording_spawn(spawned, []))
+    monkeypatch.setattr(_ffprobe, "_Supervisor", broken)
+
+    with pytest.raises(RuntimeError):
+        run_bounded(
+            _python("import time; time.sleep(60)"),
+            stdin=DEVNULL,
+            timeout=60,
+            stdout_limit=1024,
+            stderr_limit=1024,
+        )
+
+    process = spawned[0]
+    assert_that(getattr(process, "returncode", None)).is_not_none()
+
+
+def test_run_command_captures_text(tmp_path: Path) -> None:
+    """The video runner returns text output and the exit status."""
+    completed = run_command(
+        argv=_python("import sys; print('out'); sys.exit(2)"),
+        timeout=30,
+        operation="probe",
+        path=tmp_path,
+    )
+
+    assert_that((completed.returncode, completed.stdout)).is_equal_to((2, "out\n"))
+
+
+def test_run_command_times_out(tmp_path: Path) -> None:
+    """A time-out kills the child and raises MediaError."""
+    started = time.monotonic()
+
+    with pytest.raises(MediaError):
+        run_command(
+            argv=_python("import time; time.sleep(60)"),
+            timeout=0.5,
+            operation="probe",
+            path=tmp_path,
+        )
+
+    assert_that(time.monotonic() - started).is_less_than(20)
+
+
+def test_run_command_interrupt_kills_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An interrupt during the wait kills the child before it propagates."""
+    spawned: list[object] = []
+    monkeypatch.setattr(_ffprobe, "_spawn", _recording_spawn(spawned, []))
+    timer = _interrupt_main_thread_after(0.5)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_command(
+                argv=_python("import time; time.sleep(60)"),
+                timeout=60,
+                operation="probe",
+                path=tmp_path,
+            )
+    finally:
+        timer.cancel()
+
+    assert_that(getattr(spawned[0], "returncode", None)).is_not_none()
 
 
 def test_run_bounded_kills_on_timeout() -> None:
@@ -540,10 +982,12 @@ def test_stub_on_unpinned_major_rejects_estimates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On an unpinned major the ADTS estimate line makes the file corrupt."""
+    """On an unpinned major the ADTS estimate line is unrecognized output."""
     monkeypatch.setenv("STUB_BANNER", "ffprobe version 10.1 Copyright stub")
     monkeypatch.setenv("STUB_RECORDING", str(RECORDED_DIR / "adts.json"))
 
     metadata = extract_audio_metadata(_audio_file(tmp_path))
 
-    assert_that(metadata).is_equal_to(MediaMetadata(audio_flags=(AudioFlag.CORRUPT,)))
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.UNRECOGNIZED_OUTPUT,)),
+    )
