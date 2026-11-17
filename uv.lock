@@ -1894,7 +1894,7 @@ wheels = [
 
 [[package]]
 name = "winnow-media"
-version = "0.37.9"
+version = "0.37.10"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
