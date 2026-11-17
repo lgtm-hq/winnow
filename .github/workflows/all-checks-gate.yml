@@ -29,6 +29,16 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
     with:
       egress-policy: block
+      # On a push to main only, leave out the tag publish run that a release
+      # commit carries (#422). Its PyPI upload waits for a person to approve
+      # the pypi environment, and a waiting run kept this gate pending until
+      # it timed out and turned main red. The reusable drops a workflow run
+      # whose name matches, together with its check runs. Pull requests and
+      # the merge queue get an empty pattern, so they gate everything as
+      # before; publish never runs on them anyway.
+      ignore-checks: >-
+        ${{ github.event_name == 'push'
+        && '^Publish - PyPI Production$' || '' }}
     permissions:
       actions: read
       checks: read
