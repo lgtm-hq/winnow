@@ -27,6 +27,7 @@ from tests.media.fixtures.audio.generate_audio_fixtures import (
     FIXTURES,
     FRAME_CUTS,
     FRAME_SOURCES,
+    INCONSISTENT_FIXTURES,
     AudioFixture,
     FrameCut,
 )
@@ -47,6 +48,9 @@ AUDIO_DIR: Final[Path] = Path(__file__).resolve().parent / "fixtures" / "audio"
 MEDIA_DIR: Final[Path] = Path(__file__).resolve().parent / "fixtures"
 HEALTHY: Final[tuple[AudioFixture, ...]] = (*FIXTURES, *FRAME_SOURCES)
 BY_NAME: Final[dict[str, AudioFixture]] = {fixture.name: fixture for fixture in HEALTHY}
+INCONSISTENT_BY_NAME: Final[dict[str, AudioFixture]] = {
+    fixture.name: fixture for fixture in INCONSISTENT_FIXTURES
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,7 +346,7 @@ def test_audio_beside_video_is_estimated_never_truncated(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["offset.mka", "offset_delayed.mkv"])
 def test_start_offset_is_estimated_not_truncated(name: str) -> None:
-    """A4: a Matroska file that starts after zero is measured, never truncated."""
+    """A9: a Matroska file that starts after zero is measured, never truncated."""
     metadata = extract_audio_metadata(AUDIO_DIR / name)
 
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
@@ -350,6 +354,61 @@ def test_start_offset_is_estimated_not_truncated(name: str) -> None:
     assert_that(_duration(metadata)).is_close_to(
         BY_NAME[name].duration,
         DURATION_TOLERANCE,
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "delayed.mp4",
+        "delayed_audio.avi",
+        "delayed_audio.wma",
+        "delayed_pcm.mkv",
+        "late_pcm.mka",
+    ],
+)
+def test_late_start_is_estimated_never_truncated(name: str) -> None:
+    """A9 and A9b: audio that starts late is measured, never truncated.
+
+    The audio's duration field there is the end of the file's timeline,
+    or in AVI includes the delay while the packets start at zero.
+    """
+    metadata = extract_audio_metadata(AUDIO_DIR / name)
+
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(_duration(metadata)).is_close_to(
+        BY_NAME[name].duration,
+        DURATION_TOLERANCE,
+    )
+
+
+def test_delayed_fragmented_mp4_is_inconsistent() -> None:
+    """A10b: a first packet stretched over a 0.1 s delay leaves no duration.
+
+    The stream facts stay known; only the duration is unknown.
+    """
+    fixture = INCONSISTENT_BY_NAME["delayed_frag.mp4"]
+    metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
+
+    assert_that(metadata.container).is_equal_to(fixture.format_name)
+    assert_that(metadata.codec).is_equal_to(fixture.codec)
+    assert_that(metadata.sample_rate).is_equal_to(fixture.sample_rate)
+    assert_that(metadata.channels).is_equal_to(fixture.channels)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.bitrate).is_none()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.INCONSISTENT,))
+
+
+def test_aac_surround_flv_makes_every_fact_unknown() -> None:
+    """A11: AAC 5.1 in FLV has an untimed packet, so no audio fact is kept."""
+    metadata = extract_audio_metadata(
+        AUDIO_DIR / INCONSISTENT_BY_NAME["aac51.flv"].name,
+    )
+
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
     )
 
 

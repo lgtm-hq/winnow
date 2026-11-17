@@ -52,6 +52,7 @@ def audio_stream(**overrides: object) -> dict[str, object]:
         "codec_type": "audio",
         "sample_rate": "44100",
         "channels": 2,
+        "time_base": "1/44100",
         "bits_per_raw_sample": "16",
         "bits_per_sample": 0,
         "duration": "10.000000",

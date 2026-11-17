@@ -284,11 +284,12 @@ def test_replay_avi_and_asf_with_video_are_estimated(
 
 
 def test_replay_delayed_mp4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Delayed MP4 audio uses the stream's own duration."""
+    """A9: delayed MP4 audio starts late, so its duration is estimated."""
     metadata = _replay(monkeypatch, tmp_path, "delayed_mp4")
 
     assert_that(known_duration(metadata)).is_close_to(1.0, 0.05)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
 
 
 def test_replay_truncated_flac(
@@ -395,7 +396,7 @@ def test_replay_offset_matroska_is_estimated(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A4: audio-only Matroska from 5 s is measured, never truncated."""
+    """A9: audio-only Matroska from 5 s is measured, never truncated."""
     metadata = _replay(monkeypatch, tmp_path, "offset_mka")
 
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))

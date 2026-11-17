@@ -2,8 +2,8 @@
 
 Hand-built ffprobe output is fed to the functions in
 :mod:`winnow.media._audio_rules`: stderr filtering (R2, A1 to A3), strict JSON
-(R1), stream selection and facts (R2 to R4), the declared duration (R5, A4,
-A5, A8), and the packet-walk decision (R6, A5, A7).
+(R1), stream selection and facts (R2 to R4), the declared duration (R5, A5,
+A8, A9), and the packet-walk decision (R6, A5, A7, A10, A11).
 """
 
 from __future__ import annotations
@@ -23,11 +23,13 @@ from winnow.media._audio_rules import (
     COVER_TIMESCALE_WARNING,
     DATA_TRACK_WARNING,
     MAX_DISTINCT_PACKET_DURATIONS,
+    MP4_FORMAT_NAME,
     SHORTFALL_FLOOR_SECONDS,
     StderrContext,
     has_unrecognized_line,
     parse_time_base,
     shortfall_tolerance,
+    spans_gap,
     stderr_context,
 )
 from winnow.media.audio import (
@@ -913,7 +915,7 @@ def test_declared_prefers_stream_duration() -> None:
     header = _header(stream_duration=Decimal(5), format_duration=Decimal(9))
 
     assert_that(
-        declared_duration(header, _walk(), estimate_warned=False),
+        declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
     ).is_equal_to(Decimal(5))
 
 
@@ -945,24 +947,27 @@ def test_declared_from_format_only_with_one_stream() -> None:
     assert_that(declared_duration(several, walk, estimate_warned=False)).is_none()
 
 
+# Two time-base units of the default 1/44100 header: 45.35 microseconds.
 @pytest.mark.parametrize(
     ("start", "declared"),
     [
         ("0.000000", Decimal(7)),
-        ("0.005000", Decimal(7)),
+        ("0.000045", Decimal(7)),
         ("-0.005000", Decimal(7)),
-        ("0.005001", None),
-        ("0.010000", None),
+        ("-0.050000", Decimal(7)),
+        ("0.000046", None),
+        ("0.005000", None),
         ("0.020000", None),
         ("5.000000", None),
         (None, None),
     ],
     ids=[
         "zero",
-        "at_tolerance",
-        "minus_tolerance",
-        "over_tolerance",
-        "half_a_packet",
+        "two_units",
+        "negative",
+        "negative_priming",
+        "over_two_units",
+        "five_ms",
         "one_packet",
         "five_seconds",
         "unknown",
@@ -972,7 +977,7 @@ def test_format_duration_needs_a_zero_start(
     start: str | None,
     declared: Decimal | None,
 ) -> None:
-    """A4: format.duration is an end time, used only from a zero start."""
+    """A9: format.duration needs format.start_time within two time-base units."""
     header = _header(
         stream_duration=None,
         format_duration=Decimal(7),
@@ -984,13 +989,115 @@ def test_format_duration_needs_a_zero_start(
     ).is_equal_to(declared)
 
 
-def test_stream_duration_does_not_need_a_zero_start() -> None:
-    """A4 leaves the stream's own duration alone."""
+@pytest.mark.parametrize(
+    ("first", "declared"),
+    [
+        ("0", Decimal(2)),
+        ("0.000045", Decimal(2)),
+        ("-0.025057", Decimal(2)),
+        ("0.000046", None),
+        ("0.005", None),
+        ("0.978667", None),
+        ("5", None),
+    ],
+    ids=[
+        "zero",
+        "two_units",
+        "priming",
+        "over_two_units",
+        "five_ms",
+        "delayed",
+        "five_seconds",
+    ],
+)
+def test_stream_duration_needs_a_first_packet_near_zero(
+    first: str,
+    declared: Decimal | None,
+) -> None:
+    """A9: a stream whose first packet is late declares nothing."""
+    header = _header(stream_duration=Decimal(2))
+
+    assert_that(
+        declared_duration(
+            header,
+            _walk(*_packets(100, start=first)),
+            estimate_warned=False,
+        ),
+    ).is_equal_to(declared)
+
+
+def test_format_duration_also_needs_the_first_packet_near_zero() -> None:
+    """A9: a zero format start does not help a stream that starts late."""
+    header = _header(stream_duration=None, format_duration=Decimal(7))
+
+    assert_that(
+        declared_duration(
+            header,
+            _walk(*_packets(100, start="0.005")),
+            estimate_warned=False,
+        ),
+    ).is_none()
+
+
+def test_start_bound_needs_a_time_base() -> None:
+    """A9: without a time base no start is established, nothing is declared."""
+    header = _header(time_base=None)
+
+    assert_that(
+        declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
+    ).is_none()
+
+
+def test_stream_duration_does_not_need_a_zero_format_start() -> None:
+    """The stream's own duration depends on its first packet, not the format."""
     header = _header(format_start=Decimal(5), stream_duration=Decimal(2))
 
     assert_that(
         declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
     ).is_equal_to(Decimal(2))
+
+
+def test_pcm_matroska_five_ms_late_is_estimated() -> None:
+    """A9 end to end: PCM Matroska that starts 5 ms late is never truncated.
+
+    Its end time 1.375 minus the start leaves the measured 1.369 s 6 ms short,
+    which A5 would call truncated if the end time were declared.
+    """
+    header = _header(
+        container="matroska,webm",
+        codec="pcm_s16le",
+        sample_rate=48000,
+        channels=1,
+        time_base=Decimal("0.001"),
+        stream_duration=None,
+        format_duration=Decimal("1.375"),
+        format_start=Decimal("0.005"),
+    )
+    lines = [*_packets(65, step="0.021000", start="0.005"), "1.370000,0.004000,K__"]
+
+    assert_that(_decide(_walk(*lines), header=header)).is_equal_to(
+        (Decimal("1.369000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+@pytest.mark.parametrize("container", ["avi", "asf"])
+def test_delayed_audio_only_avi_and_asf_are_estimated(container: str) -> None:
+    """A9 and A9b: audio-only AVI and ASF delayed by 5 s declare nothing.
+
+    Their stream duration is the end of the file's timeline, 6.384 s, for
+    1.37 s of audio.
+    """
+    header = _header(
+        container=container,
+        time_base=Decimal(1) / Decimal(48000),
+        stream_duration=Decimal("6.384"),
+        format_duration=Decimal("6.384"),
+    )
+    walk = _walk(*_packets(59, step="0.024000", start="5"))
+
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.416000"), None, (AudioFlag.ESTIMATED,)),
+    )
 
 
 def test_format_duration_needs_packets() -> None:
@@ -1001,7 +1108,7 @@ def test_format_duration_needs_packets() -> None:
 
 
 def test_offset_matroska_is_estimated() -> None:
-    """A4 end to end: audio-only Matroska from 5 s is measured, not truncated."""
+    """A9 end to end: audio-only Matroska from 5 s is measured, not truncated."""
     header = _matroska_header(
         non_picture_stream_count=1,
         format_start=Decimal(5),
@@ -1059,7 +1166,7 @@ def test_matroska_tag_is_never_read() -> None:
 
 
 def test_audio_only_matroska_uses_format_duration() -> None:
-    """One non-picture stream from zero: format.duration is declared (A4)."""
+    """One non-picture stream from zero: format.duration is declared (A9)."""
     single = _matroska_header(non_picture_stream_count=1)
 
     assert_that(
@@ -1067,9 +1174,24 @@ def test_audio_only_matroska_uses_format_duration() -> None:
     ).is_equal_to(Decimal("2.008"))
 
 
+def test_avi_never_declares_a_duration() -> None:
+    """A9b: AVI declares nothing, even audio alone with packets from zero.
+
+    Delayed audio-only AVI keeps its packets at 0 and puts the delay in the
+    stream's duration field, so the field is not the audio's length.
+    """
+    header = _header(container="avi", stream_duration=Decimal("1.488"))
+    walk = _walk(*_packets(50))
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.000000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
 @pytest.mark.parametrize("container", sorted(AUDIO_ONLY_DECLARED_FORMATS))
 def test_avi_and_asf_with_another_stream_declare_nothing(container: str) -> None:
-    """A8: any other non-picture stream makes AVI and ASF undeclared."""
+    """A8: any other non-picture stream makes ASF undeclared."""
     alone = _header(container=container, stream_duration=Decimal("1.5"))
     with_video = replace(alone, non_picture_stream_count=2)
     walk = _walk(*_packets(50))
@@ -1169,6 +1291,151 @@ def test_step3_backwards_time_is_inconsistent() -> None:
     walk = _walk(*_packets(50), *_packets(50))
 
     assert_that(_decide(walk)).is_equal_to((None, None, (AudioFlag.INCONSISTENT,)))
+
+
+def _gap_walk(first: str, *, count: int = 60, step: str = "0.021333") -> PacketWalk:
+    """Build a walk whose first packet lasts ``first`` seconds.
+
+    Args:
+        first: Duration of the first packet.
+        count: Packets after the first.
+        step: Duration of every later packet.
+
+    Returns:
+        The walk.
+    """
+    head = f"0.000000,{first},K__"
+    return _walk(head, *_packets(count, step=step, start=first))
+
+
+def _mp4_header(**overrides: Any) -> ProbeHeader:
+    """Build an MP4 header for the stretched-packet rule.
+
+    Args:
+        overrides: Fields to replace.
+
+    Returns:
+        The header.
+    """
+    return _header(container=MP4_FORMAT_NAME, **overrides)
+
+
+@pytest.mark.parametrize("first", ["5.000000", "0.100000"], ids=["5s", "100ms"])
+def test_gap_packet_is_inconsistent(first: str) -> None:
+    """A10b: delayed fragmented MP4 stretches its first packet across the delay.
+
+    The first AAC packet runs from 0 to the end of the delay; the span is
+    not evidence of the audio's length, declared duration or not. A 0.1 s
+    delay is caught: there is no floor in seconds.
+    """
+    walk = _gap_walk(first)
+
+    assert_that(spans_gap(walk)).is_true()
+    assert_that(_decide(walk, header=_mp4_header(stream_duration=None))).is_equal_to(
+        (None, None, (AudioFlag.INCONSISTENT,)),
+    )
+    assert_that(
+        _decide(walk, header=_mp4_header(stream_duration=Decimal("6.28"))),
+    ).is_equal_to((None, None, (AudioFlag.INCONSISTENT,)))
+
+
+@pytest.mark.parametrize(
+    ("first", "step", "gap"),
+    [
+        ("0.042666", "0.021333", False),
+        ("0.042667", "0.021333", True),
+        ("0.021333", "0.021333", False),
+    ],
+    ids=["two_medians", "over_two_medians", "uniform"],
+)
+def test_gap_packet_needs_two_medians(first: str, step: str, gap: bool) -> None:
+    """A10b: a packet must exceed twice the median packet duration."""
+    assert_that(spans_gap(_gap_walk(first, step=step))).is_equal_to(gap)
+
+
+@pytest.mark.parametrize("container", ["matroska,webm", "ogg", "asf", "flac"])
+def test_gap_packet_is_ignored_outside_mp4(container: str) -> None:
+    """A10b applies to MP4 only: other codecs vary packet size by design."""
+    walk = _gap_walk("0.100000")
+    header = _header(container=container, stream_duration=None)
+
+    assert_that(_decide(walk, header=header)[2]).does_not_contain(
+        AudioFlag.INCONSISTENT,
+    )
+
+
+def test_short_last_packet_is_not_a_gap() -> None:
+    """A10b: MP4 audio's shorter last packet never trips the bound."""
+    walk = _walk(*_packets(60, step="0.021333"), "1.279980,0.005000,K__")
+
+    assert_that(spans_gap(walk)).is_false()
+
+
+def test_gap_packet_beats_corrupt_flag() -> None:
+    """A10b is checked after step 3 and before step 4."""
+    walk = _walk("0.000000,5.000000,K_C", *_packets(60, start="5"))
+
+    assert_that(_decide(walk, header=_mp4_header())).is_equal_to(
+        (None, None, (AudioFlag.INCONSISTENT,)),
+    )
+
+
+def test_gap_check_needs_durations() -> None:
+    """A walk without packet durations has nothing to compare."""
+    assert_that(spans_gap(PacketWalk())).is_false()
+
+
+def test_flv_untimed_packet_makes_every_fact_unknown() -> None:
+    """A11: in FLV a packet without a time makes every audio fact unknown."""
+    walk = _walk("N/A,N/A,___", "0.000000,N/A,K__", "0.023000,N/A,K__")
+    outcome = decide_duration(
+        _header(container="flv"),
+        walk,
+        run_result(),
+        benign=BENIGN_9,
+    )
+
+    assert_that(outcome.flags).is_equal_to((AudioFlag.INCONSISTENT,))
+    assert_that(outcome.facts_unknown).is_true()
+    assert_that(outcome.duration).is_none()
+    assert_that(outcome.truncated).is_none()
+
+
+def test_untimed_packet_elsewhere_keeps_the_facts() -> None:
+    """A11 is limited to FLV: elsewhere only the duration is unknown."""
+    walk = _walk("N/A,N/A,___", "0.000000,0.02,K__")
+    outcome = decide_duration(_header(), walk, run_result(), benign=BENIGN_9)
+
+    assert_that(outcome.flags).is_equal_to((AudioFlag.INCONSISTENT,))
+    assert_that(outcome.facts_unknown).is_false()
+
+
+def test_flv_backwards_time_keeps_the_facts() -> None:
+    """A11 covers an untimed packet only, not other step 3 findings."""
+    walk = _walk(*_packets(50), *_packets(50))
+    outcome = decide_duration(
+        _header(container="flv"),
+        walk,
+        run_result(),
+        benign=BENIGN_9,
+    )
+
+    assert_that(outcome.flags).is_equal_to((AudioFlag.INCONSISTENT,))
+    assert_that(outcome.facts_unknown).is_false()
+
+
+def test_flv_failed_walk_is_corrupt_first() -> None:
+    """Step 1 still wins over A11."""
+    walk = _walk("N/A,N/A,___", "0.000000,N/A,K__")
+    outcome = decide_duration(
+        _header(container="flv"),
+        walk,
+        run_result(returncode=1),
+        benign=BENIGN_9,
+    )
+
+    assert_that(outcome.flags).is_equal_to((AudioFlag.CORRUPT,))
+    assert_that(outcome.facts_unknown).is_false()
 
 
 def test_step4_corrupt_packet_flag() -> None:

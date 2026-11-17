@@ -80,12 +80,12 @@ def _silence(*, rate: int, seconds: float, channels: int = 1) -> tuple[str, ...]
     Args:
         rate: Sample rate in hertz.
         seconds: Length in seconds.
-        channels: Channel count (1 or 2).
+        channels: Channel count (1, 2, or 6 for 5.1).
 
     Returns:
         ffmpeg input arguments.
     """
-    layout = "stereo" if channels == 2 else "mono"
+    layout = {1: "mono", 2: "stereo", 6: "5.1"}[channels]
     return (
         "-f",
         "lavfi",
@@ -553,6 +553,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=1.0,
+        estimated=True,
     ),
     # A8: in AVI and ASF with video, the audio duration field is not about
     # the audio alone, so nothing is declared.
@@ -745,8 +746,130 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=1.0,
         estimated=True,
     ),
+    # A9 and A9b: audio-only AVI and ASF delayed by 1 s. Their audio duration
+    # field includes the delay; AVI packets start at 0, ASF packets at 1 s.
+    AudioFixture(
+        name="delayed_audio.avi",
+        inputs=("-itsoffset", "1", *_silence(rate=24000, seconds=1)),
+        outputs=_MP3_LOW,
+        format_name="avi",
+        codec="mp3",
+        sample_rate=24000,
+        channels=1,
+        bit_depth=None,
+        duration=1.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="delayed_audio.wma",
+        inputs=("-itsoffset", "1", *_silence(rate=22050, seconds=1)),
+        outputs=("-c:a", "wmav2", "-b:a", "24k", "-f", "asf"),
+        format_name="asf",
+        codec="wmav2",
+        sample_rate=22050,
+        channels=1,
+        bit_depth=None,
+        duration=1.0,
+        estimated=True,
+    ),
+    # A9: PCM Matroska whose audio starts late, beside video by 1 s and alone
+    # by 5 ms. The stream duration is the end of the file's timeline.
+    AudioFixture(
+        name="delayed_pcm.mkv",
+        inputs=(
+            *_TINY_VIDEO,
+            "-itsoffset",
+            "1",
+            *_silence(rate=8000, seconds=1),
+        ),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "pcm_u8",
+        ),
+        format_name=MKV_FORMAT,
+        codec="pcm_u8",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=8,
+        duration=1.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="late_pcm.mka",
+        inputs=("-itsoffset", "0.005", *_silence(rate=8000, seconds=1)),
+        outputs=("-c:a", "pcm_u8"),
+        format_name=MKV_FORMAT,
+        codec="pcm_u8",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=8,
+        duration=1.0,
+        estimated=True,
+    ),
 )
 """Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
+
+
+INCONSISTENT_FIXTURES: Final[tuple[AudioFixture, ...]] = (
+    # A10b: fragmented MP4 stretches its first AAC packet across a 0.1 s
+    # start delay.
+    AudioFixture(
+        name="delayed_frag.mp4",
+        inputs=(
+            *_TINY_VIDEO,
+            "-itsoffset",
+            "0.1",
+            *_silence(rate=48000, seconds=1),
+        ),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "24k",
+            "-movflags",
+            "+frag_keyframe+empty_moov",
+        ),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=1.0,
+    ),
+    # A11: AAC 5.1 in FLV has an untimed configuration packet.
+    AudioFixture(
+        name="aac51.flv",
+        inputs=_silence(rate=44100, seconds=1, channels=6),
+        outputs=("-c:a", "aac", "-b:a", "128k"),
+        format_name="flv",
+        codec="aac",
+        sample_rate=44100,
+        channels=6,
+        bit_depth=None,
+        duration=1.0,
+    ),
+)
+"""Healthy files whose evidence does not establish the duration.
+
+The reader must report the duration unknown with ``inconsistent`` and never
+``truncated``; for ``aac51.flv`` every audio fact is unknown (A11).
+"""
 
 
 FRAME_SOURCES: Final[tuple[AudioFixture, ...]] = (
@@ -946,7 +1069,7 @@ def generate(directory: Path) -> list[Path]:
         Paths written.
     """
     written: list[Path] = []
-    for fixture in (*FIXTURES, *FRAME_SOURCES):
+    for fixture in (*FIXTURES, *INCONSISTENT_FIXTURES, *FRAME_SOURCES):
         dest = directory / fixture.name
         _ffmpeg(inputs=fixture.inputs, outputs=fixture.outputs, dest=dest)
         written.append(dest)

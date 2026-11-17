@@ -9,7 +9,8 @@ through an extension-less symlink in a private directory that points at
 so ffprobe never sees the file's name. Anything ffprobe does not establish is
 reported as unknown.
 
-The rules are those of issue #400 and its amendments A1 to A7. This module
+The rules are those of issue #400 and its amendments A1 to A11 (with A9b
+and A10b). This module
 runs ffprobe; the decisions on its output live in
 :mod:`winnow.media._audio_rules`:
 
@@ -21,14 +22,22 @@ runs ffprobe; the decisions on its output live in
   default audio stream, else the first audio stream.
 * R4/R5/R7: facts come from the primary stream; a declared duration is the
   stream's own ``duration``, or ``format.duration`` for a file with one
-  non-picture stream that starts at zero; a Matroska ``DURATION`` tag is
-  never used; in AVI and ASF nothing is declared when the file has another
-  non-picture stream besides the primary audio (A8); bitrate is the
-  stream's own.
+  non-picture stream; either only when the stream's first packet (and, for
+  ``format.duration``, ``format.start_time``) is at most two time-base
+  units after zero (A9); a Matroska ``DURATION`` tag is never used; AVI
+  never declares a duration (A9b); in ASF nothing is declared when the
+  file has another non-picture stream besides the primary audio (A8);
+  bitrate is the stream's own.
 * R6: a packet walk of the primary stream checks the declared duration and
   measures it where none is declared. A walk that ends more than max(5 ms,
   two time-base units of the stream) before the declared duration is
-  truncated (A5).
+  truncated (A5). In MP4 a packet longer than twice the median packet
+  makes the duration unknown with ``inconsistent`` (A10b). In FLV a packet
+  without a time makes every audio fact unknown with ``inconsistent``
+  (A11).
+* ``truncated`` and ``corrupt`` claim damage; ``inconsistent``,
+  ``estimated`` and ``unrecognized_output`` only say the evidence does not
+  establish a value, and a healthy file may carry them.
 * R8: both calls are bounded in time and output and are never retried.
 * A6: the file's device, inode, size, and modification time are taken before
   the header call and after the walk; any change makes every fact unknown
@@ -51,9 +60,20 @@ Known limits (not worked around):
 * A Matroska ``DURATION`` tag is never used (A5). Matroska audio without
   its own stream duration is ``estimated`` unless it is the file's only
   non-picture stream and the file starts at zero.
-* In AVI and ASF (WMA, WMV) the audio is ``estimated`` when the file has any
-  other non-picture stream (A8): there the audio duration field includes a
-  start delay (AVI) or the whole file's play length (ASF).
+* Audio whose first packet comes more than two time-base units after zero
+  is ``estimated`` in every container (A9): its duration field can be the
+  end of the file's timeline. Cuts are then not detected.
+* AVI audio is always ``estimated`` (A9b): its duration field includes a
+  start delay while the packets start at zero. ASF (WMA, WMV) audio is
+  ``estimated`` when the file has any other non-picture stream (A8): the
+  field is the whole file's play length.
+* MP4 audio with a packet longer than twice the median packet has no
+  duration and is ``inconsistent`` (A10b); fragmented MP4 stretches its
+  first packet across a start delay. On 256 healthy generated MP4, M4A and
+  MOV files the largest packet was 1.0 times the median. Other containers
+  are not checked this way, so a stretched packet there goes unnoticed.
+* AAC 5.1 in FLV gives an untimed configuration packet; every audio fact is
+  then unknown with ``inconsistent`` (A11).
 * Stereo PCM in Matroska can come back with the duration unknown and
   ``inconsistent``: ffprobe gives the last packet no duration.
 * ADTS at 8 kHz is ``estimated`` up to about 170 ms long.
@@ -286,6 +306,8 @@ def _probe(
     if header is None:
         return MediaMetadata(audio_flags=flags)
     outcome, reason = _walk(binary=binary, source=source, header=header, benign=benign)
+    if outcome.facts_unknown:
+        return MediaMetadata(audio_flags=outcome.flags)
     estimated = AudioFlag.ESTIMATED in outcome.flags
     bitrate_known = outcome.duration is not None and not estimated
     return MediaMetadata(

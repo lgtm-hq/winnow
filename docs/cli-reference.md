@@ -178,14 +178,19 @@ streams. Flags explain gaps:
 - `corrupt`: `ffprobe` exited non-zero, wrote invalid JSON, or flagged a packet.
 - `unrecognized_output`: `ffprobe` wrote a warning that is not known to be harmless for
   this file. It is not proof of damage, but every value it could affect is unknown.
-- `inconsistent`: packet times contradict each other or the declared duration, or the
-  file changed (device, inode, size, or modification time) while it was read.
+- `inconsistent`: packet times contradict each other or the declared duration, an MP4
+  packet is longer than twice the median packet, an FLV packet has no time, or the file
+  changed (device, inode, size, or modification time) while it was read.
 - `estimated`: nothing declares the duration, so it was measured from the packets.
 - `timeout`: an `ffprobe` call ran too long or wrote too much and was stopped.
 - `backend_unavailable`: `ffprobe` is missing or could not start.
 
 `truncated` is `true`, `false`, or not checked. It is `false` only after a packet walk
 found the audio present matches the declared duration; it says nothing more.
+
+`truncated=true` and `corrupt` claim damage. `inconsistent`, `estimated`, and
+`unrecognized_output` do not: they say the evidence does not establish a value, and a
+healthy file may carry them.
 
 Each `ffprobe` call runs in its own process group with a time limit and bounded output;
 on a breach the whole group is stopped. On Linux its address space is capped at 1 GiB.
@@ -208,9 +213,18 @@ Known limits:
   duration, or the format-level duration of any file, is checked only when the audio is
   the file's only non-picture stream and the file starts at zero; otherwise the duration
   is `estimated`.
-- AVI and ASF (WMA, WMV) audio is `estimated` when the file has any other non-picture
-  stream, such as video: there the audio's duration field includes a start delay (AVI)
-  or the whole file's play length (ASF).
+- Audio whose first packet comes more than two time-base units after zero is `estimated`
+  in every container: its duration field can be the end of the file's timeline. Cuts in
+  such files are not detected.
+- AVI audio is always `estimated`: its duration field includes a start delay while the
+  packets start at zero. ASF (WMA, WMV) audio is `estimated` when the file has any other
+  non-picture stream, such as video: there the field is the whole file's play length.
+- MP4, M4A, and MOV audio with a packet longer than twice the median packet reports no
+  duration and `inconsistent`; fragmented MP4 stretches its first packet across a start
+  delay. On 256 healthy generated MP4, M4A, and MOV files the largest packet was 1.0
+  times the median. Other containers are not checked this way.
+- AAC 5.1 in FLV reports every audio fact unknown and `inconsistent`: `ffprobe` gives a
+  configuration packet no time and can report a wrong sample rate.
 - Stereo PCM in Matroska can report no duration and `inconsistent`, because `ffprobe`
   gives its last packet no duration.
 - ADTS at 8 kHz is `estimated` up to about 170 ms long.

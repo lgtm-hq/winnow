@@ -29,11 +29,19 @@ class AudioFlag(StrEnum):
     """Why an audio fact is missing or how far it can be trusted.
 
     ``truncated`` is not a flag: it has three states and lives in
-    :attr:`MediaMetadata.truncated`.
+    :attr:`MediaMetadata.truncated`. ``truncated=True`` and ``CORRUPT``
+    claim damage; ``INCONSISTENT``, ``ESTIMATED`` and ``UNRECOGNIZED_OUTPUT``
+    only say the evidence does not establish a value, and a healthy file may
+    carry them.
     """
 
     INCONSISTENT = auto()
-    """Packet times contradict each other or the declared duration."""
+    """The evidence contradicts itself, so the value is not established.
+
+    Packet times contradict each other or the declared duration, an MP4
+    packet spans a gap, an FLV packet has no time, or the file changed
+    while it was read.
+    """
 
     CORRUPT = auto()
     """ffprobe exited non-zero, wrote invalid JSON, or flagged a packet."""

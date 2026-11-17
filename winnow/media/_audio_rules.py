@@ -3,7 +3,8 @@
 Everything here works on ffprobe output that has already been captured:
 stderr filtering against the benign list (R2 with amendments A1 to A3),
 strict JSON parsing (R1), stream selection and facts (R2 to R4), the declared
-duration (R5 with A4 and A5), and the packet-walk decision (R6 with A5).
+duration (R5 with A5, A8, A9 and A9b), and the packet-walk decision (R6
+with A5, A10b and A11).
 Nothing here starts a process or touches a file; :mod:`winnow.media.audio`
 runs ffprobe and feeds these functions.
 """
@@ -45,18 +46,21 @@ ACCEPTED_FORMAT_NAMES: Final[frozenset[str]] = frozenset(
 
 
 NO_DECLARED_DURATION_FORMATS: Final[frozenset[str]] = frozenset(
-    {"ogg", "mpegts", "mpeg", "flv", "aac", "ac3", "eac3"},
+    {"ogg", "mpegts", "mpeg", "flv", "aac", "ac3", "eac3", "avi"},
 )
-"""Containers whose duration is never taken as declared (R5)."""
+"""Containers whose duration is never taken as declared (R5, A9b).
+
+AVI is here because its audio duration field includes a start delay while
+the packet times start at zero, with or without other streams (A9b).
+"""
 
 
-AUDIO_ONLY_DECLARED_FORMATS: Final[frozenset[str]] = frozenset({"avi", "asf"})
+AUDIO_ONLY_DECLARED_FORMATS: Final[frozenset[str]] = frozenset({"asf"})
 """Containers whose audio duration is declared only without other streams (A8).
 
-In AVI the audio stream's duration includes a start delay the packet times
-leave out; in ASF it is the whole file's play length, set by the video's end.
-Any non-picture stream besides the primary audio stream makes the duration
-undeclared.
+In ASF the audio stream's duration is the whole file's play length, set by
+the video's end. Any non-picture stream besides the primary audio stream
+makes the duration undeclared. AVI declares nothing at all (A9b).
 """
 
 
@@ -174,6 +178,30 @@ SHORTFALL_TIME_BASE_UNITS: Final[Decimal] = Decimal(2)
 """Time-base units of the primary stream a shortfall must exceed (A5)."""
 
 
+START_TIME_BASE_UNITS: Final[Decimal] = Decimal(2)
+"""Time-base units after zero a stream may start and still declare (A9)."""
+
+
+GAP_PACKET_MEDIAN_RATIO: Final[Decimal] = Decimal(2)
+"""A packet longer than this many median packets is stretched (A10b)."""
+
+
+GAP_PACKET_FORMATS: Final[frozenset[str]] = frozenset({MP4_FORMAT_NAME})
+"""Containers where a stretched packet makes the duration unknown (A10b).
+
+Packet durations in MP4 audio are uniform apart from a shorter last packet.
+Other containers carry codecs such as Vorbis that vary packet size by design.
+"""
+
+
+UNTIMED_PACKET_FORMATS: Final[frozenset[str]] = frozenset({"flv"})
+"""Containers where an untimed packet makes every audio fact unknown (A11).
+
+AAC 5.1 in FLV gives an untimed configuration packet, and for some source
+rates ffprobe then reports a sample rate the file does not have.
+"""
+
+
 class _DuplicateKeyError(ValueError):
     """Raised when ffprobe JSON repeats a key inside one object."""
 
@@ -251,6 +279,7 @@ class PacketWalk:
     backwards: bool = False
     corrupt_packet: bool = False
     too_varied: bool = False
+    longest_duration: Decimal | None = None
     durations: Counter[Decimal] = field(default_factory=Counter)
 
     def feed(self, raw: bytes) -> None:
@@ -284,6 +313,8 @@ class PacketWalk:
             self.first_time = time
         self.last_time = time
         self.last_duration = duration
+        if self.longest_duration is None or duration > self.longest_duration:
+            self.longest_duration = duration
         if (
             duration not in self.durations
             and len(self.durations) >= MAX_DISTINCT_PACKET_DURATIONS
@@ -333,11 +364,14 @@ class DurationOutcome:
         duration: Reported duration in seconds, or ``None`` when unknown.
         truncated: ``True``/``False`` when checked, ``None`` when not.
         flags: Flags raised.
+        facts_unknown: ``True`` when the walk makes every audio fact from
+            the header unknown too, not only the duration (A11).
     """
 
     duration: Decimal | None
     truncated: bool | None
     flags: tuple[AudioFlag, ...] = ()
+    facts_unknown: bool = False
 
 
 def stderr_lines(raw: bytes) -> list[str]:
@@ -655,12 +689,20 @@ def declared_duration(
 ) -> Decimal | None:
     """Return the declared duration R5 allows, if any.
 
+    Nothing is declared unless the primary stream's first packet time is at
+    most two time-base units after zero; negative first times from priming
+    or edit lists are allowed (A9). In AVI, ASF and Matroska a stream's
+    duration field can be the end time of the file's timeline rather than
+    the audio's length, so a stream that starts late declares nothing. AVI
+    never declares a duration (A9b).
+
     The stream's own ``duration`` is declared. Otherwise ``format.duration``
-    is declared only for a file with one non-picture stream that starts at
-    zero (A4). A Matroska ``DURATION`` tag is never used (A5): for audio that
-    starts late, the tag minus the lead overshoots the real end by the
-    codec's priming. In AVI and ASF nothing is declared when the file has
-    any non-picture stream besides the primary audio stream (A8).
+    is declared only for a file with one non-picture stream whose
+    ``format.start_time`` is within the same bound (A9). A Matroska
+    ``DURATION`` tag is never used (A5): for audio that starts late, the tag
+    minus the lead overshoots the real end by the codec's priming. In ASF
+    nothing is declared when the file has any non-picture stream besides the
+    primary audio stream (A8).
 
     Args:
         header: Accepted header facts.
@@ -677,33 +719,36 @@ def declared_duration(
         and header.non_picture_stream_count > 1
     ):
         return None
+    if not _starts_at_zero(header, walk.first_time):
+        return None
     if header.stream_duration is not None:
         return header.stream_duration
-    if header.non_picture_stream_count == 1 and _starts_at_zero(header, walk):
+    if header.non_picture_stream_count == 1 and _starts_at_zero(
+        header,
+        header.format_start,
+    ):
         return header.format_duration
     return None
 
 
-def _starts_at_zero(header: ProbeHeader, walk: PacketWalk) -> bool:
-    """Report whether ``format.start_time`` is zero within the tolerance (A4).
+def _starts_at_zero(header: ProbeHeader, start: Decimal | None) -> bool:
+    """Report whether a start time is at most two time-base units after zero (A9).
 
-    ``format.duration`` is an end time, so it is a duration only when the
-    file starts at zero. The start may differ from zero by no more than
-    :func:`shortfall_tolerance`: a larger offset would make the end time
-    exceed the audio's length by more than R6 step 6 allows, and an intact
-    file would look cut short.
+    A negative start, from priming or an edit list, counts as starting at
+    zero. Without a usable time base the bound cannot be set, so no start
+    counts.
 
     Args:
         header: Accepted header facts.
-        walk: Completed packet walk of the primary stream.
+        start: The first packet time or ``format.start_time``.
 
     Returns:
-        ``True`` when the walk has packets and the start time is known and
-        within the shortfall tolerance of zero.
+        ``True`` when the start time and the primary stream's time base are
+        known and the start is at most two time-base units.
     """
-    if header.format_start is None or walk.median_duration() is None:
+    if start is None or header.time_base is None:
         return False
-    return abs(header.format_start) <= shortfall_tolerance(header)
+    return start <= START_TIME_BASE_UNITS * header.time_base
 
 
 def decide_duration(
@@ -730,7 +775,7 @@ def decide_duration(
         run,
         lines=lines,
         benign=benign,
-        context=header.stderr_context,
+        header=header,
     )
     if damage is not None:
         return damage
@@ -774,35 +819,71 @@ def _walk_damage(
     *,
     lines: list[str],
     benign: frozenset[str],
-    context: StderrContext,
+    header: ProbeHeader,
 ) -> DurationOutcome | None:
-    """Apply R6 steps 1 to 4.
+    """Apply R6 steps 1 to 4 and the gap-packet step after step 3.
 
     Step 1 is split by A1: a non-zero exit is ``corrupt``, a stderr line off
     the benign list is ``unrecognized_output``. A walk with more distinct
-    packet durations than it keeps counts as inconsistent (step 3).
+    packet durations than it keeps counts as inconsistent (step 3). In FLV a
+    packet without a time makes every audio fact unknown (A11). In MP4 a
+    packet longer than two median packets is stretched across a gap, so the
+    measured span is not evidence of the audio's length (A10b).
 
     Args:
         walk: The walk's packet summary.
         run: The walk call.
         lines: The walk's stderr lines after :func:`stderr_lines`.
         benign: Benign stderr lines for the installed FFmpeg major.
-        context: Conditions for the conditional pins, from the header JSON.
+        header: Accepted header facts, for the conditional pins and the
+            container.
 
     Returns:
         The outcome of the first matching step, or ``None`` when none matches.
     """
     if run.returncode != 0:
         return DurationOutcome(None, None, (AudioFlag.CORRUPT,))
-    if has_unrecognized_line(lines, benign=benign, context=context):
+    if has_unrecognized_line(lines, benign=benign, context=header.stderr_context):
         return DurationOutcome(None, None, (AudioFlag.UNRECOGNIZED_OUTPUT,))
     if walk.packets == 0:
         return DurationOutcome(None, True)
-    if walk.missing_time or walk.backwards or walk.too_varied:
-        return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
+    if (
+        walk.missing_time
+        or walk.backwards
+        or walk.too_varied
+        or (header.container in GAP_PACKET_FORMATS and spans_gap(walk))
+    ):
+        return DurationOutcome(
+            None,
+            None,
+            (AudioFlag.INCONSISTENT,),
+            facts_unknown=walk.missing_time
+            and header.container in UNTIMED_PACKET_FORMATS,
+        )
     if walk.corrupt_packet:
         return DurationOutcome(None, None, (AudioFlag.CORRUPT,))
     return None
+
+
+def spans_gap(walk: PacketWalk) -> bool:
+    """Report whether a packet is long enough to span a gap (A10b).
+
+    A muxer can stretch a packet across a start delay (delayed fragmented
+    MP4 does this with its first AAC packet), so the measured span then
+    includes the delay. The caller limits this to :data:`GAP_PACKET_FORMATS`.
+
+    Args:
+        walk: The walk's packet summary.
+
+    Returns:
+        ``True`` when the longest packet exceeds
+        :data:`GAP_PACKET_MEDIAN_RATIO` median packet durations.
+    """
+    longest = walk.longest_duration
+    median = walk.median_duration()
+    if longest is None or median is None:
+        return False
+    return longest > GAP_PACKET_MEDIAN_RATIO * median
 
 
 def parse_positive_int(value: object) -> int | None:
@@ -962,6 +1043,8 @@ __all__ = [
     "DATA_TRACK_WARNING",
     "DurationOutcome",
     "ESTIMATE_STDERR_LINES",
+    "GAP_PACKET_FORMATS",
+    "GAP_PACKET_MEDIAN_RATIO",
     "MAX_DISTINCT_PACKET_DURATIONS",
     "MP4_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
@@ -969,7 +1052,9 @@ __all__ = [
     "ProbeHeader",
     "SHORTFALL_FLOOR_SECONDS",
     "SHORTFALL_TIME_BASE_UNITS",
+    "START_TIME_BASE_UNITS",
     "StderrContext",
+    "UNTIMED_PACKET_FORMATS",
     "bit_depth_for",
     "decide_duration",
     "declared_duration",
@@ -983,6 +1068,7 @@ __all__ = [
     "parse_time_base",
     "primary_audio_stream",
     "shortfall_tolerance",
+    "spans_gap",
     "stderr_context",
     "stderr_lines",
 ]

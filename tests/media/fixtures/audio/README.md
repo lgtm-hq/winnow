@@ -9,10 +9,10 @@ uv run python tests/media/fixtures/audio/record_ffprobe_outputs.py
 ```
 
 The true values below come from the generation parameters in that script (`FIXTURES`,
-`FRAME_SOURCES`, `FRAME_CUTS`), never from a reader. The tests read them from the same
-table and compare what the reader reports with them: a duration within 0.07 s (encoder
-delay and padding; the largest is `mp3.flv`, about 63 ms), a bitrate within 5 % of the
-nominal one where the parameters fix it.
+`INCONSISTENT_FIXTURES`, `FRAME_SOURCES`, `FRAME_CUTS`), never from a reader. The tests
+read them from the same table and compare what the reader reports with them: a duration
+within 0.07 s (encoder delay and padding; the largest is `mp3.flv`, about 63 ms), a
+bitrate within 5 % of the nominal one where the parameters fix it.
 
 The script runs `ffmpeg` and `ffprobe` through winnow's own runner. With the same FFmpeg
 build (9.0.2 here) it reproduces every committed file byte for byte; `mp2.m2ts` pins
@@ -60,7 +60,7 @@ packets, truncation not checked).
 | `two_tracks.mka`     | `matroska,webm`           | `flac`         | 16000 | 2   | 16   | 2.0      | estimated |
 | `cover.mp3`          | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
 | `delayed.mkv`        | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 1.0      | estimated |
-| `delayed.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 1.0      | declared  |
+| `delayed.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 1.0      | estimated |
 | `delayed.avi`        | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
 | `video.wmv`          | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
 | `vbr_noxing.mp3`     | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | estimated |
@@ -68,6 +68,10 @@ packets, truncation not checked).
 | `timecode.mov`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
 | `offset.mka`         | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 2.0      | estimated |
 | `offset_delayed.mkv` | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 1.0      | estimated |
+| `delayed_audio.avi`  | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
+| `delayed_audio.wma`  | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
+| `delayed_pcm.mkv`    | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `late_pcm.mka`       | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
 | `frames.mp3`         | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | declared  |
 | `frames.m4a`         | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
 
@@ -80,13 +84,36 @@ Notes:
 - `cover.mp3` carries an 8x8 PNG as an attached picture; it is not a stream to read and
   does not count as a second stream.
 - `delayed.mkv` and `delayed.mp4` hold a 2 s video track and 1 s of audio that starts at
-  1 s. The MP4 audio declares its own duration and is checked; the Matroska audio has
-  only a `DURATION` tag, which is never used (amendment A5), so it is measured.
+  1 s. Audio that starts late declares nothing (amendment A9), so both are measured; the
+  Matroska audio's `DURATION` tag is never used either (amendment A5).
 - `delayed.avi` holds a 2 s MPEG-4 video and 1 s of MP3 audio from 1 s. `video.wmv`
   holds a 2 s WMV2 video and 1 s of WMA audio. In both the audio stream's duration field
   is not about the audio alone (it includes the delay, or is the whole file's length),
   so with another stream present nothing is declared and the audio is measured
   (amendment A8). Without that rule both were reported `truncated`.
+- `delayed_audio.avi` (MP3) and `delayed_audio.wma` (WMA) are audio-only and start 1 s
+  late. The AVI packets start at 0 and the delay is only in the duration field, so AVI
+  never declares a duration (amendment A9b); the ASF packets start at 1 s (amendment
+  A9).
+- `delayed_pcm.mkv` holds a 2 s video and 1 s of PCM audio from 1 s; `late_pcm.mka` is
+  PCM audio alone starting 5 ms late. Their stream duration is the end of the file's
+  timeline, so the duration is measured (amendment A9).
+
+## Fixtures without an established duration
+
+`INCONSISTENT_FIXTURES` are healthy files the reader must never call `truncated`; their
+evidence does not establish the duration, so it is unknown with `inconsistent`.
+
+| File               | `format_name`             | Codec | Rate  | Ch  | Duration | Reported                     |
+| ------------------ | ------------------------- | ----- | ----- | --- | -------- | ---------------------------- |
+| `delayed_frag.mp4` | `mov,mp4,m4a,3gp,3g2,mj2` | `aac` | 48000 | 1   | 1.0      | facts kept, duration unknown |
+| `aac51.flv`        | `flv`                     | `aac` | 44100 | 6   | 1.0      | every audio fact unknown     |
+
+- `delayed_frag.mp4` is fragmented MP4 (`+frag_keyframe+empty_moov`) with a 2 s video
+  and 1 s of AAC from 0.1 s. The muxer stretches the first audio packet over the delay,
+  so a packet is longer than twice the median (amendment A10b).
+- `aac51.flv` is 1 s of AAC 5.1 in FLV. Its configuration packet has no time (amendment
+  A11).
 - `mp2_named.mp3` is MPEG-1 Layer II audio in a raw MPEG audio file.
 - `vbr_noxing.mp3` is a VBR MP3 written without a Xing header.
 - `chained.ogg` is two 1 s Ogg Opus links (serial numbers 100 and 200) joined back to
