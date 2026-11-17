@@ -195,17 +195,25 @@ Known limits:
 - Damage inside an intact packet is not detected; that needs a full decode.
 - A damaged header byte can change a declared value (channels, sample rate, codec
   variant, duration) and leave no evidence.
-- A loss shorter than one packet leaves no evidence. Encoder padding hides more: with
-  FFmpeg 9.0.2, MP3 and AAC (M4A) files with their last one or two frames removed still
-  report `truncated=false` with the full duration; three frames are caught, except at
-  very low MP3 bitrates.
+- Audio that ends no more than max(5 ms, two time-base units of the stream) before the
+  declared duration counts as complete. Encoder padding hides more. Measured with FFmpeg
+  9.0.2 on 99 MP3 files (9 sample rates, 11 CBR and VBR settings) and 36 AAC (M4A)
+  files: one removed frame is never detected; with two removed, 52 MP3 and 14 M4A still
+  report `truncated=false` with the full duration; with three, 5 MP3 and no M4A.
 - An MP3 is `estimated` only when `ffprobe` says it estimated the duration (no Xing/Info
   or VBRI header). With such a header the duration is declared and checked.
 - A cut exactly on a page or frame boundary of Ogg, MPEG-TS, ADTS, or AC-3 leaves no
   evidence. Those formats are always `estimated`, never `truncated=false`.
-- A Matroska file, or the format-level duration of any file, is checked against a
-  declared duration only when the file starts at zero; otherwise the duration is
-  `estimated`.
+- A Matroska `DURATION` tag is never used. Matroska audio without its own stream
+  duration, or the format-level duration of any file, is checked only when the audio is
+  the file's only non-picture stream and the file starts at zero; otherwise the duration
+  is `estimated`.
+- AVI and ASF (WMA, WMV) audio is `estimated` when the file has any other non-picture
+  stream, such as video: there the audio's duration field includes a start delay (AVI)
+  or the whole file's play length (ASF).
+- Stereo PCM in Matroska can report no duration and `inconsistent`, because `ffprobe`
+  gives its last packet no duration.
+- ADTS at 8 kHz is `estimated` up to about 170 ms long.
 - Chained Ogg reports no duration and `inconsistent`.
 - A WAV written to a pipe is flagged; an MS ADPCM WAV whose `fact` chunk ffprobe ignores
   is `estimated`.
