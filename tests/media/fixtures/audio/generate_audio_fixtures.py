@@ -47,6 +47,7 @@ class AudioFixture:
     filename: str
     source: str
     codec_args: tuple[str, ...]
+    extra_sources: tuple[str, ...] = ()
 
 
 FIXTURES: tuple[AudioFixture, ...] = (
@@ -65,6 +66,23 @@ FIXTURES: tuple[AudioFixture, ...] = (
     AudioFixture("tone.ac3", _MONO_8K, ("-c:a", "ac3", "-ar", "32000", "-b:a", "64k")),
     AudioFixture("tone.tta", _MONO_8K, ("-c:a", "tta")),
     AudioFixture("tone.wv", _MONO_8K, ("-c:a", "wavpack")),
+    AudioFixture(
+        "two_tracks.m4a",
+        _STEREO_44K,
+        (
+            "-map",
+            "0:a",
+            "-map",
+            "1:a",
+            "-c:a:0",
+            "aac",
+            "-b:a:0",
+            "64k",
+            "-c:a:1",
+            "alac",
+        ),
+        extra_sources=(_MONO_8K,),
+    ),
 )
 
 
@@ -92,6 +110,11 @@ def write_fixture(fixture: AudioFixture, directory: Path, ffmpeg: str) -> Path:
         "lavfi",
         "-i",
         fixture.source,
+        *(
+            argument
+            for source in fixture.extra_sources
+            for argument in ("-f", "lavfi", "-i", source)
+        ),
         "-t",
         "0.3",
         *_TAGS,

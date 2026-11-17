@@ -10,6 +10,11 @@ trusted.
 
 Which source is trusted for which field:
 
+- tinytag is used only when the container was established from the content.
+  It is given the stream from the offset where the sniffer found it, and the
+  parser tinytag then used must be the one for that container (its MIME type
+  says which). If they disagree, or an MP4 file holds more than one audio
+  track (tinytag mixes fields from several), none of tinytag's values is used.
 - ``sample_rate``, ``channels`` and ``bit_depth``: tinytag, from the stream
   header it parsed; ffprobe only fills them when tinytag has none.
 - ``codec``: tinytag when its MIME type names the codec; otherwise ffprobe;
@@ -19,24 +24,38 @@ Which source is trusted for which field:
   zero). A container whose codec tinytag cannot name (a compressed WAV or
   AIFF-C, for example) or a zero duration (FLAC in Ogg) means tinytag's
   timing is not known to be right, so both come from ffprobe; without
-  ffprobe they are unknown (``None``), never tinytag's guess.
+  ffprobe they are unknown (``None``), never tinytag's guess. One exception:
+  an MS or IMA ADPCM WAV whose ``fact`` chunk states a sample count that fits
+  in its data blocks takes its duration from that count.
+- ffprobe: only its first audio stream is read, and only numeric values
+  above zero count. A stream without both a sample rate and a channel count
+  above zero is no reading. A duration ffprobe says it estimated from the
+  bitrate is unknown, never a fact.
 - A file whose container cannot be established from its content is read by
-  ffprobe alone; without ffprobe, :class:`MediaError` says so.
+  ffprobe alone; without a usable ffprobe reading, :class:`MediaError`.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, BinaryIO, Final
 
 from loguru import logger
 from tinytag import TinyTag, TinyTagException
 
 from winnow.exceptions import MediaError
 from winnow.media._audio_sniff import (
+    AudioContainer,
+    SniffedAudio,
+    mp4_audio_track_count,
+    sniff_audio,
     sniff_audio_container,
+    wave_fact_duration,
     wave_subformat,
 )
 from winnow.media._coerce import (
@@ -46,8 +65,13 @@ from winnow.media._coerce import (
 from winnow.media.video import _run
 from winnow.models.media import MediaMetadata
 
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
+
 _FFPROBE: Final = "ffprobe"
 _PROBE_TIMEOUT_SECONDS: Final = 30.0
+_FFPROBE_BITRATE_ESTIMATE: Final = "Estimating duration from bitrate"
+"""libavformat's warning when it derived a duration from size and bitrate."""
 
 _MIME_CODECS: Final[dict[str, str]] = {
     "audio/mpeg": "mp3",
@@ -107,6 +131,17 @@ _FFPROBE_CODEC_LABELS: Final[dict[str, str]] = {
 }
 """ffprobe codec names that are not plain PCM despite their ``pcm_`` prefix."""
 
+_CONTAINER_MEDIA_TYPES: Final[dict[AudioContainer, str]] = {
+    AudioContainer.MPEG: "audio/mpeg",
+    AudioContainer.FLAC: "audio/flac",
+    AudioContainer.MP4: "audio/mp4",
+    AudioContainer.OGG: "audio/ogg",
+    AudioContainer.WAVE: "audio/wav",
+    AudioContainer.ASF: "application/vnd.ms-asf",
+    AudioContainer.AIFF: "audio/aiff",
+}
+"""The MIME type tinytag's parser for each container sets."""
+
 _TAG_KEY_ALIASES: Final[dict[str, str]] = {
     "date": "year",
     "tracknumber": "track",
@@ -165,7 +200,11 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
     if metadata is not None and _is_complete(metadata):
         return metadata
 
-    combined = _combine(metadata, _metadata_from_ffprobe(path=path))
+    combined = _combine(
+        metadata,
+        _metadata_from_ffprobe(path=path),
+        established_duration=_established_duration(path, metadata),
+    )
     if combined is not None:
         return combined
 
@@ -197,44 +236,212 @@ def read_audio_tags(path: Path) -> dict[str, str]:
     return _tags_from_tinytag(path=path)
 
 
-def _read_tinytag(path: Path) -> TinyTag | None:
-    """Parse a file with tinytag, choosing the parser from the content.
+class _StreamView(io.RawIOBase):
+    """A read-only view of an open file that starts at a given offset.
 
-    tinytag is given an open file object and no file name, so it sniffs the
-    content instead of trusting the extension; and it is only called for a
-    container :func:`sniff_audio_container` established.
+    tinytag seeks to 0 and sniffs from there, so the stream the content
+    sniffer found past an ID3v2 tag or zero padding is handed to it as a file
+    of its own.
+
+    Args:
+        handle: The open file.
+        offset: Byte offset in ``handle`` that becomes position 0.
+    """
+
+    def __init__(self, handle: BinaryIO, offset: int) -> None:
+        super().__init__()
+        self._handle = handle
+        self._offset = offset
+        self._size = max(handle.seek(0, io.SEEK_END) - offset, 0)
+        self._position = 0
+
+    def readable(self) -> bool:
+        """Return ``True``: the view is readable."""
+        return True
+
+    def seekable(self) -> bool:
+        """Return ``True``: the view is seekable."""
+        return True
+
+    def tell(self) -> int:
+        """Return the position within the view."""
+        return self._position
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        """Move within the view, relative to its start, position or end.
+
+        Args:
+            offset: Distance to move.
+            whence: ``SEEK_SET``, ``SEEK_CUR`` or ``SEEK_END``.
+
+        Returns:
+            The new position.
+
+        Raises:
+            OSError: If the position would be negative.
+        """
+        origin = {io.SEEK_CUR: self._position, io.SEEK_END: self._size}
+        position = origin.get(whence, 0) + offset
+        if position < 0:
+            raise OSError("negative seek position")
+        self._position = position
+        return position
+
+    def readinto(self, buffer: Buffer, /) -> int:
+        """Read into ``buffer`` from the current position.
+
+        Args:
+            buffer: Writable buffer to fill.
+
+        Returns:
+            The number of bytes read; 0 at the end of the view.
+        """
+        target = memoryview(buffer).cast("B")
+        self._handle.seek(self._offset + self._position)
+        data = self._handle.read(min(len(target), max(self._size - self._position, 0)))
+        target[: len(data)] = data
+        self._position += len(data)
+        return len(data)
+
+
+@contextmanager
+def _open_stream(path: Path, offset: int) -> Iterator[BinaryIO]:
+    """Open ``path`` as a file that starts at ``offset``.
+
+    Args:
+        path: The audio file.
+        offset: Byte offset that becomes position 0.
+
+    Yields:
+        A binary file object.
+    """
+    with path.open("rb") as handle:
+        if offset == 0:
+            yield handle
+            return
+        with io.BufferedReader(_StreamView(handle, offset)) as view:
+            yield view
+
+
+def _read_tinytag(path: Path) -> TinyTag | None:
+    """Parse a file with tinytag for its tags.
+
+    An MPEG file is read from byte 0, where its ID3v2 tag is; any other
+    container from where the sniffer found it (see :func:`_parse_with_tinytag`).
+    A result whose parser is known to be the wrong one is dropped.
 
     Args:
         path: Filesystem path to the audio file.
 
     Returns:
-        The parsed tag, or ``None`` when the container is not one tinytag
-        parses or parsing fails.
+        The parsed tag, or ``None`` when no container was established, parsing
+        fails, or tinytag parsed the file as a different container.
     """
-    if sniff_audio_container(path) is None:
+    sniffed = sniff_audio(path)
+    if sniffed is None:
         logger.debug("no tinytag container recognised in the content of {}", path)
         return None
+    from_start = sniffed.container is AudioContainer.MPEG and sniffed.id3_tag
+    tag = _parse_with_tinytag(path, 0 if from_start else sniffed.offset)
+    mime_type = getattr(tag, "mime_type", None)
+    if tag is None or (mime_type and not _parser_matches(mime_type, sniffed)):
+        return None
+    return tag
+
+
+def _read_tinytag_stream(path: Path, sniffed: SniffedAudio | None) -> TinyTag | None:
+    """Parse a file's audio stream with tinytag's parser for the sniffed container.
+
+    The file is handed to tinytag from the offset where the sniffer found the
+    stream, so tinytag's own magic-byte choice lands on the parser for that
+    container. Afterwards the parser tinytag used, which its MIME type names,
+    must be the one for the sniffed container: if it is not, or cannot be
+    told, tinytag's reading is not used.
+
+    Args:
+        path: Filesystem path to the audio file.
+        sniffed: What :func:`sniff_audio` established for it.
+
+    Returns:
+        The parsed tag, or ``None`` when no container was established, parsing
+        fails, or tinytag did not parse it as that container.
+    """
+    if sniffed is None:
+        logger.debug("no tinytag container recognised in the content of {}", path)
+        return None
+    tag = _parse_with_tinytag(path, sniffed.offset)
+    if tag is None:
+        return None
+    if not _parser_matches(tag.mime_type, sniffed):
+        logger.debug(
+            "tinytag read {} as {!r}, but its content is {}; not using it",
+            path,
+            tag.mime_type,
+            sniffed.container,
+        )
+        return None
+    return tag
+
+
+def _parse_with_tinytag(path: Path, offset: int) -> TinyTag | None:
+    """Run tinytag on ``path`` as if the file started at ``offset``.
+
+    tinytag is given an open file object and no file name, so its
+    extension-based parser choice never applies.
+
+    Args:
+        path: Filesystem path to the audio file.
+        offset: Where the part tinytag reads starts.
+
+    Returns:
+        The parsed tag, or ``None`` when parsing fails.
+    """
     try:
-        with path.open("rb") as handle:
+        with _open_stream(path, offset) as handle:
             return TinyTag.get(file_obj=handle)
     except (TinyTagException, OSError, ValueError) as exc:
         logger.debug("tinytag could not read {}: {}", path, exc)
         return None
 
 
+def _parser_matches(mime_type: str | None, sniffed: SniffedAudio) -> bool:
+    """Return whether tinytag parsed a file as the container sniffed.
+
+    Args:
+        mime_type: tinytag's MIME type for the file.
+        sniffed: The container established from the content.
+
+    Returns:
+        ``True`` when the MIME type is the one tinytag's parser for that
+        container sets.
+    """
+    if not mime_type:
+        return False
+    media_type, _codecs = _parse_mime_type(mime_type)
+    return media_type == _CONTAINER_MEDIA_TYPES[sniffed.container]
+
+
 def _metadata_from_tinytag(*, path: Path) -> MediaMetadata | None:
     """Build metadata from tinytag.
 
-    A bitrate of zero is not a bitrate and is left unknown.
+    A bitrate of zero is not a bitrate and is left unknown. An MP4 file that
+    does not hold exactly one audio track is not read: tinytag takes some
+    fields from one track and some from another.
 
     Args:
         path: Filesystem path to the audio file.
 
     Returns:
-        Populated metadata, or ``None`` when tinytag cannot read the file or
-        finds no audio stream in it.
+        Populated metadata, or ``None`` when tinytag cannot read the file,
+        finds no audio stream in it, or cannot read it as a single stream.
     """
-    tag = _read_tinytag(path)
+    sniffed = sniff_audio(path)
+    if sniffed is not None and sniffed.container is AudioContainer.MP4:
+        tracks = mp4_audio_track_count(path)
+        if tracks != 1:
+            logger.debug("{} has {} audio tracks; not using tinytag", path, tracks)
+            return None
+    tag = _read_tinytag_stream(path, sniffed)
     if tag is None:
         return None
 
@@ -407,15 +614,43 @@ def _is_complete(metadata: MediaMetadata) -> bool:
     )
 
 
+def _established_duration(
+    path: Path,
+    metadata: MediaMetadata | None,
+) -> float | None:
+    """Return a duration the file's header establishes where tinytag's is not trusted.
+
+    Only a WAV whose codec tinytag could not name qualifies: its ``fact``
+    chunk, as checked by :func:`wave_fact_duration`.
+
+    Args:
+        path: The audio file.
+        metadata: Metadata read by tinytag, if any.
+
+    Returns:
+        The duration in seconds, or ``None``.
+    """
+    if metadata is None or metadata.codec is not None:
+        return None
+    if sniff_audio_container(path) is not AudioContainer.WAVE:
+        return None
+    return wave_fact_duration(path)
+
+
 def _combine(
     metadata: MediaMetadata | None,
     probed: MediaMetadata | None,
+    *,
+    established_duration: float | None = None,
 ) -> MediaMetadata | None:
     """Merge tinytag's and ffprobe's readings by the trust rule.
 
     Args:
         metadata: Metadata read by tinytag, if any.
         probed: Metadata read by ffprobe, if any.
+        established_duration: A duration the file's own header establishes
+            where tinytag's timing is not trusted (see
+            :func:`_established_duration`); it wins over ffprobe's.
 
     Returns:
         The combined metadata, or ``None`` when neither backend read the file.
@@ -424,7 +659,7 @@ def _combine(
         return probed
     if not _timing_is_trusted(metadata):
         metadata = metadata.model_copy(
-            update={"duration_seconds": None, "bitrate": None},
+            update={"duration_seconds": established_duration, "bitrate": None},
         )
     if probed is None:
         return metadata
@@ -456,7 +691,7 @@ def _unreadable_reason(path: Path) -> str:
     """
     if shutil.which(_FFPROBE) is not None:
         return "unsupported or corrupt audio file"
-    if sniff_audio_container(path) is None:
+    if sniff_audio(path) is None:
         return (
             "the audio format cannot be established from the file's content "
             "without ffprobe, and ffprobe (FFmpeg) is not installed"
@@ -469,6 +704,10 @@ def _unreadable_reason(path: Path) -> str:
 
 def _metadata_from_ffprobe(*, path: Path) -> MediaMetadata | None:
     """Build metadata from the first audio stream ffprobe reports.
+
+    ffprobe runs at the ``warning`` level, so that its notice that it
+    estimated the duration from the bitrate is seen; such a duration is
+    reported as unknown.
 
     Args:
         path: Filesystem path to the audio file.
@@ -486,7 +725,7 @@ def _metadata_from_ffprobe(*, path: Path) -> MediaMetadata | None:
             argv=[
                 binary,
                 "-v",
-                "error",
+                "warning",
                 "-print_format",
                 "json",
                 "-show_format",
@@ -505,7 +744,11 @@ def _metadata_from_ffprobe(*, path: Path) -> MediaMetadata | None:
     if completed.returncode != 0:
         logger.debug("ffprobe could not read {}: {}", path, completed.stderr.strip())
         return None
-    return _parse_ffprobe_audio(completed.stdout)
+    probed = _parse_ffprobe_audio(completed.stdout)
+    if probed is not None and _FFPROBE_BITRATE_ESTIMATE in completed.stderr:
+        logger.debug("ffprobe estimated the duration of {} from its bitrate", path)
+        return probed.model_copy(update={"duration_seconds": None})
+    return probed
 
 
 def _parse_ffprobe_audio(payload: str) -> MediaMetadata | None:
@@ -513,14 +756,17 @@ def _parse_ffprobe_audio(payload: str) -> MediaMetadata | None:
 
     Only streams with ``codec_type`` ``audio`` are considered, so cover art
     stored as a video stream is ignored. Stream duration and bitrate fall back
-    to the container's when the stream does not carry them.
+    to the container's when the stream does not carry them. A numeric value
+    that is absent, zero or negative is unknown, and a stream without both a
+    sample rate and a channel count above zero is not a usable reading.
 
     Args:
         payload: Raw JSON emitted by ffprobe.
 
     Returns:
         Metadata for the first audio stream, or ``None`` when the payload is
-        not JSON or holds no audio stream.
+        not JSON, holds no audio stream, or the stream's parameters are
+        unusable.
     """
     try:
         data = json.loads(payload)
@@ -543,20 +789,48 @@ def _parse_ffprobe_audio(payload: str) -> MediaMetadata | None:
     if not isinstance(container, dict):
         container = {}
 
-    duration = coerce_non_negative_float(stream.get("duration"))
+    sample_rate = _positive_int(stream.get("sample_rate"))
+    channels = _positive_int(stream.get("channels"))
+    if sample_rate is None or channels is None:
+        return None
+    duration = _positive_float(stream.get("duration"))
     if duration is None:
-        duration = coerce_non_negative_float(container.get("duration"))
-    bitrate = coerce_non_negative_int(stream.get("bit_rate"), via_float=True)
+        duration = _positive_float(container.get("duration"))
+    bitrate = _positive_int(stream.get("bit_rate"))
     if bitrate is None:
-        bitrate = coerce_non_negative_int(container.get("bit_rate"), via_float=True)
+        bitrate = _positive_int(container.get("bit_rate"))
     return MediaMetadata(
         duration_seconds=duration,
         bitrate=bitrate,
-        sample_rate=coerce_non_negative_int(stream.get("sample_rate"), via_float=True),
-        channels=coerce_non_negative_int(stream.get("channels"), via_float=True),
+        sample_rate=sample_rate,
+        channels=channels,
         bit_depth=_ffprobe_bit_depth(stream),
         codec=_codec_from_ffprobe(stream.get("codec_name")),
     )
+
+
+def _positive_int(value: object) -> int | None:
+    """Return an ffprobe integer field when it is above zero, else ``None``.
+
+    Args:
+        value: The raw field.
+
+    Returns:
+        The integer, or ``None``.
+    """
+    return coerce_non_negative_int(value, via_float=True) or None
+
+
+def _positive_float(value: object) -> float | None:
+    """Return an ffprobe decimal field when it is above zero, else ``None``.
+
+    Args:
+        value: The raw field.
+
+    Returns:
+        The number, or ``None``.
+    """
+    return coerce_non_negative_float(value) or None
 
 
 def _ffprobe_bit_depth(stream: dict[str, object]) -> int | None:

@@ -10,6 +10,7 @@ import pytest
 from assertpy import assert_that
 from tinytag import TinyTag
 
+from tests.media.audio_samples import id3_tag, mpeg_frames
 from tests.media.test_audio import (
     _AUDIO_FIXTURES,
     _COMMITTED_EXPECTED,
@@ -147,10 +148,17 @@ def test_zero_duration_from_tinytag_is_unknown_without_ffprobe(
 @pytest.mark.skipif(not _HAS_FFPROBE, reason="ffprobe not installed")
 @pytest.mark.parametrize("filename", _FFPROBE_ONLY)
 def test_ffprobe_rows_have_a_positive_duration(filename: str) -> None:
-    """Every file that needs ffprobe gets a real, non-zero duration from it."""
+    """Every file that needs ffprobe gets a real, non-zero duration, or none.
+
+    Raw ADTS and AC-3 state no duration, and ffprobe only estimates one from
+    the bitrate; those are unknown (their rows record ``None``).
+    """
     metadata = extract_audio_metadata(_AUDIO_FIXTURES / filename)
 
-    assert_that(float(metadata.duration_seconds or 0.0)).is_greater_than(0.25)
+    if _COMMITTED_EXPECTED[filename].duration is None:
+        assert_that(metadata.duration_seconds).is_none()
+    else:
+        assert_that(float(metadata.duration_seconds or 0.0)).is_greater_than(0.25)
 
 
 # --- a path starting with "-" is never an ffprobe option ---------------------
@@ -333,6 +341,7 @@ def test_wave_subformat_rejects_other_files(tmp_path: Path) -> None:
         ("tone.wma", AudioContainer.ASF),
         ("tone.aiff", AudioContainer.AIFF),
         ("ima4.aifc", AudioContainer.AIFF),
+        ("two_tracks.m4a", AudioContainer.MP4),
         ("tone.aac", None),
         ("tone.ac3", None),
         ("tone.tta", None),
@@ -349,23 +358,13 @@ def test_sniff_committed_fixtures(
     )
 
 
-def _syncsafe(value: int) -> bytes:
-    return bytes(
-        [(value >> 21) & 0x7F, (value >> 14) & 0x7F, (value >> 7) & 0x7F, value & 0x7F],
-    )
-
-
 def _id3(body: bytes, *, footer: bool = False) -> bytes:
-    flags = 0x10 if footer else 0
-    header = b"ID3\x04\x00" + bytes([flags]) + _syncsafe(len(body))
-    return header + body + (b"3DI" + header[3:] if footer else b"")
+    return id3_tag(body, footer=footer)
 
 
 def _mpeg_frames() -> bytes:
     """Return the MPEG frames of the committed MP3 fixture (after its tag)."""
-    data = (_AUDIO_FIXTURES / "tone.mp3").read_bytes()
-    size = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]
-    return data[10 + size :]
+    return mpeg_frames(_AUDIO_FIXTURES / "tone.mp3")
 
 
 _MPEG_FRAMES = _mpeg_frames()
@@ -382,9 +381,9 @@ _FIRST_FRAME_LENGTH = sniff_module._mpeg_frame_length(_MPEG_FRAMES[:4]) or 0
         (b"ID3\x04\x00\x00\x80\x00\x00\x00" + b"\x00" * 40, None),
         (b"ID3\x04", None),
         (_mpeg_frames(), AudioContainer.MPEG),
-        (_MPEG_FRAMES[:_FIRST_FRAME_LENGTH], AudioContainer.MPEG),
+        (_MPEG_FRAMES[:_FIRST_FRAME_LENGTH], None),
         (b"\xff\xfb\x90\x64" + b"\x00" * 40, None),
-        (b"\xff\xfb\x00\x64" + b"\x00" * 40, AudioContainer.MPEG),
+        (b"\xff\xfb\x00\x64" + b"\x00" * 40, None),
         (b"\xff\xfb\xf0\x64" + b"\x00" * 40, None),
         (b"\xff\xfb\x9c\x64" + b"\x00" * 40, None),
         (b"\xff\xeb\x90\x64" + b"\x00" * 40, None),
@@ -442,3 +441,16 @@ def test_mpeg_frame_length(header: bytes, length: int) -> None:
 def test_sniff_unreadable_path(tmp_path: Path) -> None:
     """A path that cannot be opened is not a container."""
     assert_that(sniff_audio_container(tmp_path)).is_none()
+
+
+def test_wave_extensible_subformat_reads_the_guid_for_fffe(tmp_path: Path) -> None:
+    """tinytag 2.3.2 reports the subformat itself; a bare ``FFFE`` is still read."""
+    path = _extensible_wav(tmp_path / "ext.wav", subformat=3)
+
+    assert_that(
+        audio_module._wave_extensible_subformat(path, 'audio/wav; codecs="FFFE"'),
+    ).is_equal_to(3)
+    assert_that(audio_module._wave_extensible_subformat(path, None)).is_none()
+    assert_that(
+        audio_module._wave_extensible_subformat(path, 'audio/wav; codecs="1"'),
+    ).is_none()

@@ -183,9 +183,12 @@ def test_read_audio_tags_handles_unreadable_ogg(tmp_path: Path) -> None:
 # fixtures. Durations compare to 2 ms and bitrates to 1 %. Rows that differ
 # from main on purpose carry a comment saying what main gave and why. Rows
 # marked needs_ffprobe are read by ffprobe and skip where it is not installed.
+# Their values are what the file itself states (a header field, or file size
+# over a header duration), not one ffmpeg build's computation, and their
+# bitrates compare to 5 %. A duration of None means it must be unknown.
 @dataclass(frozen=True, slots=True)
 class _AudioFields:
-    duration: float
+    duration: float | None
     bitrate: int | None
     sample_rate: int | None
     channels: int
@@ -211,18 +214,23 @@ _COMMITTED_EXPECTED: dict[str, _AudioFields] = {
     "tone.aiff": _AudioFields(0.3, 128000, 8000, 1, "pcm"),
     # tinytag names the WMA codec from the ASF format code; mutagen gave none.
     "tone.wma": _AudioFields(0.32, 32000, 8000, 1, "wmav2"),
-    # ffprobe: tinytag cannot read raw ADTS. Its stream bitrate is 65 853
-    # against mutagen's 63 442 estimate; duration agrees.
-    "tone.aac": _AudioFields(0.325, 65853, 44100, 2, "aac", needs_ffprobe=True),
-    # ffprobe: MS ADPCM in WAV. tinytag cannot name the codec, so its timing is
-    # not trusted. mutagen called it pcm and read 0.25 ms. ffprobe counts the
-    # whole last ADPCM block (0.512 s); the fact chunk says 0.3 s.
-    "adpcm.wav": _AudioFields(0.512, 32184, 8000, 1, "adpcm_ms", needs_ffprobe=True),
+    # ffprobe: tinytag cannot read raw ADTS. ADTS states no duration; ffprobe
+    # estimates one from the bitrate (0.325 s, true 0.3 s) and says so, so it
+    # is unknown. mutagen gave its own estimate, 0.325 s. Bitrate: file size
+    # over ADTS frames (mutagen: 63 442).
+    "tone.aac": _AudioFields(None, 65853, 44100, 2, "aac", needs_ffprobe=True),
+    # MS ADPCM in WAV. tinytag cannot name the codec. The fact chunk states
+    # 2400 samples at 8000 Hz: 0.3 s, within the 2 blocks of 2036 samples the
+    # data holds (ffprobe counts both whole blocks, 0.512 s). Bitrate: the
+    # fmt chunk's 4023 bytes/s. mutagen called it pcm and read 0.25 ms.
+    "adpcm.wav": _AudioFields(0.3, 32184, 8000, 1, "adpcm_ms", needs_ffprobe=True),
     # ffprobe: FLAC in Ogg. tinytag reports duration 0 and no bitrate; mutagen
-    # gave 0.3 s and no bitrate. The bitrate is ffprobe's container rate.
+    # gave 0.3 s and no bitrate. 0.3 s is STREAMINFO's sample count; the
+    # bitrate is the file size over it (1283 bytes).
     "flac.oga": _AudioFields(0.3, 34213, 8000, 1, "flac", needs_ffprobe=True),
     # ffprobe: IMA4 ADPCM in AIFF-C. tinytag reads 0.00475 s and mutagen called
-    # it pcm at 0.00475 s; ffprobe reads 0.304 s.
+    # it pcm at 0.00475 s. The COMM chunk states 38 packets of 64 samples at
+    # 8000 Hz (0.304 s) and IMA4 packets are 34 bytes (34 000 bit/s).
     "ima4.aifc": _AudioFields(
         0.304,
         34000,
@@ -232,12 +240,20 @@ _COMMITTED_EXPECTED: dict[str, _AudioFields] = {
         needs_ffprobe=True,
     ),
     # ffprobe: mutagen gave 0.3275 s, two channels and no codec for this mono
-    # AC-3 stream.
-    "tone.ac3": _AudioFields(0.336, 64000, 32000, 1, "ac3", needs_ffprobe=True),
-    # ffprobe: mutagen gave no bitrate, channels or codec for TrueAudio.
+    # AC-3 stream. Raw AC-3 states no duration; ffprobe estimates 0.336 s from
+    # the bitrate and says so, so it is unknown. 64 000 is the frame header's.
+    "tone.ac3": _AudioFields(None, 64000, 32000, 1, "ac3", needs_ffprobe=True),
+    # ffprobe: mutagen gave no bitrate, channels or codec for TrueAudio. The
+    # header states 2400 samples; the bitrate is the file size over 0.3 s.
     "tone.tta": _AudioFields(0.3, 49386, 8000, 1, "tta", needs_ffprobe=True),
-    # ffprobe: mutagen gave no bitrate, channels or codec for WavPack.
+    # ffprobe: mutagen gave no bitrate, channels or codec for WavPack. Same
+    # derivation as TrueAudio.
     "tone.wv": _AudioFields(0.3, 61600, 8000, 1, "wavpack", needs_ffprobe=True),
+    # Two audio tracks (AAC 44.1 kHz stereo, then ALAC 8 kHz mono). tinytag
+    # mixes fields from both, so the file is read by ffprobe, whose first audio
+    # stream is the AAC one; main (mutagen) also reported the AAC track, with
+    # 0.3232 s (priming samples counted).
+    "two_tracks.m4a": _AudioFields(0.3, 63807, 44100, 2, "aac", needs_ffprobe=True),
 }
 
 _FIXTURE_EXPECTED: dict[str, _AudioFields] = {
@@ -258,17 +274,21 @@ def _skip_without_ffprobe(expected: _AudioFields) -> None:
 
 def _assert_fields(metadata: MediaMetadata, expected: _AudioFields) -> None:
     """Compare extracted metadata with one recorded row."""
-    assert_that(metadata.duration_seconds).is_not_none()
-    assert_that(float(metadata.duration_seconds or 0.0)).is_close_to(
-        expected.duration,
-        0.002,
-    )
+    if expected.duration is None:
+        assert_that(metadata.duration_seconds).is_none()
+    else:
+        assert_that(metadata.duration_seconds).is_not_none()
+        assert_that(float(metadata.duration_seconds or 0.0)).is_close_to(
+            expected.duration,
+            0.002,
+        )
     if expected.bitrate is None:
         assert_that(metadata.bitrate).is_none()
     else:
+        tolerance = 0.05 if expected.needs_ffprobe else 0.01
         assert_that(float(metadata.bitrate or 0)).is_close_to(
             float(expected.bitrate),
-            expected.bitrate * 0.01,
+            expected.bitrate * tolerance,
         )
     assert_that(metadata.sample_rate).is_equal_to(expected.sample_rate)
     assert_that(metadata.channels).is_equal_to(expected.channels)
@@ -398,6 +418,7 @@ _COMMITTED_TAGS: dict[str, dict[str, str]] = {
     "tone.ac3": {},
     "tone.tta": {},
     "tone.wv": {},
+    "two_tracks.m4a": {**_TONE_TAGS, **_SPLIT_TRACK, "encoded_by": "Lavf63.1.102"},
 }
 
 
@@ -452,6 +473,7 @@ def _fake_ffprobe(
     stdout: str,
     *,
     returncode: int = 0,
+    stderr: str = "",
 ) -> list[list[str]]:
     """Make ffprobe look installed and answer with ``stdout``.
 
@@ -459,6 +481,7 @@ def _fake_ffprobe(
         monkeypatch: Pytest monkeypatch fixture.
         stdout: JSON ffprobe prints.
         returncode: Exit status ffprobe returns.
+        stderr: What ffprobe logs.
 
     Returns:
         The list each ffprobe argv is appended to.
@@ -473,7 +496,7 @@ def _fake_ffprobe(
         path: Path,
     ) -> SimpleNamespace:
         calls.append(argv)
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ffprobe")
     monkeypatch.setattr(audio_module, "_run", _run)
@@ -501,15 +524,20 @@ def test_opus_reports_48k_sample_rate() -> None:
 
 @pytest.mark.skipif(not _HAS_FFPROBE, reason="ffprobe not installed")
 def test_adts_aac_uses_ffprobe() -> None:
-    """Raw ADTS AAC, which tinytag cannot read, is read by ffprobe."""
+    """Raw ADTS AAC, which tinytag cannot read, is read by ffprobe.
+
+    ffprobe can only estimate an ADTS stream's duration from its bitrate, and
+    says so; the estimate is not reported.
+    """
     path = _AUDIO_FIXTURES / "tone.aac"
 
     assert_that(audio_module._metadata_from_tinytag(path=path)).is_none()
     metadata = extract_audio_metadata(path)
 
     assert_that(metadata.codec).is_equal_to("aac")
-    assert_that(metadata.duration_seconds).is_not_none()
-    assert_that(float(metadata.duration_seconds or 0.0)).is_greater_than(0.3)
+    assert_that(metadata.sample_rate).is_equal_to(44100)
+    assert_that(metadata.channels).is_equal_to(2)
+    assert_that(metadata.duration_seconds).is_none()
 
 
 @pytest.mark.skipif(not _HAS_FFPROBE, reason="ffprobe not installed")
@@ -523,15 +551,21 @@ def test_compressed_wav_is_not_labelled_pcm() -> None:
     assert_that(metadata.bit_depth).is_equal_to(4)
 
 
-@pytest.mark.parametrize("filename", ["adpcm.wav", "ima4.aifc"])
+@pytest.mark.parametrize(
+    ("filename", "duration"),
+    [("adpcm.wav", 0.3), ("ima4.aifc", None)],
+)
 def test_compressed_wav_without_ffprobe_has_no_codec(
     monkeypatch: pytest.MonkeyPatch,
     filename: str,
+    duration: float | None,
 ) -> None:
     """Without ffprobe a compressed WAV or AIFF-C keeps only its stream header.
 
     tinytag cannot name the codec, so its duration and bitrate are not known
-    to be right and are reported as unknown, never as tinytag's numbers.
+    to be right and are never reported as tinytag's numbers. The MS ADPCM
+    WAV's duration is its fact chunk's sample count (2400 at 8000 Hz); the
+    AIFF-C rule has no such exception, so its duration is unknown.
     """
     path = _AUDIO_FIXTURES / filename
     _no_ffprobe(monkeypatch)
@@ -541,7 +575,7 @@ def test_compressed_wav_without_ffprobe_has_no_codec(
     assert_that(metadata.codec).is_none()
     assert_that(metadata.sample_rate).is_equal_to(8000)
     assert_that(metadata.channels).is_equal_to(1)
-    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.duration_seconds).is_equal_to(duration)
     assert_that(metadata.bitrate).is_none()
 
 
@@ -712,11 +746,11 @@ def test_zero_length_stream_is_kept(
     assert_that(metadata.codec).is_equal_to("flac")
 
 
-def test_zero_length_stream_confirmed_by_ffprobe(
+def test_zero_duration_from_ffprobe_is_unknown(
     fixtures_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A zero duration that ffprobe also reports is a real empty recording."""
+    """A zero duration from ffprobe is not a fact either: it is unknown."""
     _fake_zero_length_flac(monkeypatch)
     payload = json.dumps(
         {
@@ -736,8 +770,9 @@ def test_zero_length_stream_confirmed_by_ffprobe(
 
     metadata = extract_audio_metadata(fixtures_dir / "sample.flac")
 
-    assert_that(metadata.duration_seconds).is_equal_to(0.0)
+    assert_that(metadata.duration_seconds).is_none()
     assert_that(metadata.bitrate).is_none()
+    assert_that(metadata.sample_rate).is_equal_to(44100)
 
 
 def test_no_parsed_stream_is_not_a_result(
@@ -875,7 +910,12 @@ def test_ffprobe_audio_ignores_attached_picture_stream() -> None:
         {
             "streams": [
                 {"codec_type": "video", "codec_name": "mjpeg", "duration": "9"},
-                {"codec_type": "audio", "codec_name": "mp3", "sample_rate": "44100"},
+                {
+                    "codec_type": "audio",
+                    "codec_name": "mp3",
+                    "sample_rate": "44100",
+                    "channels": 2,
+                },
             ],
             "format": {"duration": "1.5", "bit_rate": "128000"},
         },
@@ -889,6 +929,7 @@ def test_ffprobe_audio_ignores_attached_picture_stream() -> None:
             duration_seconds=1.5,
             bitrate=128000,
             sample_rate=44100,
+            channels=2,
         ),
     )
 
@@ -911,12 +952,24 @@ def test_ffprobe_audio_rejects_unusable_payloads(payload: str) -> None:
 def test_ffprobe_audio_tolerates_missing_format() -> None:
     """A payload without a format object still yields the stream fields."""
     payload = json.dumps(
-        {"streams": [{"codec_type": "audio", "codec_name": "opus"}], "format": []},
+        {
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "codec_name": "opus",
+                    "sample_rate": 48000,
+                    "channels": 2,
+                },
+            ],
+            "format": [],
+        },
     )
 
     metadata = audio_module._parse_ffprobe_audio(payload)
 
-    assert_that(metadata).is_equal_to(MediaMetadata(codec="opus"))
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(codec="opus", sample_rate=48000, channels=2),
+    )
 
 
 def test_read_audio_tags_reads_wav_info(fixtures_dir: Path) -> None:
