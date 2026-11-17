@@ -150,7 +150,11 @@ listed. Relative overrides are taken as given; `~` is expanded.
 | `WINNOW_DATA_DIR`   | Per-user data directory (`sessions.db` saga log)  | `$XDG_DATA_HOME/winnow`, then `~/.local/share/winnow` |
 
 `WINNOW_*` settings overrides (see `winnow config`) use the same `WINNOW` prefix but map
-onto configuration fields, not directories.
+onto configuration fields, not directories. `__` separates nested keys
+(`WINNOW_CACHE__ENABLED=false`). A value is read as a TOML value when it is one (`true`,
+`True`, `42`, `0.5`, `["*.jpg", "*.png"]`, `"quoted"`), and as a plain string otherwise.
+A leading `@int`, `@float`, `@bool`, `@str`, `@json`, `@none` or `@null` casts the rest
+of the value explicitly (`WINNOW_WORKERS="@int 4"`). Other `@` forms are kept as text.
 
 ---
 
