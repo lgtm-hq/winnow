@@ -2,10 +2,10 @@
 
 :class:`PipelineContext` is the composition root for a single pipeline run. It
 holds the validated configuration plus service slots that steps depend on
-(metadata extraction, hashing, caching, saga coordination, reporting). Services
-that are not yet implemented default to ``None`` stubs so steps and tests can be
-wired against a stable container today and receive real services later without
-changing call sites.
+(metadata extraction, hashing, caching, saga coordination, reporting, plugins).
+Services that are not yet implemented default to ``None`` stubs so steps and
+tests can be wired against a stable container today and receive real services
+later without changing call sites.
 
 Building the container in one place avoids circular imports between adapters
 (CLI, API) and pipeline steps, and lets tests inject fakes without Click or
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from winnow.exceptions import PipelineError
 from winnow.models.config import WinnowConfig
+from winnow.pipeline.plugins import PluginRegistry
 
 if TYPE_CHECKING:
     from winnow.media.service import MetadataService
@@ -40,6 +41,8 @@ class PipelineContext:
         cache: Hash and metadata cache, or ``None`` when unbuilt.
         saga: Transactional command coordinator, or ``None`` when unbuilt.
         reporter: Run report writer, or ``None`` when unbuilt.
+        plugins: Plugin registry whose bus steps emit into, or ``None`` when
+            the run has no plugins.
     """
 
     config: WinnowConfig
@@ -48,6 +51,7 @@ class PipelineContext:
     cache: Cache | None = None
     saga: Saga | None = None
     reporter: Reporter | None = None
+    plugins: PluginRegistry | None = None
 
     @classmethod
     def from_config(
@@ -59,6 +63,7 @@ class PipelineContext:
         cache: Cache | None = None,
         saga: Saga | None = None,
         reporter: Reporter | None = None,
+        plugins: PluginRegistry | None = None,
     ) -> Self:
         """Build a context from configuration and optional services.
 
@@ -69,6 +74,7 @@ class PipelineContext:
             cache: Optional hash and metadata cache.
             saga: Optional transactional command coordinator.
             reporter: Optional run report writer.
+            plugins: Optional plugin registry for the run.
 
         Returns:
             A populated pipeline context.
@@ -80,6 +86,7 @@ class PipelineContext:
             cache=cache,
             saga=saga,
             reporter=reporter,
+            plugins=plugins,
         )
 
     def with_services(self, **services: object | None) -> Self:
