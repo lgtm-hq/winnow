@@ -42,7 +42,7 @@ def test_coerce_float_rejects_negative() -> None:
 
 
 def test_coerce_int_rejects_decimal_string_by_default() -> None:
-    """Decimal strings are invalid without via_float (mutagen semantics)."""
+    """Decimal strings are invalid without via_float (strict integer parsing)."""
     assert_that(coerce_non_negative_int("12.5")).is_none()
 
 

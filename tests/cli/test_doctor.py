@@ -16,6 +16,7 @@ from winnow.cli.commands.doctor import (
     CheckStatus,
     check_cache_dir,
     check_ffmpeg,
+    check_ffprobe,
     check_optional_extras,
     check_python_version,
     run_checks,
@@ -86,6 +87,56 @@ def test_check_ffmpeg_fails_when_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr("winnow.cli.commands.doctor.shutil.which", lambda _: None)
     result = check_ffmpeg()
     assert_that(result.status).is_equal_to(CheckStatus.FAIL)
+
+
+def test_check_ffprobe_fails_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ffprobe check fails and names what is lost when ffprobe is missing."""
+    monkeypatch.setattr("winnow.cli.commands.doctor.shutil.which", lambda _: None)
+
+    result = check_ffprobe()
+
+    assert_that(result.status).is_equal_to(CheckStatus.FAIL)
+    assert_that(result.detail).contains("audio facts")
+
+
+@pytest.mark.parametrize(
+    ("banner", "status", "fragment"),
+    [
+        ("ffprobe version 9.0.2 Copyright", CheckStatus.PASS, "in the tested range"),
+        ("ffprobe version 8.1 Copyright", CheckStatus.WARN, "outside the tested"),
+        ("ffprobe version N-1-gabc Copyright", CheckStatus.WARN, "outside the tested"),
+        (None, CheckStatus.WARN, "could not be read"),
+    ],
+    ids=["tested", "other_major", "git_build", "unreadable"],
+)
+def test_check_ffprobe_reports_version_range(
+    monkeypatch: pytest.MonkeyPatch,
+    banner: str | None,
+    status: CheckStatus,
+    fragment: str,
+) -> None:
+    """The ffprobe row shows the version and whether it is in the tested range."""
+    monkeypatch.setattr(
+        "winnow.cli.commands.doctor.shutil.which",
+        lambda _: "/usr/bin/ffprobe",
+    )
+    monkeypatch.setattr(doctor_module, "ffprobe_version", lambda _: banner)
+
+    result = check_ffprobe()
+
+    assert_that(result.status).is_equal_to(status)
+    assert_that(result.detail).contains(fragment)
+    assert_that(result.detail).contains("FFmpeg 9.x")
+
+
+def test_run_checks_includes_ffprobe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The report has an ffprobe row after the FFmpeg row."""
+    monkeypatch.setattr(doctor_module, "find_config_path", lambda: None)
+
+    names = [result.name for result in run_checks()]
+
+    assert_that(names).contains("ffprobe")
+    assert_that(names.index("ffprobe")).is_equal_to(names.index("FFmpeg") + 1)
 
 
 def test_ffmpeg_version_reads_first_line(monkeypatch: pytest.MonkeyPatch) -> None:

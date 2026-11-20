@@ -67,6 +67,28 @@ winnow live-photos --unpaired ~/Pictures       # orphans only
 winnow live-photos -f json ~/Pictures | jq .   # machine-readable scan
 ```
 
+### `winnow doctor`
+
+Checks the local environment and prints one row per check. Exits 1 when a hard check
+fails.
+
+```text
+winnow doctor
+```
+
+| Check           | Fails when                 | Warns when                                      |
+| --------------- | -------------------------- | ----------------------------------------------- |
+| Python          | older than 3.11            | -                                               |
+| FFmpeg          | `ffmpeg` is not on `PATH`  | -                                               |
+| ffprobe         | `ffprobe` is not on `PATH` | its version is unreadable or outside FFmpeg 9.x |
+| Configuration   | the config file is invalid | -                                               |
+| Cache directory | -                          | the directory or its parent is not writable     |
+| Extras          | -                          | an optional extra is not installed              |
+
+The ffprobe row shows the version banner and whether it is in the tested range. The
+audio reader's rules were measured on FFmpeg 9.0.2; on another major version any ffprobe
+warning makes the audio facts unknown (see [External tools](#external-tools)).
+
 ### `winnow init`
 
 Creates a configuration file through guided prompts.
@@ -136,6 +158,83 @@ Removes entries whose source files no longer exist.
 No stale entries prints `No stale entries.`; a declined prompt prints `Aborted.` and
 exits 0; success prints `Pruned N entries.` (`N` counts rows, so a path cached under
 several algorithms removes more rows than the prompt's path count).
+
+---
+
+## External tools
+
+Audio and video facts come from `ffprobe` (part of FFmpeg); there is no Python fallback.
+Without `ffprobe` every audio fact is unknown and flagged `backend_unavailable`, and
+video metadata is empty.
+
+The audio reader opens the file once and hands it to `ffprobe` as its standard input
+(through the `fd` protocol, or through an extension-less link to `/dev/fd/0` in a
+private temporary directory when `ffprobe` lacks that protocol), so the file name and
+extension never influence a value. It reports these facts, each unknown when `ffprobe`
+does not establish it: container, codec, sample rate, channels, bit depth (PCM and
+lossless codecs only), bitrate (the stream's own), duration, and the number of audio
+streams. Flags explain gaps:
+
+- `corrupt`: `ffprobe` exited non-zero, wrote invalid JSON, or flagged a packet.
+- `unrecognized_output`: `ffprobe` wrote a warning that is not known to be harmless for
+  this file. It is not proof of damage, but every value it could affect is unknown.
+- `inconsistent`: packet times contradict each other or the declared duration, an MP4
+  packet is longer than twice the median packet, an FLV packet has no time, or the file
+  changed (device, inode, size, or modification time) while it was read.
+- `estimated`: nothing declares the duration, so it was measured from the packets.
+- `timeout`: an `ffprobe` call ran too long or wrote too much and was stopped.
+- `backend_unavailable`: `ffprobe` is missing or could not start.
+
+`truncated` is `true`, `false`, or not checked. It is `false` only after a packet walk
+found the audio present matches the declared duration; it says nothing more.
+
+`truncated=true` and `corrupt` claim damage. `inconsistent`, `estimated`, and
+`unrecognized_output` do not: they say the evidence does not establish a value, and a
+healthy file may carry them.
+
+Each `ffprobe` call runs in its own process group with a time limit and bounded output;
+on a breach the whole group is stopped. On Linux its address space is capped at 1 GiB.
+
+Known limits:
+
+- Damage inside an intact packet is not detected; that needs a full decode.
+- A damaged header byte can change a declared value (channels, sample rate, codec
+  variant, duration) and leave no evidence.
+- Audio that ends no more than max(5 ms, two time-base units of the stream) before the
+  declared duration counts as complete. Encoder padding hides more. Measured with FFmpeg
+  9.0.2 on 99 MP3 files (9 sample rates, 11 CBR and VBR settings) and 36 AAC (M4A)
+  files: one removed frame is never detected; with two removed, 52 MP3 and 14 M4A still
+  report `truncated=false` with the full duration; with three, 5 MP3 and no M4A.
+- An MP3 is `estimated` only when `ffprobe` says it estimated the duration (no Xing/Info
+  or VBRI header). With such a header the duration is declared and checked.
+- A cut exactly on a page or frame boundary of Ogg, MPEG-TS, ADTS, or AC-3 leaves no
+  evidence. Those formats are always `estimated`, never `truncated=false`.
+- A Matroska `DURATION` tag is never used. Matroska audio without its own stream
+  duration, or the format-level duration of any file, is checked only when the audio is
+  the file's only non-picture stream and the file starts at zero; otherwise the duration
+  is `estimated`.
+- Audio whose first packet comes more than two time-base units after zero is `estimated`
+  in every container: its duration field can be the end of the file's timeline. Cuts in
+  such files are not detected.
+- AVI audio is always `estimated`: its duration field includes a start delay while the
+  packets start at zero. ASF (WMA, WMV) audio is `estimated` when the file has any other
+  non-picture stream, such as video: there the field is the whole file's play length.
+- MP4, M4A, and MOV audio with a packet longer than twice the median packet reports no
+  duration and `inconsistent`; fragmented MP4 stretches its first packet across a start
+  delay. On 256 healthy generated MP4, M4A, and MOV files the largest packet was 1.0
+  times the median. Other containers are not checked this way.
+- AAC 5.1 in FLV reports every audio fact unknown and `inconsistent`: `ffprobe` gives a
+  configuration packet no time and can report a wrong sample rate.
+- Stereo PCM in Matroska can report no duration and `inconsistent`, because `ffprobe`
+  gives its last packet no duration.
+- ADTS at 8 kHz is `estimated` up to about 170 ms long.
+- Chained Ogg reports no duration and `inconsistent`.
+- A WAV written to a pipe is flagged; an MS ADPCM WAV whose `fact` chunk ffprobe ignores
+  is `estimated`.
+- A file changed and then restored with the same size and modification time while it is
+  read is not noticed.
+
+Audio tags and dates are not read yet; they will come from ExifTool.
 
 ---
 

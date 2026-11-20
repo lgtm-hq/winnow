@@ -27,8 +27,8 @@ from winnow.media.video import (
 )
 from winnow.media.video import _parse_frame_rate as parse_frame_rate
 
-_WHICH_TARGET = "winnow.media.video.shutil.which"
-_RUN_TARGET = "winnow.media.video.subprocess.run"
+_WHICH_TARGET = "winnow.media._ffprobe.shutil.which"
+_RUN_TARGET = "winnow.media._ffprobe._capture"
 
 _FFPROBE_JSON = json.dumps(
     {
@@ -517,3 +517,35 @@ def test_read_video_tags_missing_file() -> None:
     """A missing video path raises MediaError."""
     with pytest.raises(MediaError):
         read_video_tags(Path("/nonexistent/clip.mov"))
+
+
+def test_relative_dash_paths_are_passed_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file named -x.mp4 reaches FFmpeg as an absolute path, never an option."""
+    (tmp_path / "-x.mp4").write_bytes(b"fake")
+    monkeypatch.chdir(tmp_path)
+    _use_binaries(monkeypatch)
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess[str]:
+        seen.append(argv)
+        if argv[-1].endswith(".png"):
+            Path(argv[-1]).write_bytes(b"image")
+        return _completed(stdout=_FFPROBE_JSON)
+
+    monkeypatch.setattr(_RUN_TARGET, fake_run)
+
+    extract_video_metadata(Path("-x.mp4"))
+    read_video_tags(Path("-x.mp4"))
+    extract_frame(Path("-x.mp4"), Path("-frame.png"))
+
+    source = str(tmp_path.resolve() / "-x.mp4")
+    probe, tags, frame = seen
+    assert_that(Path(probe[-1]).resolve()).is_equal_to(Path(source))
+    assert_that(Path(tags[-1]).resolve()).is_equal_to(Path(source))
+    assert_that(frame[frame.index("-i") + 1]).ends_with("/-x.mp4")
+    assert_that(Path(frame[-1]).is_absolute()).is_true()
+    for argv in seen:
+        assert_that(argv).does_not_contain("-x.mp4")

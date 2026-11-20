@@ -26,7 +26,9 @@ tracked in [open issues](https://github.com/lgtm-hq/winnow/issues) (see
 ## Install
 
 **Requirements:** Python 3.11+ and a package manager ([uv](https://docs.astral.sh/uv/)
-recommended).
+recommended). Audio and video metadata need [FFmpeg](https://ffmpeg.org/)'s `ffprobe` on
+`PATH` (tested with FFmpeg 9.x); without it those facts are reported as unknown. Run
+`winnow doctor` to check.
 
 ### From PyPI
 
