@@ -17,7 +17,7 @@ from winnow.cli.standards import FORMAT_CHOICES
 
 # Commands that need both --dry-run and --yes.
 _DESTRUCTIVE: frozenset[str] = frozenset(
-    {"cache clear", "cache prune", "clean", "config reset"},
+    {"cache clear", "cache prune", "clean", "config reset", "prune backups"},
 )
 # Commands with --yes but no --dry-run (nothing to preview).
 _YES_ONLY: frozenset[str] = frozenset({"init"})
