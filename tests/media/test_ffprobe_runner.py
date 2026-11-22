@@ -894,7 +894,7 @@ def test_stub_replay_end_to_end(stub_ffprobe: Path, tmp_path: Path) -> None:
 
     assert_that(metadata.codec).is_equal_to("mp3")
     assert_that(metadata.duration_seconds).is_equal_to(6.0)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
     logged = [json.loads(line) for line in stub_ffprobe.read_text().splitlines()]
     probe_calls = [argv for argv in logged if argv[-1] == "fd:"]
     assert_that(probe_calls).is_length(2)

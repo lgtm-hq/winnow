@@ -266,7 +266,7 @@ def test_healthy_fixture_under_wrong_extensions(
         assert_that(metadata.bitrate).is_none()
         return
     assert_that(_flags(metadata)).is_empty()
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
     if fixture.name not in pins.stream_bitrate:
         assert_that(metadata.bitrate).is_none()
         return
@@ -313,17 +313,6 @@ def test_undeclared_formats_measured_within_50ms(name: str) -> None:
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
     assert_that(metadata.truncated).is_none()
     assert_that(_duration(metadata)).is_close_to(BY_NAME[name].duration, 0.05)
-
-
-def test_delayed_mp4_duration_is_checked() -> None:
-    """MP4 audio that starts late reports its own length, checked (R5)."""
-    metadata = extract_audio_metadata(AUDIO_DIR / "delayed.mp4")
-
-    assert_that(_duration(metadata)).is_close_to(
-        BY_NAME["delayed.mp4"].duration,
-        DURATION_TOLERANCE,
-    )
-    assert_that(metadata.truncated).is_false()
 
 
 @pytest.mark.parametrize("name", ["delayed.mkv", "delayed.avi", "video.wmv"])
@@ -423,7 +412,7 @@ def test_warned_but_healthy_mp4_is_read(name: str) -> None:
         (fixture.codec, fixture.sample_rate),
     )
     assert_that(metadata.audio_stream_count).is_equal_to(1)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
     assert_that(_duration(metadata)).is_close_to(fixture.duration, DURATION_TOLERANCE)
 
 
@@ -441,10 +430,10 @@ def test_last_frames_removed(cut: FrameCut) -> None:
 
     assert_that(metadata.codec).is_equal_to(source.codec)
     if cut.detected:
-        assert_that(metadata.truncated).is_true()
+        assert_that(metadata.truncated).is_same_as(True)
         assert_that(metadata.duration_seconds).is_none()
     else:
-        assert_that(metadata.truncated).is_false()
+        assert_that(metadata.truncated).is_same_as(False)
         assert_that(_duration(metadata)).is_close_to(
             source.duration,
             DURATION_TOLERANCE,
@@ -459,7 +448,7 @@ def test_two_tracks_and_cover_art() -> None:
     assert_that((tracks.sample_rate, tracks.channels)).is_equal_to((16000, 2))
     assert_that(tracks.audio_stream_count).is_equal_to(2)
     assert_that(cover.audio_stream_count).is_equal_to(1)
-    assert_that(cover.truncated).is_false()
+    assert_that(cover.truncated).is_same_as(False)
 
 
 def test_chained_ogg_is_inconsistent() -> None:

@@ -214,7 +214,7 @@ def test_replay_alac_bit_depth(
 
     assert_that(metadata.codec).is_equal_to("alac")
     assert_that(metadata.bit_depth).is_equal_to(16)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
 
 
 def test_replay_chained_ogg_is_inconsistent(
@@ -236,7 +236,7 @@ def test_replay_cover_art(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
 
     assert_that(metadata.audio_stream_count).is_equal_to(1)
     assert_that(metadata.duration_seconds).is_equal_to(6.0)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
 
 
 def test_replay_two_tracks_uses_default(
@@ -303,7 +303,7 @@ def test_replay_truncated_flac(
     assert_that(metadata.bit_depth).is_equal_to(16)
     assert_that(metadata.duration_seconds).is_none()
     assert_that(metadata.bitrate).is_none()
-    assert_that(metadata.truncated).is_true()
+    assert_that(metadata.truncated).is_same_as(True)
     assert_that(known_flags(metadata)).is_empty()
 
 
@@ -375,7 +375,7 @@ def test_replay_timecode_track(
 
     assert_that((metadata.codec, metadata.sample_rate)).is_equal_to(("aac", 48000))
     assert_that(metadata.duration_seconds).is_equal_to(2.0)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
     assert_that(known_flags(metadata)).is_empty()
 
 
@@ -699,7 +699,7 @@ def test_unchanged_file_keeps_its_facts(
 
     assert_that(metadata.codec).is_equal_to("flac")
     assert_that(metadata.duration_seconds).is_equal_to(10.0)
-    assert_that(metadata.truncated).is_false()
+    assert_that(metadata.truncated).is_same_as(False)
 
 
 def test_replaced_path_keeps_the_opened_file(
