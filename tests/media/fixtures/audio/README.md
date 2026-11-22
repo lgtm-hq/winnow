@@ -47,7 +47,7 @@ packets, truncation not checked).
 | `aac.m4a`            | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
 | `opus.ogg`           | `ogg`                     | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
 | `wma.wma`            | `asf`                     | `wmav2`        | 22050 | 1   | -    | 3.0      | declared  |
-| `opus.mka`           | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 2.0      | declared  |
+| `opus.mka`           | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
 | `pcm.avi`            | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
 | `mp2.m2ts`           | `mpegts`                  | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
 | `mp2.mpg`            | `mpeg`                    | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
@@ -77,6 +77,13 @@ packets, truncation not checked).
 | `latin1_tag.wav`     | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
 | `latin1_tag.aiff`    | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
 | `latin1_tag.avi`     | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `delay_moov.mp4`     | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `vorbis.mka`         | `matroska,webm`           | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
+| `wma.mka`            | `matroska,webm`           | `wmav2`        | 22050 | 1   | -    | 2.0      | estimated |
+| `mp2.mka`            | `matroska,webm`           | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
+| `ac3.mka`            | `matroska,webm`           | `ac3`          | 32000 | 1   | -    | 2.0      | estimated |
+| `eac3.mka`           | `matroska,webm`           | `eac3`         | 32000 | 1   | -    | 2.0      | estimated |
+| `mp3_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `mp3`          | 48000 | 1   | -    | 2.0      | estimated |
 
 Notes:
 
@@ -107,15 +114,23 @@ Notes:
   not UTF-8 either, which made the reader call them `corrupt` before the header call
   stopped asking for tags (amendment A12a). Each is otherwise the same as `wav.wav`,
   `aiff.aiff` or `pcm.avi`.
+- `delay_moov.mp4` (fragmented AAC with `+delay_moov`), `vorbis.mka`, `wma.mka`,
+  `mp2.mka`, `ac3.mka` and `eac3.mka` start before zero and declare the packet span,
+  which counts the encoder priming, so they are measured (amendment A13a). `opus.mka`
+  does the same with its 6.5 ms pre-skip. `mp3_frag.mp4` is MP3 in fragmented MP4: it
+  starts at zero with no edit list, so its stream duration counts the LAME priming.
+  Before A13a all of them were checked against a duration 8 to 42 ms too long.
 
 ## Unsupported and empty fixtures
 
-| File             | ffprobe `format_name` | Codec       | Rate | Ch  | Bits | Duration | Reported                          |
-| ---------------- | --------------------- | ----------- | ---- | --- | ---- | -------- | --------------------------------- |
-| `au.au`          | `au`                  | `pcm_s16be` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported` |
-| `core_audio.bin` | Core Audio Format     | `pcm_s16le` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported` |
-| `empty.flac`     | `flac`                | `flac`      | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`        |
-| `empty.aiff`     | `aiff`                | `pcm_s16be` | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`        |
+| File             | ffprobe `format_name`     | Codec       | Rate | Ch  | Bits | Duration | Reported                           |
+| ---------------- | ------------------------- | ----------- | ---- | --- | ---- | -------- | ---------------------------------- |
+| `au.au`          | `au`                      | `pcm_s16be` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`  |
+| `core_audio.bin` | Core Audio Format         | `pcm_s16le` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`  |
+| `empty.flac`     | `flac`                    | `flac`      | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`         |
+| `empty.aiff`     | `aiff`                    | `pcm_s16be` | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`         |
+| `empty.m4a`      | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`       | 8000 | 1   | -    | 0        | every fact unknown, `inconsistent` |
+| `empty.mov`      | `mov,mp4,m4a,3gp,3g2,mj2` | `pcm_s16le` | 8000 | 1   | 16   | 0        | every fact unknown, `inconsistent` |
 
 - `UNSUPPORTED_FIXTURES` are healthy files in formats outside the allow-list. The header
   call exits non-zero, which says winnow does not accept the format, not that the file
@@ -123,6 +138,9 @@ Notes:
 - `EMPTY_FIXTURES` are files ffmpeg writes with no audio packet (`-frames:a 0`). The
   FLAC declares no duration and the AIFF declares zero, so nothing positive is declared
   and an empty walk is not `truncated` (amendment A12d).
+- `EMPTY_CONTAINER_FIXTURES` are an M4A and a MOV written the same way. ffprobe lists no
+  stream at all for them, so every fact is unknown; the reader flags them `inconsistent`
+  so the result says why (amendment A13c).
 
 ## Fixtures without an established duration
 

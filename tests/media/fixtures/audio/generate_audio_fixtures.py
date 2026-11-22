@@ -310,6 +310,8 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=3.0,
         bitrate=24000,
     ),
+    # A13a revised: the declared duration is the packet span, which counts
+    # the 6.5 ms pre-skip, so the length is measured.
     AudioFixture(
         name="opus.mka",
         inputs=_silence(rate=48000, seconds=2),
@@ -320,6 +322,7 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         channels=1,
         bit_depth=None,
         duration=2.0,
+        estimated=True,
     ),
     AudioFixture(
         name="pcm.avi",
@@ -868,6 +871,108 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=1.0,
         estimated=True,
     ),
+    # A13a revised: the declared duration is the packet span of audio that
+    # starts before zero, so it counts the priming and the length is measured.
+    AudioFixture(
+        name="delay_moov.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=(
+            "-c:a",
+            "aac",
+            "-b:a",
+            "8k",
+            "-movflags",
+            "+frag_keyframe+empty_moov+delay_moov",
+        ),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="vorbis.mka",
+        inputs=_silence(rate=48000, seconds=2, channels=2),
+        outputs=("-c:a", "vorbis", "-strict", "-2"),
+        format_name=MKV_FORMAT,
+        codec="vorbis",
+        sample_rate=48000,
+        channels=2,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="wma.mka",
+        inputs=_silence(rate=22050, seconds=2),
+        outputs=("-c:a", "wmav2", "-b:a", "24k"),
+        format_name=MKV_FORMAT,
+        codec="wmav2",
+        sample_rate=22050,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="mp2.mka",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "mp2", "-b:a", "32k"),
+        format_name=MKV_FORMAT,
+        codec="mp2",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="ac3.mka",
+        inputs=_silence(rate=32000, seconds=2),
+        outputs=("-c:a", "ac3", "-b:a", "32k"),
+        format_name=MKV_FORMAT,
+        codec="ac3",
+        sample_rate=32000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="eac3.mka",
+        inputs=_silence(rate=32000, seconds=2),
+        outputs=("-c:a", "eac3", "-b:a", "32k"),
+        format_name=MKV_FORMAT,
+        codec="eac3",
+        sample_rate=32000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    # A13a: MP3 in fragmented MP4 starts at zero with no edit list, so its
+    # stream duration counts the LAME priming.
+    AudioFixture(
+        name="mp3_frag.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=(
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "8k",
+            "-movflags",
+            "+frag_keyframe+empty_moov",
+        ),
+        format_name=MP4_FORMAT,
+        codec="mp3",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
 )
 """Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
 
@@ -988,6 +1093,37 @@ EMPTY_FIXTURES: Final[tuple[AudioFixture, ...]] = (
 The FLAC declares no duration and the AIFF declares zero, so nothing
 positive is declared: the reader keeps the stream facts and reports the
 duration unknown with ``inconsistent``, never ``truncated``.
+"""
+
+
+EMPTY_CONTAINER_FIXTURES: Final[tuple[AudioFixture, ...]] = (
+    AudioFixture(
+        name="empty.m4a",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-frames:a", "0", "-c:a", "aac"),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=None,
+        duration=0.0,
+    ),
+    AudioFixture(
+        name="empty.mov",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-frames:a", "0", "-c:a", "pcm_s16le"),
+        format_name=MP4_FORMAT,
+        codec="pcm_s16le",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=0.0,
+    ),
+)
+"""MP4 and MOV files ffmpeg writes with no audio packet (A13c).
+
+ffprobe lists no stream at all for them, so every fact is unknown; the
+reader reports ``inconsistent`` so the result says why, never ``truncated``.
 """
 
 
@@ -1193,6 +1329,7 @@ def generate(directory: Path) -> list[Path]:
         *INCONSISTENT_FIXTURES,
         *UNSUPPORTED_FIXTURES,
         *EMPTY_FIXTURES,
+        *EMPTY_CONTAINER_FIXTURES,
         *FRAME_SOURCES,
     ):
         dest = directory / fixture.name

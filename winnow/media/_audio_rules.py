@@ -204,14 +204,22 @@ sample rate: 21 to 23 ms at 48 kHz, 128 to 138 ms at 8 kHz.
 """
 
 
-PRIMED_MP4_CODECS: Final[frozenset[str]] = frozenset({"aac"})
-"""Codecs whose MP4 duration counts the priming when it is not trimmed (A12h).
+PRIMED_MP4_CODECS: Final[frozenset[str]] = frozenset({"aac", "mp3"})
+"""Codecs whose MP4 duration counts untrimmed priming (A12h, A13a).
 
-An MP4 muxer that writes an edit list hides the AAC priming: the first
-packet starts before zero and the stream duration is the audio's length.
+An MP4 muxer that writes an edit list hides the priming: the first packet
+starts before zero and the stream duration is the audio's length.
 Fragmented MP4 (``empty_moov``) has no edit list, so the first packet starts
-at zero and the stream duration counts the 1024 priming samples as audio.
+at zero and the stream duration counts the priming samples (1024 for AAC,
+1105 for LAME MP3) as audio.
 """
+
+
+PRIMING_SPAN_FORMATS: Final[frozenset[str]] = frozenset(
+    {MATROSKA_FORMAT_NAME, MP4_FORMAT_NAME},
+)
+"""Containers where a declared duration equal to the packet span of a
+stream that starts before zero counts the priming (A13a revised)."""
 
 
 _THREE: Final[Decimal] = Decimal(3)
@@ -453,14 +461,16 @@ def interpret_header(
     ``backend_unavailable`` (A12c); any other non-zero exit means no accepted
     format recognised the file, ``unsupported`` (A12b). Stdout that is not
     valid UTF-8 or JSON, and a stderr line off the benign list, are
-    ``unrecognized_output`` (A1, A12a).
+    ``unrecognized_output`` (A1, A12a). Clean output that names no readable
+    audio stream, such as an empty M4A or MOV with no stream at all, is
+    ``inconsistent``: every fact is unknown, so a flag must say why (A13c).
 
     Args:
         run: The header call; it must not have breached a bound.
         benign: Benign stderr lines for the installed FFmpeg major.
 
     Returns:
-        The accepted header, or ``None`` with the flags that explain why not.
+        The accepted header, or ``None`` with at least one flag saying why not.
     """
     if program_failed(run.returncode):
         return None, (AudioFlag.BACKEND_UNAVAILABLE,)
@@ -476,7 +486,7 @@ def interpret_header(
     estimate_warned = any(line in ESTIMATE_STDERR_LINES for line in lines)
     header = header_from_json(data, estimate_warned=estimate_warned)
     if header is None:
-        return None, ()
+        return None, (AudioFlag.INCONSISTENT,)
     return replace(header, stderr_context=context), ()
 
 
@@ -759,8 +769,11 @@ def declared_duration(
     duration field can be the end time of the file's timeline rather than
     the audio's length, so a stream that starts late declares nothing. AVI
     never declares a duration (A9b). AAC and MP3 in Matroska, and AAC in MP4
-    whose first packet starts at or after zero, declare nothing: their
-    duration counts the encoder priming (A12h).
+    or MP3 in MP4 whose first packet starts at or after zero, declare
+    nothing: their duration counts the encoder priming (A12h, A13a). In
+    Matroska and MP4, a declared duration that equals the packet span of a
+    stream starting before zero, and runs past the last packet's end,
+    counts the priming too and declares nothing (A13a revised).
 
     The stream's own ``duration`` is declared. Otherwise ``format.duration``
     is declared only for a file with one non-picture stream whose
@@ -782,18 +795,56 @@ def declared_duration(
         return None
     if _priming_untrimmed(header, walk.first_time):
         return None
-    return declared_without_packets(header, estimate_warned=estimate_warned)
+    declared = declared_without_packets(header, estimate_warned=estimate_warned)
+    if declared is None or _declared_counts_priming(header, walk, declared):
+        return None
+    return declared
+
+
+def _declared_counts_priming(
+    header: ProbeHeader,
+    walk: PacketWalk,
+    declared: Decimal,
+) -> bool:
+    """Report whether a declared duration is the packet span of primed audio.
+
+    In Matroska and MP4 the declared duration counts the priming when the
+    first packet starts before zero, the declared duration equals the packet
+    span (last packet's end minus first packet's start), and it exceeds the
+    last packet's end, the last two each within the A5 tolerance (A13a
+    revised). A cut shortens the span but not the declared duration, so a
+    cut file never matches and keeps its ``truncated`` result. An edit list
+    that trims the priming (faststart AAC) makes the declared duration
+    shorter than the span, so that file does not match either.
+
+    Args:
+        header: Accepted header facts.
+        walk: Completed packet walk of the primary stream.
+        declared: The declared duration R5 allows otherwise.
+
+    Returns:
+        ``True`` when all three conditions hold.
+    """
+    if header.container not in PRIMING_SPAN_FORMATS:
+        return False
+    span = walk.measured_duration()
+    first = walk.first_time
+    if span is None or first is None or first >= 0:
+        return False
+    last_end = span + first
+    tolerance = shortfall_tolerance(header)
+    return abs(declared - span) <= tolerance and declared - last_end > tolerance
 
 
 def _priming_untrimmed(header: ProbeHeader, first_time: Decimal | None) -> bool:
-    """Report whether MP4 AAC counts its priming as audio (A12h).
+    """Report whether MP4 AAC or MP3 counts its priming as audio (A12h, A13a).
 
     Args:
         header: Accepted header facts.
         first_time: The first packet time.
 
     Returns:
-        ``True`` for AAC in MP4 whose first packet starts at or after zero,
+        ``True`` for AAC or MP3 in MP4 whose first packet starts at or after zero,
         so no edit list removed the priming from the declared duration.
     """
     return (

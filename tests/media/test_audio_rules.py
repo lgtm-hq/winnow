@@ -860,13 +860,23 @@ def test_interpret_header_records_estimate_line() -> None:
     assert_that(getattr(header, "estimate_warned", None)).is_true()
 
 
-def test_interpret_header_unknown_without_flag_for_video_only() -> None:
-    """A clean file with no audio is unknown but not flagged."""
-    data = probe_json({"index": 0, "codec_type": "video", "codec_name": "h264"})
+@pytest.mark.parametrize(
+    "streams",
+    [[{"index": 0, "codec_type": "video", "codec_name": "h264"}], []],
+    ids=["video-only", "no-streams"],
+)
+def test_interpret_header_without_audio_is_inconsistent(
+    streams: list[dict[str, object]],
+) -> None:
+    """A13c: a clean file with no readable audio is unknown and says why.
+
+    An empty M4A or MOV lists no stream at all.
+    """
+    data = {**probe_json(format_name=MP4_FORMAT_NAME), "streams": streams}
 
     assert_that(
         interpret_header(run_result(stdout=json.dumps(data).encode()), benign=BENIGN_9),
-    ).is_equal_to((None, ()))
+    ).is_equal_to((None, (AudioFlag.INCONSISTENT,)))
 
 
 # --- packet walk accounting (R6) --------------------------------------------
@@ -1805,11 +1815,151 @@ def test_mp4_aac_with_trimmed_priming_declares() -> None:
     ).is_equal_to(Decimal("1.000"))
 
 
-@pytest.mark.parametrize("codec", ["alac", "mp3", "pcm_s16le"])
+@pytest.mark.parametrize("codec", ["alac", "pcm_s16le"])
 def test_other_mp4_codecs_from_zero_still_declare(codec: str) -> None:
-    """A12h's MP4 rule is limited to AAC."""
+    """A12h's MP4 rule is limited to AAC and MP3 (A13a)."""
     header = _mp4_header(codec=codec, stream_duration=Decimal(2))
 
     assert_that(
         declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
     ).is_equal_to(Decimal(2))
+
+
+def test_fragmented_mp4_mp3_is_estimated() -> None:
+    """A13a: MP3 in fragmented MP4 starts at zero and counts its priming.
+
+    With no edit list the stream duration counts the 1105 LAME priming
+    samples as audio, so the packet span is measured instead.
+    """
+    header = _mp4_header(
+        codec="mp3",
+        sample_rate=16000,
+        time_base=Decimal(1) / Decimal(16000),
+        stream_duration=Decimal("1.0800"),
+    )
+    walk = _walk(*_packets(30, step="0.036000"))
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.080000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+# --- priming recognised by the packet span (A13a revised) ---------------------
+
+
+def _primed_walk(*, count: int = 48) -> PacketWalk:
+    """Build a walk that starts 32 ms before zero, 32 ms packets.
+
+    Args:
+        count: Number of packets.
+
+    Returns:
+        The walk; its span is ``count`` times 32 ms.
+    """
+    return _walk(*_packets(count, step="0.032000", start="-0.032"))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        _header(
+            container="matroska,webm",
+            codec=codec,
+            time_base=Decimal("0.001"),
+            stream_duration=None,
+            format_duration=Decimal("1.536"),
+            format_start=Decimal("-0.032"),
+        )
+        for codec in ("wmav2", "mp2", "ac3", "eac3", "vorbis", "opus")
+    ]
+    + [
+        _header(
+            container=MP4_FORMAT_NAME,
+            codec=codec,
+            time_base=Decimal(1) / Decimal(32000),
+            stream_duration=Decimal("1.536"),
+        )
+        for codec in ("aac", "mp3", "ac3")
+    ],
+    ids=lambda header: f"{header.container.split(',')[0]}-{header.codec}",
+)
+def test_declared_packet_span_counts_priming(header: ProbeHeader) -> None:
+    """A13a: a declared duration equal to a span that starts before zero.
+
+    The declared 1.536 equals the span of 48 packets of 32 ms from -0.032
+    and runs 32 ms past the last packet's end: it counts the priming, so
+    nothing is declared and the span is the estimate.
+    """
+    walk = _primed_walk()
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.536000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+@pytest.mark.parametrize("container", ["matroska,webm", MP4_FORMAT_NAME])
+def test_cut_primed_file_stays_truncated(container: str) -> None:
+    """A13a: a cut shortens the span, not the declared duration."""
+    header = _header(
+        container=container,
+        codec="ac3",
+        time_base=Decimal("0.001"),
+        stream_duration=Decimal("1.536"),
+    )
+
+    assert_that(_decide(_primed_walk(count=45), header=header)).is_equal_to(
+        (None, True, ()),
+    )
+
+
+def test_trimmed_priming_keeps_its_declared_duration() -> None:
+    """A13a: an edit list makes the declared duration shorter than the span.
+
+    Faststart AAC: first packet at -0.032, declared 1.504, the last packet's
+    end; the span is 1.536, so the rule does not match.
+    """
+    header = _mp4_header(
+        codec="aac",
+        time_base=Decimal(1) / Decimal(32000),
+        stream_duration=Decimal("1.504"),
+    )
+
+    assert_that(_decide(_primed_walk(), header=header)).is_equal_to(
+        (Decimal("1.504"), False, ()),
+    )
+
+
+def test_span_rule_needs_declared_past_last_end() -> None:
+    """A13a: a start before zero within tolerance does not count as priming.
+
+    First packet at -0.002: declared equals the span and runs only 2 ms
+    past the last packet's end, inside the 5 ms tolerance.
+    """
+    header = _matroska_header(
+        codec="ac3",
+        non_picture_stream_count=1,
+        time_base=Decimal("0.001"),
+        format_duration=Decimal("1.000"),
+        format_start=Decimal("-0.002"),
+    )
+    walk = _walk(*_packets(50, step="0.020000", start="-0.002"))
+
+    assert_that(
+        declared_duration(header, walk, estimate_warned=False),
+    ).is_equal_to(Decimal("1.000"))
+
+
+def test_span_rule_is_limited_to_matroska_and_mp4() -> None:
+    """A13a: in other containers a span starting before zero still declares."""
+    header = _header(
+        container="asf",
+        codec="wmav2",
+        time_base=Decimal("0.001"),
+        stream_duration=Decimal("1.536"),
+    )
+
+    assert_that(
+        declared_duration(header, _primed_walk(), estimate_warned=False),
+    ).is_equal_to(Decimal("1.536"))

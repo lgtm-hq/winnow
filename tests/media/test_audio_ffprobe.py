@@ -24,6 +24,7 @@ from assertpy import assert_that
 
 from tests.media.fixtures.audio.generate_audio_fixtures import (
     CHAINED_OGG,
+    EMPTY_CONTAINER_FIXTURES,
     EMPTY_FIXTURES,
     FIXTURES,
     FRAME_CUTS,
@@ -214,6 +215,37 @@ PINS: Final[dict[int, Pins]] = {
             ),
             "latin1_tag.aiff": ("truncated", "truncated", "truncated"),
             "latin1_tag.avi": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "delay_moov.mp4": ("unsupported", "unrecognized_output", "estimated"),
+            "vorbis.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "wma.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "mp2.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "ac3.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "eac3.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "mp3_frag.mp4": (
                 "unrecognized_output",
                 "unrecognized_output",
                 "unrecognized_output",
@@ -783,6 +815,80 @@ def test_empty_files_are_not_damaged(fixture: AudioFixture) -> None:
 
 
 @pytest.mark.parametrize(
+    "fixture",
+    EMPTY_CONTAINER_FIXTURES,
+    ids=lambda fixture: fixture.name,
+)
+def test_empty_mp4_and_mov_say_why(fixture: AudioFixture) -> None:
+    """A13c: an M4A or MOV with no stream is all unknown with ``inconsistent``."""
+    metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
+
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+
+
+ALL_FIXTURE_NAMES: Final[tuple[str, ...]] = (
+    *(
+        fixture.name
+        for fixture in (
+            *FIXTURES,
+            *INCONSISTENT_FIXTURES,
+            *UNSUPPORTED_FIXTURES,
+            *EMPTY_FIXTURES,
+            *EMPTY_CONTAINER_FIXTURES,
+            *FRAME_SOURCES,
+        )
+    ),
+    CHAINED_OGG,
+    *(cut.name for cut in FRAME_CUTS),
+)
+"""Every generated audio fixture."""
+
+AUDIO_FACT_FIELDS: Final[tuple[str, ...]] = (
+    "container",
+    "codec",
+    "sample_rate",
+    "channels",
+    "bit_depth",
+    "bitrate",
+    "duration_seconds",
+    "audio_stream_count",
+    "probe_score",
+    "truncated",
+)
+"""Fields of :class:`MediaMetadata` the audio reader reports as facts."""
+
+
+def test_every_all_unknown_result_says_why(tmp_path: Path) -> None:
+    """A13c: any result with every fact unknown carries at least one flag.
+
+    Checked on every fixture and on each one cut to 50, 90 and 98 %. The
+    set of all-unknown results is pinned so the check is never vacuous.
+    """
+    all_unknown: set[str] = set()
+    for name in ALL_FIXTURE_NAMES:
+        sources = [AUDIO_DIR / name]
+        sources += [
+            _cut(AUDIO_DIR / name, tmp_path, fraction) for fraction in CUT_FRACTIONS
+        ]
+        for source in sources:
+            metadata = extract_audio_metadata(source)
+            if all(getattr(metadata, field) is None for field in AUDIO_FACT_FIELDS):
+                all_unknown.add(source.name)
+                assert_that(_flags(metadata)).described_as(source.name).is_not_empty()
+
+    assert_that(all_unknown).contains(
+        "au.au",
+        "core_audio.bin",
+        "aac51.flv",
+        "empty.m4a",
+        "empty.mov",
+        "cut-0.5-empty.m4a",
+    )
+
+
+@pytest.mark.parametrize(
     "name", ["latin1_tag.wav", "latin1_tag.aiff", "latin1_tag.avi"]
 )
 def test_non_utf8_tags_do_not_hide_the_facts(name: str) -> None:
@@ -801,26 +907,77 @@ def test_non_utf8_tags_do_not_hide_the_facts(name: str) -> None:
     )
 
 
+_PIPED_WAV: Final[MediaMetadata] = MediaMetadata(
+    container="wav",
+    codec="pcm_s16le",
+    sample_rate=8000,
+    channels=1,
+    bit_depth=16,
+    audio_stream_count=1,
+    probe_score=99,
+)
+"""Stream facts of the piped 8 kHz mono WAV files."""
+
+
 @pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg not installed")
 @pytest.mark.parametrize(
-    ("muxer", "codec", "flag"),
+    ("muxer", "codec", "seconds", "expected"),
     [
-        ("wav", "pcm_s16le", AudioFlag.UNRECOGNIZED_OUTPUT),
-        ("aiff", "pcm_s16be", AudioFlag.UNSUPPORTED),
+        pytest.param(
+            "wav",
+            "pcm_s16le",
+            "1",
+            MediaMetadata(audio_flags=(AudioFlag.UNRECOGNIZED_OUTPUT,)),
+            id="short-wav",
+        ),
+        pytest.param(
+            "wav",
+            "pcm_s16le",
+            "10",
+            _PIPED_WAV.model_copy(
+                update={"audio_flags": (AudioFlag.UNRECOGNIZED_OUTPUT,)},
+            ),
+            id="long-wav",
+        ),
+        pytest.param(
+            "wav",
+            "pcm_s16le",
+            "2.048",
+            _PIPED_WAV.model_copy(
+                update={
+                    "duration_seconds": 2.048,
+                    "audio_flags": (AudioFlag.ESTIMATED,),
+                },
+            ),
+            id="whole-packets-wav",
+        ),
+        pytest.param(
+            "aiff",
+            "pcm_s16be",
+            "1",
+            MediaMetadata(audio_flags=(AudioFlag.UNSUPPORTED,)),
+            id="aiff",
+        ),
     ],
 )
-def test_written_to_a_pipe_is_unknown_never_damaged(
+def test_written_to_a_pipe_is_never_damaged(
     muxer: str,
     codec: str,
-    flag: AudioFlag,
+    seconds: str,
+    expected: MediaMetadata,
     tmp_path: Path,
 ) -> None:
-    """A12b: WAV and AIFF written to a pipe are both all unknown, no damage.
+    """A12b and A13b: WAV and AIFF written to a pipe make no damage claim.
 
     ``-seekable 0`` makes ffmpeg write exactly what it writes to a pipe: it
-    cannot seek back to fill in the sizes. The WAV header still
-    parses, with a ``Packet corrupt`` warning (A1); the AIFF header does not
-    parse at all (A12b). Neither is a claim that the file is damaged.
+    cannot seek back to fill in the sizes. The AIFF header does not parse
+    at all (A12b). The WAV header parses; when its data does not end on a
+    4096-byte packet, ffprobe prints ``Packet corrupt`` for the short last
+    packet (A1). In a short file the header call reads that far and every
+    fact is unknown; in a long one only the walk does, so the stream facts
+    stand and the duration is unknown. Data that is a whole number of
+    packets (2.048 s here) gives no such line and is ``estimated`` with the
+    right duration.
     """
     binary = find_binary(FFMPEG)
     if binary is None:
@@ -838,7 +995,7 @@ def test_written_to_a_pipe_is_unknown_never_damaged(
             "-i",
             "anullsrc=r=8000:cl=mono",
             "-t",
-            "1",
+            seconds,
             "-c:a",
             codec,
             "-seekable",
@@ -853,6 +1010,4 @@ def test_written_to_a_pipe_is_unknown_never_damaged(
     )
     assert_that(completed.returncode).is_equal_to(0)
 
-    assert_that(extract_audio_metadata(target)).is_equal_to(
-        MediaMetadata(audio_flags=(flag,)),
-    )
+    assert_that(extract_audio_metadata(target)).is_equal_to(expected)

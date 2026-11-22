@@ -422,6 +422,44 @@ def test_replay_offset_matroska_is_estimated(
     assert_that(known_duration(metadata)).is_close_to(2.0, 0.05)
 
 
+@pytest.mark.parametrize(
+    ("name", "codec"),
+    [("delay_moov", "aac"), ("wma_mka", "wmav2"), ("mp3_frag", "mp3")],
+)
+def test_replay_priming_counted_as_audio_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    codec: str,
+) -> None:
+    """A13a: a declared duration that counts the priming is not declared.
+
+    ``delay_moov`` (fragmented AAC with ``+delay_moov``) and ``wma_mka``
+    declare the packet span of audio that starts before zero; ``mp3_frag``
+    is MP3 in fragmented MP4 from zero. All three are 2 s of audio and are
+    measured, never checked.
+    """
+    metadata = _replay(monkeypatch, tmp_path, name)
+
+    assert_that(metadata.codec).is_equal_to(codec)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.bitrate).is_none()
+    assert_that(known_duration(metadata)).is_close_to(2.0, 0.05)
+
+
+def test_replay_empty_m4a_says_why(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A13c: an M4A with no stream is all unknown and flagged ``inconsistent``."""
+    metadata = _replay(monkeypatch, tmp_path, "empty_m4a")
+
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+
+
 def test_missing_file_raises() -> None:
     """A path that is not a file raises MediaError."""
     with pytest.raises(MediaError):

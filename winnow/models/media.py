@@ -39,16 +39,21 @@ class AudioFlag(StrEnum):
     """The evidence contradicts itself, so the value is not established.
 
     Packet times contradict each other or the declared duration, an MP4
-    packet spans a gap, an FLV packet has no time, or the file changed
-    while it was read.
+    packet spans a gap, an FLV packet has no time, the file changed while
+    it was read, or an accepted container lists no readable audio stream
+    (an empty M4A or MOV lists none).
     """
 
     CORRUPT = auto()
     """The packet walk established damage.
 
     The walk exited non-zero after an accepted header, or ffprobe flagged a
-    packet corrupt. ``corrupt`` is a claim about the file, never about
-    ffprobe or about a format winnow does not accept.
+    packet corrupt and wrote no stderr line off the benign list.
+    ``corrupt`` is a claim about the file, never about ffprobe or about a
+    format winnow does not accept. On FFmpeg 9.0.2 a packet flagged corrupt
+    always comes with a ``Packet corrupt`` stderr line, so that file is
+    ``unrecognized_output`` instead; a cut file is ``truncated``,
+    ``unrecognized_output``, ``unsupported`` or ``estimated``.
     """
 
     UNRECOGNIZED_OUTPUT = auto()

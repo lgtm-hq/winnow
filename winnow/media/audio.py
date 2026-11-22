@@ -9,9 +9,9 @@ through an extension-less symlink in a private directory that points at
 so ffprobe never sees the file's name. Anything ffprobe does not establish is
 reported as unknown.
 
-The rules are those of issue #400 and its amendments A1 to A12 (with A9b
-and A10b). This module runs ffprobe; the decisions on its output live in
-:mod:`winnow.media._audio_rules`:
+The rules are those of issue #400 and its amendments A1 to A13 (with A9b,
+A10b and the revised A13a). This module runs ffprobe; the decisions on its
+output live in :mod:`winnow.media._audio_rules`:
 
 * R1/R2: one header call with a format allow-list that asks only for the
   fields the rules read, never tags (A12a); every fact is unknown unless
@@ -19,7 +19,9 @@ and A10b). This module runs ffprobe; the decisions on its output live in
   codec, sample rate, and channels, and writes only benign stderr lines.
   The header call never claims damage: an unexpected line or output that
   is not UTF-8 JSON is ``unrecognized_output``, a non-zero exit
-  ``unsupported`` (A12b).
+  ``unsupported`` (A12b), and clean output with no readable audio stream
+  (an empty M4A or MOV lists none) ``inconsistent`` (A13c). Every result
+  with all facts unknown carries at least one flag.
 * A12c: ffprobe failing is not about the file. A signal or exit 126/127
   is ``backend_unavailable``; so is a ``-version`` banner that cannot be
   read or parsed, and then nothing is probed.
@@ -32,9 +34,12 @@ and A10b). This module runs ffprobe; the decisions on its output live in
   units after zero (A9); a Matroska ``DURATION`` tag is never used; AVI
   never declares a duration (A9b); in ASF nothing is declared when the
   file has another non-picture stream besides the primary audio (A8);
-  AAC and MP3 in Matroska, and AAC in MP4 whose first packet is not before
-  zero, declare nothing because the duration counts the priming (A12h);
-  bitrate is the stream's own.
+  AAC and MP3 in Matroska, and AAC or MP3 in MP4 whose first packet is not
+  before zero, declare nothing because the duration counts the priming
+  (A12h, A13a); in Matroska and MP4, a declared duration that equals the
+  packet span of a stream starting before zero and runs past the last
+  packet's end, each within the A5 tolerance, counts the priming and
+  declares nothing (A13a revised); bitrate is the stream's own.
 * R6: a packet walk of the primary stream checks the declared duration and
   measures it where none is declared. A walk that ends more than max(5 ms,
   two time-base units of the stream) before the declared duration is
@@ -44,7 +49,13 @@ and A10b). This module runs ffprobe; the decisions on its output live in
   (A11). A walk with no packet is ``truncated`` only against a positive
   declared duration (A12d); a negative packet duration is a missing time,
   and a measured span or median that is not positive is ``inconsistent``
-  (A12e). ``corrupt`` is set only here, where the walk establishes damage.
+  (A12e). ``corrupt`` is set only here: for a non-zero walk exit after an
+  accepted header, or a packet flagged corrupt with no stderr line off the
+  benign list. On FFmpeg 9.0.2 a packet flagged corrupt always comes with a
+  ``Packet corrupt`` stderr line, which is not benign, so that walk is
+  ``unrecognized_output`` instead (A13d). A cut file gets ``truncated``,
+  ``unrecognized_output``, ``unsupported`` or ``estimated``; no fixture or
+  cut of one reaches ``corrupt`` on 9.0.2.
 * ``truncated`` and ``corrupt`` claim damage; ``inconsistent``,
   ``estimated``, ``unrecognized_output`` and ``unsupported`` only say the
   evidence does not establish a value, and a healthy file may carry them.
@@ -90,16 +101,39 @@ Known limits (not worked around):
 * Stereo PCM in Matroska can come back with the duration unknown and
   ``inconsistent``: ffprobe gives the last packet no duration.
 * ADTS at 8 kHz is ``estimated`` up to about 170 ms long.
-* AAC and MP3 in Matroska, and AAC in MP4 whose first packet starts at
-  or after zero (no edit list, as in fragmented MP4), are ``estimated``
-  (A12h): the duration counts the encoder priming as audio. Measured on
-  FFmpeg 9.0.2, the excess is one priming block at every sample rate:
-  AAC 1024 samples (128 ms at 8 kHz, 92.9 ms at 11.025 kHz, 85.3 ms at
-  12 kHz, 64 ms at 16 kHz, 46.4 ms at 22.05 kHz, 42.7 ms at 24 kHz,
-  32 ms at 32 kHz, 23.2 ms at 44.1 kHz, 21.3 ms at 48 kHz), the same in
-  Matroska and fragmented MP4; LAME MP3 in Matroska 1105 samples (138,
-  100, 92, 69, 50, 46, 35, 25 and 23 ms). The measured length still
+* AAC and MP3 in Matroska, and AAC or MP3 in MP4 whose first packet
+  starts at or after zero (no edit list, as in fragmented MP4), are
+  ``estimated`` (A12h, A13a): the duration counts the encoder priming as
+  audio. Measured on FFmpeg 9.0.2, the excess is one priming block at
+  every sample rate: AAC 1024 samples (128 ms at 8 kHz, 92.9 ms at
+  11.025 kHz, 85.3 ms at 12 kHz, 64 ms at 16 kHz, 46.4 ms at 22.05 kHz,
+  42.7 ms at 24 kHz, 32 ms at 32 kHz, 23.2 ms at 44.1 kHz, 21.3 ms at
+  48 kHz), the same in Matroska and fragmented MP4; LAME MP3 in Matroska
+  1105 samples (138, 100, 92, 69, 50, 46, 35, 25 and 23 ms); LAME MP3 in
+  fragmented MP4 69 to 104 ms at 16 kHz, 50 ms at 22.05 kHz, 46 ms at
+  24 kHz, 34.5 ms at 32 kHz, 25 ms at 44.1 kHz and 23 ms at 48 kHz
+  (ffmpeg writes no MP3 below 16 kHz into MP4). The measured length still
   includes it.
+* Other primed audio in Matroska and MP4 is ``estimated`` when its
+  declared duration is the packet span of a stream that starts before
+  zero (A13a revised). Measured on FFmpeg 9.0.2, the declared duration
+  was this far over the true length: fragmented AAC with ``delay_moov``,
+  the AAC figures above; Vorbis in Matroska 128 to 134 ms at 8 kHz down to
+  21 ms at 48 kHz; WMA in Matroska 6 to 60 ms; MP2 in Matroska 8 to 30 ms
+  at 16 kHz down to 8 to 10 ms at 48 kHz; AC-3 and E-AC-3 in Matroska
+  8 ms at 32 kHz and 6 ms at 44.1 kHz; Opus in Matroska 8 ms (its
+  pre-skip). AC-3 and E-AC-3 in Matroska at 48 kHz are 5 ms over, inside
+  the A5 tolerance, so they stay checked. A cut shortens the span but not
+  the declared duration, so a cut file is never taken for priming.
+* A checked duration is established to the precision of one codec frame:
+  the packets themselves can run past the true length and ffprobe cannot
+  tell. On 1,743 healthy generated files every checked duration was
+  within one median packet of the true length; these combinations were
+  above the A5 tolerance: WMA in audio-only ASF up to 60 ms (35 files;
+  24 to 60 ms at 8 and 32 kHz, 18 to 39 ms at 48 kHz, 6 to 28 ms at the
+  other rates); FLAC in Matroska at 44.1 kHz 23 ms (2 files); AC-3 and
+  E-AC-3 in fragmented MP4 with ``delay_moov`` 8 ms at 32 kHz, 5.8 ms at
+  44.1 kHz and 5.3 ms at 48 kHz (13 files each).
 * MP3 is ``estimated`` only when ffprobe says it estimated the duration (no
   Xing/Info or VBRI header); with such a header the duration is declared and
   checked like any other.
@@ -107,10 +141,21 @@ Known limits (not worked around):
   boundary leaves no evidence; those formats are always ``estimated``, never
   ``truncated=false``.
 * Chained Ogg is reported ``inconsistent``.
-* A WAV written to a pipe is ``unrecognized_output`` and an AIFF written
-  to a pipe ``unsupported``: every fact is unknown, neither is a damage
-  claim. An MS ADPCM WAV whose ``fact`` chunk ffprobe ignores is
+* A WAV or AIFF written to a pipe has no sizes in its header; neither
+  makes a damage claim. The AIFF header does not parse: every fact is
+  unknown with ``unsupported``. The WAV is read as data to the end of
+  the file. When the data does not end on a 4096-byte packet, ffprobe
+  prints ``Packet corrupt`` for the short last packet: in a short WAV
+  (1 s at 8 kHz) the header call reads that far and every fact is unknown
+  with ``unrecognized_output``; a long one (10 s) keeps its stream facts,
+  with the duration unknown and ``unrecognized_output``. A piped WAV
+  whose data is a multiple of 4096 bytes is ``estimated`` with the right
+  duration. An MS ADPCM WAV whose ``fact`` chunk ffprobe ignores is
   ``estimated``.
+* An AIFF with an ``APPL`` chunk signed ``stoc`` gives zero packets with a
+  declared duration on FFmpeg 9.0.2, so it is reported ``truncated=true``
+  although the file plays (A13e). This is an FFmpeg parse slip on a rare
+  signature.
 * Formats outside the allow-list (AU, Core Audio Format, raw DTS, VOC,
   W64, MLP, ADX) are ``unsupported``.
 * The file identity check (A6) cannot see a file that is changed and then

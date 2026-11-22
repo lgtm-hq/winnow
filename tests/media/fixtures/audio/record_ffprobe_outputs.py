@@ -47,6 +47,10 @@ CASES: Final[dict[str, tuple[str, float]]] = {
     "timecode_mov": ("timecode.mov", 1.0),
     "timecode_mov_cut_90": ("timecode.mov", 0.9),
     "offset_mka": ("offset.mka", 1.0),
+    "delay_moov": ("delay_moov.mp4", 1.0),
+    "wma_mka": ("wma.mka", 1.0),
+    "mp3_frag": ("mp3_frag.mp4", 1.0),
+    "empty_m4a": ("empty.m4a", 1.0),
 }
 """Recording name to (fixture, fraction of the file kept)."""
 
