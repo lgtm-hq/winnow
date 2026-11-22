@@ -33,7 +33,6 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any, Final
 
@@ -58,9 +57,12 @@ _VERSION_TIMEOUT_SECONDS: Final[float] = 10.0
 _VERSION_OUTPUT_LIMIT: Final[int] = 1024 * 1024
 _READ_CHUNK: Final[int] = 64 * 1024
 _REAP_TIMEOUT_SECONDS: Final[float] = 5.0
+_UNREAPED_RETURNCODE: Final[int] = -signal.SIGKILL
+"""Exit status reported for a killed child that was not reaped in time."""
 _VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"^ffprobe version n?(?P<major>[0-9]+)\.[0-9]+",
+    r"^ffprobe version (?:[0-9]+:)?n?(?P<major>[0-9]+)\.[0-9]+",
 )
+"""Release banner, with the Debian/Ubuntu epoch prefix allowed (``7:9.0.2-1``)."""
 
 
 class BoundedRunError(RuntimeError):
@@ -233,9 +235,9 @@ def limit_address_space(pid: int) -> None:
     """Cap a child's address space at 1 GiB, on Linux only.
 
     The limit is set from the parent with ``prlimit`` on the child's pid, so
-    no code runs in the child between ``fork`` and ``exec``. A lower hard
-    limit already in force is kept. A child that has already exited needs
-    no limit.
+    no code runs in the child between ``fork`` and ``exec``. A lower soft or
+    hard limit already in force is kept, never raised. A child that has
+    already exited needs no limit.
 
     Args:
         pid: Process id of the child.
@@ -245,10 +247,11 @@ def limit_address_space(pid: int) -> None:
     import resource
 
     try:
-        _soft, hard = resource.prlimit(pid, resource.RLIMIT_AS)
+        soft, hard = resource.prlimit(pid, resource.RLIMIT_AS)
         limit = ADDRESS_SPACE_LIMIT_BYTES
-        if hard != resource.RLIM_INFINITY:
-            limit = min(limit, hard)
+        for current in (soft, hard):
+            if current != resource.RLIM_INFINITY:
+                limit = min(limit, current)
         resource.prlimit(pid, resource.RLIMIT_AS, (limit, hard))
     except ProcessLookupError:
         return
@@ -413,7 +416,11 @@ class _Supervisor:
         self._join_readers(_REAP_TIMEOUT_SECONDS)
         if any(reader.is_alive() for reader in self._readers):
             timed_out = True
-        returncode = self._process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+        try:
+            returncode = self._process.wait(timeout=_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = _UNREAPED_RETURNCODE
         if self._errors:
             raise BoundedRunError("ffprobe output could not be read") from (
                 self._errors[0]
@@ -564,7 +571,8 @@ def run_bounded(
         line_limit: Longest stdout line passed to ``on_stdout_line``.
 
     Returns:
-        The exit status, captured output, and breach flags.
+        The exit status, captured output, and breach flags. A child that is
+        not reaped in time after the kill is reported as ``timed_out``.
 
     Raises:
         OSError: If the process cannot be started or limited.
@@ -625,9 +633,53 @@ def parse_version_major(banner: str) -> int | None:
     return int(match.group("major")) if match is not None else None
 
 
-@lru_cache(maxsize=8)
-def ffprobe_version(binary: str) -> str | None:
-    """Return the first line of ``ffprobe -version``.
+_CACHE_SIZE: Final[int] = 8
+
+
+class _SuccessCache:
+    """Remember the successful answers of an info probe, per binary.
+
+    A failed probe (``None``) is never stored, so the next call asks
+    ffprobe again instead of keeping a failure for the life of the process.
+
+    Args:
+        probe: Returns the answer for a binary, or ``None`` when ffprobe
+            could not answer.
+    """
+
+    def __init__(self, probe: Callable[[str], Any]) -> None:
+        self._probe = probe
+        self._answers: dict[str, Any] = {}
+        self._lock = threading.Lock()
+
+    def get(self, binary: str) -> Any:
+        """Return the cached answer, probing when there is none.
+
+        Args:
+            binary: Absolute path of the ffprobe binary.
+
+        Returns:
+            The answer, or ``None`` when the probe failed.
+        """
+        with self._lock:
+            if binary in self._answers:
+                return self._answers[binary]
+        answer = self._probe(binary)
+        if answer is not None:
+            with self._lock:
+                if len(self._answers) >= _CACHE_SIZE:
+                    self._answers.clear()
+                self._answers[binary] = answer
+        return answer
+
+    def clear(self) -> None:
+        """Forget every answer."""
+        with self._lock:
+            self._answers.clear()
+
+
+def _read_version(binary: str) -> str | None:
+    """Run ``ffprobe -version`` and return its first line.
 
     Args:
         binary: Absolute path of the ffprobe binary.
@@ -642,19 +694,36 @@ def ffprobe_version(binary: str) -> str | None:
     return lines[0].strip() if lines and lines[0].strip() else None
 
 
-@lru_cache(maxsize=8)
-def fd_protocol_supported(binary: str) -> bool:
-    """Report whether ffprobe lists ``fd`` among its input protocols.
+_VERSIONS: Final[_SuccessCache] = _SuccessCache(_read_version)
+
+
+def ffprobe_version(binary: str) -> str | None:
+    """Return the first line of ``ffprobe -version``.
+
+    A banner that was read is cached per binary; a failure is not (A12c).
 
     Args:
         binary: Absolute path of the ffprobe binary.
 
     Returns:
-        ``True`` when the ``fd`` input protocol is available.
+        The banner line, or ``None`` when it cannot be read.
+    """
+    answer: str | None = _VERSIONS.get(binary)
+    return answer
+
+
+def _read_fd_protocol(binary: str) -> bool | None:
+    """Run ``ffprobe -protocols`` and look for the ``fd`` input protocol.
+
+    Args:
+        binary: Absolute path of the ffprobe binary.
+
+    Returns:
+        Whether ``fd`` is an input protocol, or ``None`` when the run failed.
     """
     run = _run_info(binary, "-protocols")
     if run is None:
-        return False
+        return None
     in_inputs = False
     for raw in run.decode("utf-8", errors="replace").splitlines():
         line = raw.strip()
@@ -665,6 +734,30 @@ def fd_protocol_supported(binary: str) -> bool:
         elif in_inputs and line == "fd":
             return True
     return False
+
+
+_FD_PROTOCOL: Final[_SuccessCache] = _SuccessCache(_read_fd_protocol)
+
+
+def fd_protocol_supported(binary: str) -> bool:
+    """Report whether ffprobe lists ``fd`` among its input protocols.
+
+    A successful answer is cached per binary; a failed run is not (A12c)
+    and counts as ``False`` for this call.
+
+    Args:
+        binary: Absolute path of the ffprobe binary.
+
+    Returns:
+        ``True`` when the ``fd`` input protocol is available.
+    """
+    return _FD_PROTOCOL.get(binary) is True
+
+
+def clear_info_caches() -> None:
+    """Forget every cached ``-version`` and ``-protocols`` answer."""
+    _VERSIONS.clear()
+    _FD_PROTOCOL.clear()
 
 
 def _run_info(binary: str, flag: str) -> bytes | None:
@@ -702,6 +795,7 @@ __all__ = [
     "TESTED_FFPROBE_MAJORS",
     "BoundedRun",
     "BoundedRunError",
+    "clear_info_caches",
     "fd_protocol_supported",
     "ffmpeg_available",
     "ffprobe_available",

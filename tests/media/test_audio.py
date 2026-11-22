@@ -17,6 +17,7 @@ import pytest
 from assertpy import assert_that
 
 from tests.media.audio_support import (
+    audio_stream,
     known_duration,
     known_flags,
     known_reason,
@@ -25,6 +26,7 @@ from tests.media.audio_support import (
 )
 from winnow.exceptions import MediaError
 from winnow.media import audio as audio_module
+from winnow.media._audio_rules import HEADER_SHOW_ENTRIES
 from winnow.media._ffprobe import BoundedRun, BoundedRunError
 from winnow.media.audio import FORMAT_WHITELIST, extract_audio_metadata
 from winnow.media.audio import _open_descriptor as open_descriptor
@@ -172,7 +174,15 @@ def test_replay_declared_mp3(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         ],
     )
     assert_that(header_argv[8:]).is_equal_to(
-        ["-of", "json=sv=ignore", "-show_format", "-show_streams", "-fd", "0", "fd:"],
+        [
+            "-of",
+            "json=sv=ignore",
+            "-show_entries",
+            HEADER_SHOW_ENTRIES,
+            "-fd",
+            "0",
+            "fd:",
+        ],
     )
     assert_that(walk_argv[8:]).is_equal_to(
         [
@@ -187,6 +197,8 @@ def test_replay_declared_mp3(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
             "fd:",
         ],
     )
+    assert_that(header_argv).does_not_contain("-show_format", "-show_streams")
+    assert_that(HEADER_SHOW_ENTRIES).does_not_contain("tags")
     for argv in seen:
         assert_that(argv).does_not_contain("-f")
         assert_that(" ".join(argv)).does_not_contain("secret")
@@ -215,6 +227,7 @@ def test_replay_alac_bit_depth(
     assert_that(metadata.codec).is_equal_to("alac")
     assert_that(metadata.bit_depth).is_equal_to(16)
     assert_that(metadata.truncated).is_same_as(False)
+    assert_that(known_flags(metadata)).is_empty()
 
 
 def test_replay_chained_ogg_is_inconsistent(
@@ -237,6 +250,7 @@ def test_replay_cover_art(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     assert_that(metadata.audio_stream_count).is_equal_to(1)
     assert_that(metadata.duration_seconds).is_equal_to(6.0)
     assert_that(metadata.truncated).is_same_as(False)
+    assert_that(known_flags(metadata)).is_empty()
 
 
 def test_replay_two_tracks_uses_default(
@@ -275,7 +289,7 @@ def test_replay_avi_and_asf_with_video_are_estimated(
     tmp_path: Path,
     name: str,
 ) -> None:
-    """A8: AVI with delayed MP3 and WMV with video are measured, not truncated."""
+    """A9b and A8: AVI never declares, WMV with video does not; both measured."""
     metadata = _replay(monkeypatch, tmp_path, name)
 
     assert_that(known_duration(metadata)).is_close_to(1.0, 0.07)
@@ -312,7 +326,7 @@ def test_replay_truncated_flac(
     [
         ("wav_cut_90", AudioFlag.UNRECOGNIZED_OUTPUT),
         ("mp3_cut_50", AudioFlag.UNRECOGNIZED_OUTPUT),
-        ("garbage", AudioFlag.CORRUPT),
+        ("garbage", AudioFlag.UNSUPPORTED),
     ],
 )
 def test_replay_unlisted_stderr_makes_all_unknown(
@@ -321,7 +335,11 @@ def test_replay_unlisted_stderr_makes_all_unknown(
     name: str,
     flag: AudioFlag,
 ) -> None:
-    """An unlisted header stderr line is unrecognized; a failed call corrupt."""
+    """An unlisted header stderr line is unrecognized; a failed call unsupported.
+
+    A header call that no accepted format can open is not a damage claim
+    (A12b).
+    """
     metadata = _replay(monkeypatch, tmp_path, name)
 
     assert_that(metadata).is_equal_to(MediaMetadata(audio_flags=(flag,)))
@@ -700,6 +718,7 @@ def test_unchanged_file_keeps_its_facts(
     assert_that(metadata.codec).is_equal_to("flac")
     assert_that(metadata.duration_seconds).is_equal_to(10.0)
     assert_that(metadata.truncated).is_same_as(False)
+    assert_that(known_flags(metadata)).is_empty()
 
 
 def test_replaced_path_keeps_the_opened_file(
@@ -817,3 +836,313 @@ def test_descriptor_must_be_a_regular_file(tmp_path: Path) -> None:
 
     with pytest.raises(MediaError), open_descriptor(fifo):
         pytest.fail("a FIFO must not be handed to ffprobe")
+
+
+# --- ffprobe failing is not a statement about the file (A12c) ------------------
+
+
+@pytest.mark.parametrize("returncode", [-9, -11, 126, 127])
+def test_header_program_failure_is_backend_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+) -> None:
+    """A12c: a signal or exit 126/127 on the header call is not about the file."""
+    _install(monkeypatch, lambda argv, **kwargs: run_result(returncode=returncode))
+    path = tmp_path / "song.mp3"
+    path.write_bytes(b"ID3")
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.BACKEND_UNAVAILABLE,)),
+    )
+
+
+def test_header_other_exit_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12b: any other non-zero header exit means no accepted format matched."""
+    _install(monkeypatch, lambda argv, **kwargs: run_result(returncode=1))
+    path = tmp_path / "song.au"
+    path.write_bytes(b".snd")
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.UNSUPPORTED,)),
+    )
+
+
+@pytest.mark.parametrize("returncode", [-9, 126, 127])
+def test_walk_program_failure_keeps_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+) -> None:
+    """A12c: a walk killed by a signal or not run is not corrupt."""
+    _install(monkeypatch, _header_then(run_result(returncode=returncode)))
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(metadata.codec).is_equal_to("flac")
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.BACKEND_UNAVAILABLE,))
+
+
+@pytest.mark.parametrize(
+    "banner",
+    [None, "", "ffprobe version N-121212-gdeadbeef Copyright", "garbage"],
+    ids=["unreadable", "empty", "git_build", "garbage"],
+)
+def test_unparsed_version_probes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    banner: str | None,
+) -> None:
+    """A12c: without a readable version nothing is probed."""
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        calls.append(argv)
+        return run_result()
+
+    _install(monkeypatch, runner, banner=banner)
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(calls).is_empty()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.BACKEND_UNAVAILABLE,))
+    assert_that(known_reason(metadata)).contains("-version")
+
+
+def test_debian_epoch_banner_uses_the_major_pins(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12c: ``7:9.0.2-1`` is major 9, so the 9.x benign lines apply."""
+    runner, _banner = _replayer("adts")
+    _install(monkeypatch, runner, banner="ffprobe version 7:9.0.2-1 Copyright")
+    path = tmp_path / "a.aac"
+    path.write_bytes(b"placeholder")
+
+    assert_that(extract_audio_metadata(path).audio_flags).is_equal_to(
+        (AudioFlag.ESTIMATED,),
+    )
+
+
+# --- out-of-range values (A12f) ------------------------------------------------
+
+_HUGE = "9" * 18
+_HUGE_DECIMAL = "999999999999999.999999999999"
+
+
+def _walk_lines(count: int = 100, step: str = "0.100000") -> bytes:
+    """Build healthy walk output.
+
+    Args:
+        count: Packets.
+        step: Packet duration.
+
+    Returns:
+        CSV stdout.
+    """
+    return b"".join(
+        f"{index * float(step):.6f},{step},K__\n".encode() for index in range(count)
+    )
+
+
+def _json_runner(data: dict[str, object], walk: bytes) -> FakeRunner:
+    """Build a runner returning ``data`` for the header and ``walk`` lines.
+
+    Args:
+        data: Header JSON.
+        walk: Walk stdout.
+
+    Returns:
+        The fake runner.
+    """
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        if "-select_streams" not in argv:
+            return run_result(stdout=json.dumps(data).encode())
+        on_line = kwargs.get("on_stdout_line")
+        if callable(on_line):
+            for line in walk.splitlines():
+                on_line(line)
+        return run_result()
+
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    [
+        ("format", "probe_score", 101),
+        ("format", "probe_score", -1),
+        ("format", "probe_score", 2**63),
+        ("format", "probe_score", "50"),
+        ("format", "duration", "-10.000000"),
+        ("format", "duration", _HUGE_DECIMAL),
+        ("format", "start_time", "-" + _HUGE_DECIMAL),
+        ("format", "start_time", _HUGE_DECIMAL),
+        ("stream", "sample_rate", "-44100"),
+        ("stream", "sample_rate", _HUGE),
+        ("stream", "sample_rate", 2**80),
+        ("stream", "channels", -2),
+        ("stream", "channels", 2**80),
+        ("stream", "bits_per_raw_sample", "-16"),
+        ("stream", "bits_per_raw_sample", _HUGE),
+        ("stream", "bits_per_sample", -16),
+        ("stream", "bits_per_sample", 2**80),
+        ("stream", "bit_rate", "-900000"),
+        ("stream", "bit_rate", _HUGE),
+        ("stream", "duration", "-10.000000"),
+        ("stream", "duration", "0.000000"),
+        ("stream", "duration", _HUGE_DECIMAL),
+        ("stream", "time_base", "1/9999999999"),
+        ("stream", "time_base", "9999999999/1"),
+        ("stream", "index", -1),
+        ("stream", "index", 2**80),
+    ],
+)
+def test_out_of_range_header_values_never_raise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    section: str,
+    key: str,
+    value: object,
+) -> None:
+    """A12f: no numeric value from ffprobe raises a ValidationError."""
+    stream = audio_stream()
+    data = probe_json(stream)
+    target = stream if section == "stream" else data["format"]
+    if not isinstance(target, dict):
+        pytest.fail("the format section is not an object")
+    target[key] = value
+    _install(monkeypatch, _json_runner(data, _walk_lines()))
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    metadata = extract_audio_metadata(path)
+
+    if metadata.probe_score is not None:
+        assert_that(metadata.probe_score).is_between(0, 100)
+    if metadata.duration_seconds is not None:
+        assert_that(metadata.duration_seconds).is_positive()
+
+
+@pytest.mark.parametrize(
+    "walk",
+    [
+        b"0.000000,-0.100000,K__\n" * 3,
+        b"0.000000,0.000000,K__\n0.000000,0.000000,K__\n",
+        f"{_HUGE_DECIMAL},{_HUGE_DECIMAL},K__\n".encode(),
+        f"-{_HUGE_DECIMAL},0.100000,K__\n0.0,0.1,K__\n".encode(),
+    ],
+    ids=["negative", "zero", "huge", "huge_negative_start"],
+)
+def test_out_of_range_walk_values_never_raise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    walk: bytes,
+) -> None:
+    """A12e and A12f: the walk never gives a zero, negative, or invalid value."""
+    data = probe_json(audio_stream(duration=None), format_name="ogg")
+    _install(monkeypatch, _json_runner(data, walk))
+    path = tmp_path / "song.ogg"
+    path.write_bytes(b"OggS")
+
+    metadata = extract_audio_metadata(path)
+
+    if metadata.duration_seconds is not None:
+        assert_that(metadata.duration_seconds).is_positive()
+
+
+def test_probe_score_out_of_range_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12f: a probe score above 100 is unknown; the other facts stay."""
+    data = probe_json(probe_score=101)
+    _install(monkeypatch, _json_runner(data, _walk_lines()))
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(metadata.probe_score).is_none()
+    assert_that(metadata.codec).is_equal_to("flac")
+    assert_that(metadata.truncated).is_same_as(False)
+
+
+# --- the path fallback compares path and descriptor (A12g) --------------------
+
+
+def test_path_not_naming_the_descriptor_probes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12g: a path that names another file before the probe is inconsistent."""
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], **kwargs: object) -> BoundedRun:
+        calls.append(argv)
+        return run_result()
+
+    _install(monkeypatch, runner, fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+    monkeypatch.setattr(audio_module, "_path_identity", lambda path: (-1,))
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+    assert_that(calls).is_empty()
+
+
+def test_path_replaced_by_identical_twin_is_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12g: a same-size, same-mtime file over the path is still another file.
+
+    Comparing the path before and after alone would miss it; comparing the
+    path with the opened descriptor does not.
+    """
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    twin = tmp_path / "twin.flac"
+    twin.write_bytes(b"fLaC")
+    info = path.stat()
+    os.utime(twin, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+    def swap() -> None:
+        twin.replace(path)
+
+    _install(monkeypatch, _changing_runner(swap), fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+
+    assert_that(extract_audio_metadata(path)).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+    )
+
+
+def test_path_fallback_with_matching_path_keeps_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A12g: when the path names the opened file, the facts stand."""
+    path = tmp_path / "song.flac"
+    path.write_bytes(b"fLaC")
+    _install(monkeypatch, _changing_runner(lambda: None), fd=False)
+    monkeypatch.setattr(audio_module, "_DESCRIPTOR_DIR", tmp_path / "no-dev-fd")
+
+    metadata = extract_audio_metadata(path)
+
+    assert_that(metadata.codec).is_equal_to("flac")
+    assert_that(metadata.truncated).is_same_as(False)
+    assert_that(known_flags(metadata)).is_empty()

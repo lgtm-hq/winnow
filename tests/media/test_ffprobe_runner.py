@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from assertpy import assert_that
@@ -27,6 +28,7 @@ from winnow.media._ffprobe import (
     ADDRESS_SPACE_LIMIT_BYTES,
     DEVNULL,
     BoundedRunError,
+    clear_info_caches,
     fd_protocol_supported,
     ffprobe_available,
     ffprobe_version,
@@ -94,11 +96,9 @@ def _clear_caches() -> Iterator[None]:
     Yields:
         Control to the test.
     """
-    ffprobe_version.cache_clear()
-    fd_protocol_supported.cache_clear()
+    clear_info_caches()
     yield
-    ffprobe_version.cache_clear()
-    fd_protocol_supported.cache_clear()
+    clear_info_caches()
 
 
 # --- environment and discovery ------------------------------------------------
@@ -154,13 +154,17 @@ def test_find_binary_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         ("ffprobe version 9.0.2 Copyright (c) 2007-2026", 9),
         ("ffprobe version n7.1.1 Copyright", 7),
+        ("ffprobe version 7:9.0.2-1 Copyright", 9),
+        ("ffprobe version 7:9.0.2-1ubuntu1 Copyright", 9),
+        ("ffprobe version 1:n9.0.2 Copyright", 9),
+        ("ffprobe version :9.0.2", None),
         ("ffprobe version N-118000-g1234abcd Copyright", None),
         ("ffmpeg version 9.0.2", None),
         ("", None),
     ],
 )
 def test_parse_version_major(banner: str, major: int | None) -> None:
-    """Release banners give a major; git builds and others do not."""
+    """Release banners give a major, with a Debian epoch too (A12c)."""
     assert_that(parse_version_major(banner)).is_equal_to(major)
 
 
@@ -174,12 +178,17 @@ def test_tested_majors_match_pinned_majors() -> None:
 # --- RLIMIT_AS ------------------------------------------------------------------
 
 
-def _fake_resource(hard: int, infinity: int = -1) -> SimpleNamespace:
+def _fake_resource(
+    hard: int,
+    infinity: int = -1,
+    soft: int | None = None,
+) -> SimpleNamespace:
     """Build a stand-in for the ``resource`` module that records calls.
 
     Args:
         hard: Hard limit to report.
         infinity: Value of ``RLIM_INFINITY``.
+        soft: Soft limit to report; unlimited when ``None``.
 
     Returns:
         The fake module; ``calls`` lists each ``prlimit`` argument tuple.
@@ -188,7 +197,7 @@ def _fake_resource(hard: int, infinity: int = -1) -> SimpleNamespace:
 
     def prlimit(*args: object) -> tuple[int, int]:
         calls.append(args)
-        return (infinity, hard)
+        return (infinity if soft is None else soft, hard)
 
     return SimpleNamespace(
         RLIMIT_AS=9,
@@ -224,6 +233,32 @@ def test_limit_address_space_keeps_lower_hard_limit(
     limit_address_space(7)
 
     assert_that(fake.calls[-1]).is_equal_to((7, 9, (4096, 4096)))
+
+
+def test_limit_address_space_keeps_lower_soft_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A soft limit already below 1 GiB is never raised."""
+    fake = _fake_resource(hard=-1, soft=512 * 1024**2)
+    monkeypatch.setitem(sys.modules, "resource", fake)
+    monkeypatch.setattr("winnow.media._ffprobe.sys.platform", "linux")
+
+    limit_address_space(7)
+
+    assert_that(fake.calls[-1]).is_equal_to((7, 9, (512 * 1024**2, -1)))
+
+
+def test_limit_address_space_lowers_a_higher_soft_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A soft limit above 1 GiB is lowered to 1 GiB."""
+    fake = _fake_resource(hard=-1, soft=4 * 1024**3)
+    monkeypatch.setitem(sys.modules, "resource", fake)
+    monkeypatch.setattr("winnow.media._ffprobe.sys.platform", "linux")
+
+    limit_address_space(7)
+
+    assert_that(fake.calls[-1]).is_equal_to((7, 9, (ADDRESS_SPACE_LIMIT_BYTES, -1)))
 
 
 def test_limit_address_space_ignores_an_exited_child(
@@ -742,6 +777,42 @@ def test_run_command_interrupt_kills_the_child(
     assert_that(getattr(spawned[0], "returncode", None)).is_not_none()
 
 
+def test_run_bounded_unreaped_child_is_timed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A12c: a child not reaped in time after the kill is a time-out, no raise."""
+    real_spawn = _ffprobe._spawn
+    reaps: list[float | None] = []
+    timeout_expired = vars(_ffprobe)["subprocess"].TimeoutExpired
+
+    def spawn(argv: list[str], **kwargs: Any) -> object:
+        process = real_spawn(argv, **kwargs)
+        real_wait = process.wait
+
+        def wait(timeout: float | None = None) -> int:
+            if timeout == _ffprobe._REAP_TIMEOUT_SECONDS and not reaps:
+                reaps.append(timeout)
+                raise timeout_expired(argv, timeout)
+            return real_wait(timeout=timeout)
+
+        monkeypatch.setattr(process, "wait", wait)
+        return process
+
+    monkeypatch.setattr(_ffprobe, "_spawn", spawn)
+
+    run = run_bounded(
+        _python("import time; time.sleep(60)"),
+        stdin=DEVNULL,
+        timeout=0.5,
+        stdout_limit=1024,
+        stderr_limit=1024,
+    )
+
+    assert_that(reaps).is_length(1)
+    assert_that(run.timed_out).is_true()
+    assert_that(run.returncode).is_negative()
+
+
 def test_run_bounded_kills_on_timeout() -> None:
     """A child that outlives the time-out is killed and reaped."""
     started = time.monotonic()
@@ -999,6 +1070,69 @@ def test_stub_version_failure(
 
     assert_that(ffprobe_version(binary)).is_none()
     assert_that(audio_module.benign_stderr_lines(binary)).is_empty()
+
+
+def test_stub_version_failure_is_backend_unavailable_and_not_cached(
+    stub_ffprobe: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A12c: no version, nothing probed; the failure is asked again next time."""
+    monkeypatch.setenv("STUB_MODE", "version-fails")
+    path = _audio_file(tmp_path)
+
+    failed = extract_audio_metadata(path)
+
+    assert_that(failed.audio_flags).is_equal_to((AudioFlag.BACKEND_UNAVAILABLE,))
+    logged = [json.loads(line) for line in stub_ffprobe.read_text().splitlines()]
+    assert_that([argv for argv in logged if argv[-1] == "fd:"]).is_empty()
+    monkeypatch.setenv("STUB_MODE", "")
+
+    assert_that(extract_audio_metadata(path).codec).is_equal_to("mp3")
+
+
+def test_failed_info_probes_are_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A12c: a failed -version or -protocols run is retried; a success is kept."""
+    answers: list[bytes | None] = [
+        None,
+        b"ffprobe version 9.0.2 Copyright\n",
+        None,
+        b"Input:\n  fd\nOutput:\n",
+    ]
+    calls: list[str] = []
+
+    def run_info(binary: str, flag: str) -> bytes | None:
+        calls.append(flag)
+        return answers.pop(0)
+
+    monkeypatch.setattr(_ffprobe, "_run_info", run_info)
+
+    assert_that(ffprobe_version("/x/ffprobe")).is_none()
+    assert_that(ffprobe_version("/x/ffprobe") or "").starts_with("ffprobe version 9")
+    assert_that(ffprobe_version("/x/ffprobe") or "").starts_with("ffprobe version 9")
+    assert_that(fd_protocol_supported("/x/ffprobe")).is_false()
+    assert_that(fd_protocol_supported("/x/ffprobe")).is_true()
+    assert_that(fd_protocol_supported("/x/ffprobe")).is_true()
+    assert_that(calls).is_equal_to(
+        ["-version", "-version", "-protocols", "-protocols"],
+    )
+
+
+def test_info_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The success cache holds a bounded number of binaries."""
+    calls: list[str] = []
+
+    def run_info(binary: str, flag: str) -> bytes | None:
+        calls.append(binary)
+        return b"ffprobe version 9.0.2\n"
+
+    monkeypatch.setattr(_ffprobe, "_run_info", run_info)
+
+    for index in range(20):
+        ffprobe_version(f"/bin{index}/ffprobe")
+    ffprobe_version("/bin19/ffprobe")
+
+    assert_that(calls).is_length(20)
 
 
 def test_info_queries_on_missing_binary(tmp_path: Path) -> None:

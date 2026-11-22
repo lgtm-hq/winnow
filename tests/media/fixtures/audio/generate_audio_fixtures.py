@@ -135,6 +135,22 @@ def _sweep(*, rate: int, seconds: float) -> tuple[str, ...]:
     )
 
 
+LATIN1_TITLE: Final[str] = b"Gr\xfcn".decode("utf-8", "surrogateescape")
+"""``Gr\xfcn`` in Latin-1: not valid UTF-8 once ffmpeg writes it to a tag.
+
+The surrogate escape makes ffmpeg's argv carry the raw byte 0xFC, which
+never occurs in UTF-8.
+"""
+
+CORE_AUDIO_FORMAT: Final[str] = "\x63af"
+"""ffmpeg's muxer and ffprobe's ``format_name`` for Core Audio Format.
+
+Written with an escape: the typos linter reads the plain three letters as a
+misspelling.
+"""
+
+_LATIN1_TAG: Final[tuple[str, ...]] = ("-metadata", f"title={LATIN1_TITLE}")
+
 _TINY_VIDEO: Final[tuple[str, ...]] = (
     "-f",
     "lavfi",
@@ -814,6 +830,44 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=1.0,
         estimated=True,
     ),
+    # A12a: a title tag in Latin-1, which is not valid UTF-8. ffprobe's tag
+    # output for these is not UTF-8, so the header call never asks for tags.
+    AudioFixture(
+        name="latin1_tag.wav",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-c:a", "pcm_u8", *_LATIN1_TAG),
+        format_name="wav",
+        codec="pcm_u8",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=8,
+        duration=1.0,
+        bitrate=64000,
+    ),
+    AudioFixture(
+        name="latin1_tag.aiff",
+        inputs=_silence(rate=8000, seconds=2),
+        outputs=("-c:a", "adpcm_ima_qt", *_LATIN1_TAG),
+        format_name="aiff",
+        codec="adpcm_ima_qt",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        bitrate=34000,
+    ),
+    AudioFixture(
+        name="latin1_tag.avi",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-c:a", "pcm_u8", *_LATIN1_TAG),
+        format_name="avi",
+        codec="pcm_u8",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=8,
+        duration=1.0,
+        estimated=True,
+    ),
 )
 """Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
 
@@ -869,6 +923,71 @@ INCONSISTENT_FIXTURES: Final[tuple[AudioFixture, ...]] = (
 
 The reader must report the duration unknown with ``inconsistent`` and never
 ``truncated``; for ``aac51.flv`` every audio fact is unknown (A11).
+"""
+
+
+UNSUPPORTED_FIXTURES: Final[tuple[AudioFixture, ...]] = (
+    AudioFixture(
+        name="au.au",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-c:a", "pcm_s16be"),
+        format_name="au",
+        codec="pcm_s16be",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=1.0,
+    ),
+    AudioFixture(
+        name="core_audio.bin",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-c:a", "pcm_s16le", "-f", CORE_AUDIO_FORMAT),
+        format_name=CORE_AUDIO_FORMAT,
+        codec="pcm_s16le",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=1.0,
+    ),
+)
+"""Healthy files in formats outside the allow-list (A12b).
+
+The reader must report every fact unknown with ``unsupported``, never
+``corrupt``: the file is healthy, winnow just does not accept the format.
+``core_audio.bin`` is Core Audio Format; its name carries no extension
+because the reader never looks at one.
+"""
+
+
+EMPTY_FIXTURES: Final[tuple[AudioFixture, ...]] = (
+    AudioFixture(
+        name="empty.flac",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-frames:a", "0", "-c:a", "flac", "-sample_fmt", "s16"),
+        format_name="flac",
+        codec="flac",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=0.0,
+    ),
+    AudioFixture(
+        name="empty.aiff",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-frames:a", "0", "-c:a", "pcm_s16be"),
+        format_name="aiff",
+        codec="pcm_s16be",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=0.0,
+    ),
+)
+"""Files ffmpeg writes with no audio packet at all (A12d).
+
+The FLAC declares no duration and the AIFF declares zero, so nothing
+positive is declared: the reader keeps the stream facts and reports the
+duration unknown with ``inconsistent``, never ``truncated``.
 """
 
 
@@ -1069,7 +1188,13 @@ def generate(directory: Path) -> list[Path]:
         Paths written.
     """
     written: list[Path] = []
-    for fixture in (*FIXTURES, *INCONSISTENT_FIXTURES, *FRAME_SOURCES):
+    for fixture in (
+        *FIXTURES,
+        *INCONSISTENT_FIXTURES,
+        *UNSUPPORTED_FIXTURES,
+        *EMPTY_FIXTURES,
+        *FRAME_SOURCES,
+    ):
         dest = directory / fixture.name
         _ffmpeg(inputs=fixture.inputs, outputs=fixture.outputs, dest=dest)
         written.append(dest)

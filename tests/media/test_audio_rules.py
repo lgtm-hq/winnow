@@ -2,8 +2,9 @@
 
 Hand-built ffprobe output is fed to the functions in
 :mod:`winnow.media._audio_rules`: stderr filtering (R2, A1 to A3), strict JSON
-(R1), stream selection and facts (R2 to R4), the declared duration (R5, A5,
-A8, A9), and the packet-walk decision (R6, A5, A7, A10, A11).
+(R1), the header outcome (A12a to A12c), stream selection and facts (R2 to
+R4, A12f), the declared duration (R5, A5, A8, A9, A9b), and the packet-walk
+decision (R6, A5, A7, A10, A11, A12d, A12e).
 """
 
 from __future__ import annotations
@@ -26,8 +27,11 @@ from winnow.media._audio_rules import (
     MP4_FORMAT_NAME,
     SHORTFALL_FLOOR_SECONDS,
     StderrContext,
+    declared_without_packets,
     has_unrecognized_line,
+    parse_probe_score,
     parse_time_base,
+    program_failed,
     shortfall_tolerance,
     spans_gap,
     stderr_context,
@@ -737,13 +741,35 @@ def test_parse_time_base(value: object, expected: Decimal | None) -> None:
     assert_that(parse_time_base(value)).is_equal_to(expected)
 
 
-def test_interpret_header_flags_nonzero_exit() -> None:
-    """A failed header call is corrupt even with clean stderr."""
-    run = run_result(returncode=1, stdout=json.dumps(probe_json()).encode())
+@pytest.mark.parametrize("returncode", [1, 2, 69, 255])
+def test_interpret_header_nonzero_exit_is_unsupported(returncode: int) -> None:
+    """A12b: a failed header call is unsupported, never corrupt."""
+    run = run_result(returncode=returncode, stdout=json.dumps(probe_json()).encode())
 
     assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
-        (None, (AudioFlag.CORRUPT,)),
+        (None, (AudioFlag.UNSUPPORTED,)),
     )
+
+
+@pytest.mark.parametrize("returncode", [-1, -9, -15, 126, 127])
+def test_interpret_header_program_failure_is_backend_unavailable(
+    returncode: int,
+) -> None:
+    """A12c: a signal or exit 126/127 says nothing about the file."""
+    run = run_result(returncode=returncode, stdout=json.dumps(probe_json()).encode())
+
+    assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
+        (None, (AudioFlag.BACKEND_UNAVAILABLE,)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "failed"),
+    [(0, False), (1, False), (125, False), (126, True), (127, True), (-9, True)],
+)
+def test_program_failed(returncode: int, failed: bool) -> None:
+    """A12c: only signals and 126/127 count as ffprobe failing to run."""
+    assert_that(program_failed(returncode)).is_equal_to(failed)
 
 
 def test_interpret_header_flags_unlisted_stderr() -> None:
@@ -770,34 +796,54 @@ def test_interpret_header_without_pins_refuses_benign_line() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("returncode", "stdout"),
-    [(1, json.dumps(probe_json()).encode()), (0, b"not json")],
-    ids=["nonzero_exit", "invalid_json"],
-)
-def test_interpret_header_corrupt_beats_unrecognized(
-    returncode: int,
-    stdout: bytes,
-) -> None:
-    """A non-zero exit or invalid JSON stays corrupt, whatever stderr says."""
+def test_interpret_header_unsupported_beats_unrecognized() -> None:
+    """A non-zero exit is unsupported whatever stderr says."""
     run = run_result(
-        returncode=returncode,
-        stdout=stdout,
+        returncode=1,
+        stdout=json.dumps(probe_json()).encode(),
         stderr=b"something unexpected\n",
     )
 
     assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
-        (None, (AudioFlag.CORRUPT,)),
+        (None, (AudioFlag.UNSUPPORTED,)),
     )
 
 
-def test_interpret_header_flags_bad_json() -> None:
-    """Unparseable stdout is corrupt."""
-    run = run_result(stdout=b'{"format": {}, "format": {}}')
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        b"not json",
+        b'{"format": {}, "format": {}}',
+        b'{"format": {"format_name": "wav\xe9"}}',
+        b"[]",
+    ],
+    ids=["not_json", "duplicate_key", "not_utf8", "not_an_object"],
+)
+def test_interpret_header_bad_stdout_is_unrecognized(stdout: bytes) -> None:
+    """A12a: stdout ffprobe cannot render says nothing about the file."""
+    assert_that(
+        interpret_header(run_result(stdout=stdout), benign=BENIGN_9),
+    ).is_equal_to((None, (AudioFlag.UNRECOGNIZED_OUTPUT,)))
 
-    assert_that(interpret_header(run, benign=BENIGN_9)).is_equal_to(
-        (None, (AudioFlag.CORRUPT,)),
-    )
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, 0),
+        (25, 25),
+        (100, 100),
+        (101, None),
+        (-1, None),
+        (2**63, None),
+        ("50", None),
+        (True, None),
+        (50.0, None),
+        (None, None),
+    ],
+)
+def test_parse_probe_score(value: object, expected: int | None) -> None:
+    """A12f: a probe score is a JSON integer from 0 to 100, else unknown."""
+    assert_that(parse_probe_score(value)).is_equal_to(expected)
 
 
 def test_interpret_header_records_estimate_line() -> None:
@@ -921,18 +967,32 @@ def test_declared_prefers_stream_duration() -> None:
 
 @pytest.mark.parametrize(
     "container",
-    ["ogg", "mpegts", "mpeg", "flv", "aac", "ac3", "eac3"],
+    ["ogg", "mpegts", "mpeg", "flv", "aac", "ac3", "eac3", "avi"],
 )
 def test_declared_never_for_listed_containers(container: str) -> None:
-    """These containers never declare a duration."""
-    header = _header(container=container)
+    """These containers never declare a duration, even with healthy packets.
 
-    assert_that(declared_duration(header, _walk(), estimate_warned=False)).is_none()
+    The same header and walk declare 2 s as ``flac``, so only the container
+    guard makes the difference.
+    """
+    walk = _walk(*_packets(100))
+
+    assert_that(
+        declared_duration(_header(), walk, estimate_warned=False),
+    ).is_equal_to(Decimal("2.000000"))
+    assert_that(
+        declared_duration(_header(container=container), walk, estimate_warned=False),
+    ).is_none()
 
 
 def test_declared_never_after_estimate_line() -> None:
-    """An estimate line means nothing is declared."""
-    assert_that(declared_duration(_header(), _walk(), estimate_warned=True)).is_none()
+    """An estimate line means nothing is declared, even with healthy packets."""
+    walk = _walk(*_packets(100))
+
+    assert_that(
+        declared_duration(_header(), walk, estimate_warned=False),
+    ).is_equal_to(Decimal("2.000000"))
+    assert_that(declared_duration(_header(), walk, estimate_warned=True)).is_none()
 
 
 def test_declared_from_format_only_with_one_stream() -> None:
@@ -1190,8 +1250,11 @@ def test_avi_never_declares_a_duration() -> None:
 
 
 @pytest.mark.parametrize("container", sorted(AUDIO_ONLY_DECLARED_FORMATS))
-def test_avi_and_asf_with_another_stream_declare_nothing(container: str) -> None:
-    """A8: any other non-picture stream makes ASF undeclared."""
+def test_asf_with_another_stream_declares_nothing(container: str) -> None:
+    """A8: any other non-picture stream makes ASF undeclared.
+
+    AVI is not here: it never declares a duration at all (A9b).
+    """
     alone = _header(container=container, stream_duration=Decimal("1.5"))
     with_video = replace(alone, non_picture_stream_count=2)
     walk = _walk(*_packets(50))
@@ -1207,7 +1270,7 @@ def test_avi_and_asf_with_another_stream_declare_nothing(container: str) -> None
 
 @pytest.mark.parametrize("container", ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"])
 def test_other_containers_with_video_keep_the_stream_duration(container: str) -> None:
-    """A8 is limited to AVI and ASF: elsewhere the stream's duration stands."""
+    """A8 is limited to ASF (AVI declares nothing, A9b): elsewhere it stands."""
     header = _header(
         container=container,
         stream_duration=Decimal("1.5"),
@@ -1275,8 +1338,107 @@ def test_step1_nonzero_exit_beats_unrecognized_line() -> None:
 
 
 def test_step2_no_packets_is_truncated() -> None:
-    """Step 2: no packets means truncated with no duration."""
+    """Step 2: no packets against a positive declared duration is truncated."""
     assert_that(_decide(_walk())).is_equal_to((None, True, ()))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        _header(stream_duration=None, format_duration=None),
+        _header(stream_duration=None, format_duration=None, container="aiff"),
+        _header(container="ogg"),
+        _header(container="avi"),
+        _header(estimate_warned=True),
+        _header(container="asf", non_picture_stream_count=2),
+        _header(stream_duration=None, non_picture_stream_count=2),
+        _header(stream_duration=None, format_start=Decimal(5)),
+    ],
+    ids=[
+        "nothing_declared",
+        "empty_aiff",
+        "undeclared_container",
+        "avi",
+        "estimate_line",
+        "asf_with_video",
+        "format_duration_two_streams",
+        "format_duration_late_start",
+    ],
+)
+def test_step2_no_packets_without_declared_is_inconsistent(
+    header: ProbeHeader,
+) -> None:
+    """A12d: an empty walk without a positive declared duration is not damage.
+
+    ffmpeg writes empty FLAC (no duration) and AIFF (duration 0) files.
+    """
+    assert_that(_decide(_walk(), header=header)).is_equal_to(
+        (None, None, (AudioFlag.INCONSISTENT,)),
+    )
+
+
+def test_declared_without_packets_skips_only_the_first_packet_bound() -> None:
+    """A12d: with no packet the A9 first-packet bound has nothing to hold."""
+    assert_that(
+        declared_without_packets(_header(), estimate_warned=False),
+    ).is_equal_to(Decimal("2.000000"))
+    assert_that(
+        declared_without_packets(
+            _header(stream_duration=None, format_duration=Decimal(7)),
+            estimate_warned=False,
+        ),
+    ).is_equal_to(Decimal(7))
+    assert_that(declared_duration(_header(), _walk(), estimate_warned=False)).is_none()
+
+
+def test_step2_estimate_line_in_walk_stderr_is_inconsistent() -> None:
+    """A12d: an estimate line in the walk's stderr also leaves nothing declared."""
+    stderr = f"[mp3 @ 0x1] {ESTIMATE_LINE}\n".encode()
+
+    assert_that(_decide(_walk(), stderr=stderr)).is_equal_to(
+        (None, None, (AudioFlag.INCONSISTENT,)),
+    )
+
+
+@pytest.mark.parametrize("returncode", [-9, 126, 127])
+def test_step1_program_failure_is_backend_unavailable(returncode: int) -> None:
+    """A12c: a walk killed by a signal or not run is not corrupt."""
+    assert_that(_decide(_walk(*_packets(100)), returncode=returncode)).is_equal_to(
+        (None, None, (AudioFlag.BACKEND_UNAVAILABLE,)),
+    )
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("0.000000,-0.020000,K__",),
+        (*_packets(99), "1.980000,-0.000001,K__"),
+    ],
+    ids=["only", "last"],
+)
+def test_negative_packet_duration_is_missing_time(lines: tuple[str, ...]) -> None:
+    """A12e: a negative packet duration counts as a packet without a time."""
+    walk = _walk(*lines)
+
+    assert_that(walk.missing_time).is_true()
+    assert_that(_decide(walk)).is_equal_to((None, None, (AudioFlag.INCONSISTENT,)))
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("0.000000,0.000000,K__", "0.000000,0.000000,K__"),
+        ("0.000000,0.000000,K__", "0.000000,0.000000,K__", "0.000000,0.020000,K__"),
+        ("1.000000,0.000000,K__",),
+    ],
+    ids=["all_zero", "zero_median", "single_zero"],
+)
+def test_non_positive_measure_is_inconsistent(lines: tuple[str, ...]) -> None:
+    """A12e: a measured span or median that is not positive is no duration."""
+    for header in (_header(), _header(container="ogg")):
+        assert_that(_decide(_walk(*lines), header=header)).is_equal_to(
+            (None, None, (AudioFlag.INCONSISTENT,)),
+        )
 
 
 def test_step3_missing_time_beats_corrupt_flag() -> None:
@@ -1465,7 +1627,10 @@ def test_step5_estimate_line_in_walk_stderr() -> None:
 
 
 def _short_by(shortfall: str) -> PacketWalk:
-    """Build a walk of 100 packets whose last one ends ``shortfall`` early.
+    """Build a 2 s walk of 99 packets whose last (40 ms) ends ``shortfall`` early.
+
+    The last packet is two packets long, so a shortfall up to 40 ms leaves it
+    a positive duration (A12e) while the median stays 20 ms.
 
     Args:
         shortfall: Seconds missing before the 2 s declared duration.
@@ -1473,9 +1638,9 @@ def _short_by(shortfall: str) -> PacketWalk:
     Returns:
         The walk.
     """
-    lines = _packets(99)
-    last = Decimal("0.020000") - Decimal(shortfall)
-    return _walk(*lines, f"1.980000,{last:.6f},K__")
+    lines = _packets(98)
+    last = Decimal("0.040000") - Decimal(shortfall)
+    return _walk(*lines, f"1.960000,{last:.6f},K__")
 
 
 def test_step6_short_by_one_packet_is_truncated() -> None:
@@ -1566,3 +1731,85 @@ def test_small_start_offset_is_estimated_not_truncated() -> None:
     assert_that(
         _decide(_walk(*_packets(100, start="0.010")), header=header),
     ).is_equal_to((Decimal("2.000000"), None, (AudioFlag.ESTIMATED,)))
+
+
+# --- priming counted as audio (A12h) ------------------------------------------
+
+
+@pytest.mark.parametrize("codec", ["aac", "mp3"])
+def test_primed_codecs_in_matroska_are_estimated(codec: str) -> None:
+    """A12h: Matroska AAC/MP3 duration counts the priming, so it is measured.
+
+    Audio-only Matroska from ffmpeg: the first packet starts at -21 ms and
+    ``format.duration`` 1.021 is measured from there for 1.000 s of audio.
+    """
+    header = _matroska_header(
+        codec=codec,
+        non_picture_stream_count=1,
+        time_base=Decimal("0.001"),
+        format_duration=Decimal("1.021"),
+    )
+    walk = _walk(*_packets(48, step="0.021000", start="-0.021"), "0.987,0.013,K__")
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(
+        declared_without_packets(header, estimate_warned=False),
+    ).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.021000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+@pytest.mark.parametrize("codec", ["opus", "flac", "pcm_s16le"])
+def test_other_codecs_in_matroska_still_declare(codec: str) -> None:
+    """A12h is limited to AAC and MP3 in Matroska."""
+    header = _matroska_header(codec=codec, non_picture_stream_count=1)
+
+    assert_that(
+        declared_duration(header, _walk(*_packets(50)), estimate_warned=False),
+    ).is_equal_to(Decimal("2.008"))
+
+
+def test_fragmented_mp4_aac_is_estimated() -> None:
+    """A12h: MP4 AAC from zero has no edit list; its duration counts priming.
+
+    Fragmented MP4 at 8 kHz: stream duration 1.128 for 1.000 s of audio, the
+    first packet at 0 instead of -0.128.
+    """
+    header = _mp4_header(
+        codec="aac",
+        sample_rate=8000,
+        time_base=Decimal(1) / Decimal(8000),
+        stream_duration=Decimal("1.128"),
+    )
+    walk = _walk(*_packets(8, step="0.128000"), "1.024000,0.104000,K__")
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.128000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+def test_mp4_aac_with_trimmed_priming_declares() -> None:
+    """A12h: an edit list puts the first packet before zero; the duration stands."""
+    header = _mp4_header(
+        codec="aac",
+        sample_rate=8000,
+        time_base=Decimal(1) / Decimal(8000),
+        stream_duration=Decimal("1.000"),
+    )
+    walk = _walk(*_packets(9, step="0.128000", start="-0.128"), "1.024,0.104,K__")
+
+    assert_that(
+        declared_duration(header, walk, estimate_warned=False),
+    ).is_equal_to(Decimal("1.000"))
+
+
+@pytest.mark.parametrize("codec", ["alac", "mp3", "pcm_s16le"])
+def test_other_mp4_codecs_from_zero_still_declare(codec: str) -> None:
+    """A12h's MP4 rule is limited to AAC."""
+    header = _mp4_header(codec=codec, stream_duration=Decimal(2))
+
+    assert_that(
+        declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
+    ).is_equal_to(Decimal(2))

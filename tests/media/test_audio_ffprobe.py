@@ -24,19 +24,24 @@ from assertpy import assert_that
 
 from tests.media.fixtures.audio.generate_audio_fixtures import (
     CHAINED_OGG,
+    EMPTY_FIXTURES,
     FIXTURES,
     FRAME_CUTS,
     FRAME_SOURCES,
     INCONSISTENT_FIXTURES,
+    UNSUPPORTED_FIXTURES,
     AudioFixture,
     FrameCut,
 )
 from winnow.media import audio as audio_module
 from winnow.media._ffprobe import (
+    FFMPEG,
+    ffmpeg_available,
     ffprobe_available,
     ffprobe_version,
     find_binary,
     parse_version_major,
+    run_command,
 )
 from winnow.media.audio import BENIGN_STDERR_BY_MAJOR, extract_audio_metadata
 from winnow.media.video import extract_video_metadata
@@ -61,10 +66,13 @@ class Pins:
         benign: Benign stderr lines.
         stream_bitrate: Fixtures with a declared duration whose primary
             stream has a ``bit_rate`` in this build.
+        cut_outcomes: For each fixture in ``FIXTURES``, the outcome of the
+            file cut to 50, 90 and 98 % (see :func:`_outcome`).
     """
 
     benign: frozenset[str]
     stream_bitrate: frozenset[str]
+    cut_outcomes: dict[str, tuple[str, str, str]]
 
 
 PINS: Final[dict[int, Pins]] = {
@@ -89,13 +97,128 @@ PINS: Final[dict[int, Pins]] = {
                 "alac.m4a",
                 "adpcm_ms.wav",
                 "cover.mp3",
-                "delayed.mp4",
                 "cover.m4a",
                 "timecode.mov",
                 "frames.mp3",
                 "frames.m4a",
+                "latin1_tag.wav",
+                "latin1_tag.aiff",
             },
         ),
+        cut_outcomes={
+            "mp3.mp3": ("unrecognized_output", "unrecognized_output", "truncated"),
+            "adts.aac": ("estimated", "estimated", "estimated"),
+            "ac3.ac3": ("estimated", "estimated", "estimated"),
+            "eac3.eac3": ("estimated", "estimated", "estimated"),
+            "flac.flac": ("unsupported", "truncated", "truncated"),
+            "wavpack.wv": ("truncated", "truncated", "truncated"),
+            "tta.tta": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "wav.wav": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "aiff.aiff": ("truncated", "truncated", "truncated"),
+            "aac.m4a": ("unsupported", "unrecognized_output", "unsupported"),
+            "opus.ogg": ("unsupported", "estimated", "estimated"),
+            "wma.wma": ("estimated", "estimated", "truncated"),
+            "opus.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "pcm.avi": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "mp2.m2ts": ("unrecognized_output", "estimated", "unrecognized_output"),
+            "mp2.mpg": ("estimated", "unrecognized_output", "unrecognized_output"),
+            "mp3.flv": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "mp2_named.mp3": ("estimated", "estimated", "estimated"),
+            "alac.m4a": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "adpcm_ms.wav": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "ac3_mono.ac3": ("estimated", "estimated", "estimated"),
+            "flac24.flac": ("unsupported", "truncated", "truncated"),
+            "two_tracks.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "cover.mp3": ("unrecognized_output", "unrecognized_output", "truncated"),
+            "delayed.mkv": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "delayed.mp4": (
+                "unsupported",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "delayed.avi": ("unsupported", "estimated", "estimated"),
+            "video.wmv": ("estimated", "estimated", "estimated"),
+            "vbr_noxing.mp3": ("estimated", "estimated", "estimated"),
+            "cover.m4a": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "timecode.mov": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "offset.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "offset_delayed.mkv": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "delayed_audio.avi": ("unsupported", "estimated", "estimated"),
+            "delayed_audio.wma": ("estimated", "estimated", "estimated"),
+            "delayed_pcm.mkv": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "late_pcm.mka": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "latin1_tag.wav": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "latin1_tag.aiff": ("truncated", "truncated", "truncated"),
+            "latin1_tag.avi": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+        },
     ),
 }
 """Build-dependent values per FFmpeg major, measured on 9.0.2."""
@@ -317,11 +440,12 @@ def test_undeclared_formats_measured_within_50ms(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["delayed.mkv", "delayed.avi", "video.wmv"])
 def test_audio_beside_video_is_estimated_never_truncated(name: str) -> None:
-    """A5 and A8: the audio is measured within the tolerance, never truncated.
+    """A5, A9b and A8: the audio is measured within the tolerance, never truncated.
 
     Delayed Matroska audio has no declared duration once the ``DURATION`` tag
-    is unused; in AVI and ASF the audio duration field includes the delay or
-    the video's length, so it is not used beside another stream.
+    is unused; AVI never declares one, its audio duration field includes the
+    delay (A9b); in ASF the field is the video's length, so it is not used
+    beside another stream (A8).
     """
     metadata = extract_audio_metadata(AUDIO_DIR / name)
 
@@ -413,6 +537,7 @@ def test_warned_but_healthy_mp4_is_read(name: str) -> None:
     )
     assert_that(metadata.audio_stream_count).is_equal_to(1)
     assert_that(metadata.truncated).is_same_as(False)
+    assert_that(_flags(metadata)).is_empty()
     assert_that(_duration(metadata)).is_close_to(fixture.duration, DURATION_TOLERANCE)
 
 
@@ -429,6 +554,7 @@ def test_last_frames_removed(cut: FrameCut) -> None:
     metadata = extract_audio_metadata(AUDIO_DIR / cut.name)
 
     assert_that(metadata.codec).is_equal_to(source.codec)
+    assert_that(_flags(metadata)).is_empty()
     if cut.detected:
         assert_that(metadata.truncated).is_same_as(True)
         assert_that(metadata.duration_seconds).is_none()
@@ -449,6 +575,7 @@ def test_two_tracks_and_cover_art() -> None:
     assert_that(tracks.audio_stream_count).is_equal_to(2)
     assert_that(cover.audio_stream_count).is_equal_to(1)
     assert_that(cover.truncated).is_same_as(False)
+    assert_that(_flags(cover)).is_empty()
 
 
 def test_chained_ogg_is_inconsistent() -> None:
@@ -456,20 +583,57 @@ def test_chained_ogg_is_inconsistent() -> None:
     metadata = extract_audio_metadata(AUDIO_DIR / CHAINED_OGG)
 
     assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.truncated).is_none()
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.INCONSISTENT,))
 
 
+CUT_FRACTIONS: Final[tuple[float, ...]] = (0.5, 0.9, 0.98)
+
+
+def _outcome(metadata: MediaMetadata) -> str:
+    """Name the reader's verdict on a cut file.
+
+    Args:
+        metadata: Reader output.
+
+    Returns:
+        ``truncated``, ``complete`` (``truncated=false``), the first flag's
+        value, or ``none``.
+    """
+    if metadata.truncated is True:
+        return "truncated"
+    if metadata.truncated is False:
+        return "complete"
+    flags = _flags(metadata)
+    return flags[0].value if flags else "none"
+
+
+def test_cut_outcomes_cover_every_fixture(pins: Pins) -> None:
+    """Every cut fixture has a pinned outcome, and none is ``complete``."""
+    assert_that(set(pins.cut_outcomes)).is_equal_to({f.name for f in FIXTURES})
+    for outcomes in pins.cut_outcomes.values():
+        assert_that(outcomes).does_not_contain("complete", "corrupt")
+
+
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda fixture: fixture.name)
-@pytest.mark.parametrize("fraction", [0.5, 0.9, 0.98])
+@pytest.mark.parametrize("fraction", CUT_FRACTIONS)
 def test_cut_file_is_never_reported_complete(
     fixture: AudioFixture,
     fraction: float,
+    pins: Pins,
     tmp_path: Path,
 ) -> None:
-    """A cut file never reports truncated=false with a duration."""
+    """A cut file never reports truncated=false with a duration.
+
+    The outcome of each cut is pinned per fixture, so a rule change that
+    moves a cut from ``truncated`` to another verdict is seen.
+    """
     metadata = extract_audio_metadata(
         _cut(AUDIO_DIR / fixture.name, tmp_path, fraction)
     )
+
+    expected = pins.cut_outcomes[fixture.name][CUT_FRACTIONS.index(fraction)]
+    assert_that(_outcome(metadata)).is_equal_to(expected)
 
     reported_complete = (
         metadata.truncated is False and metadata.duration_seconds is not None
@@ -495,7 +659,7 @@ def _garbage() -> dict[str, bytes]:
 
 @pytest.mark.parametrize("kind", ["random", "zeros", "text", "ff"])
 def test_garbage_under_every_extension(kind: str, tmp_path: Path) -> None:
-    """Garbage is unknown under every allow-listed extension."""
+    """Garbage is unknown and unsupported, never corrupt, under every extension."""
     content = _garbage()[kind]
     for suffix in ALLOWED_EXTENSIONS:
         path = tmp_path / f"{kind}{suffix}"
@@ -504,7 +668,7 @@ def test_garbage_under_every_extension(kind: str, tmp_path: Path) -> None:
         metadata = extract_audio_metadata(path)
 
         assert_that(metadata).described_as(path.name).is_equal_to(
-            MediaMetadata(audio_flags=(AudioFlag.CORRUPT,)),
+            MediaMetadata(audio_flags=(AudioFlag.UNSUPPORTED,)),
         )
 
 
@@ -533,7 +697,7 @@ def _playlists(target: Path) -> dict[str, bytes]:
 
 @pytest.mark.parametrize("suffix", [".mp3", ".m4a", ".flac", ".wav"])
 def test_scripts_never_reach_the_referenced_file(suffix: str, tmp_path: Path) -> None:
-    """Concat and HLS under audio names are unknown and open nothing.
+    """Concat and HLS under audio names are unsupported and open nothing.
 
     One target is a healthy MP3, so following it would yield facts; the
     other is a FIFO, so opening it would hang until the time-out.
@@ -551,7 +715,7 @@ def test_scripts_never_reach_the_referenced_file(suffix: str, tmp_path: Path) ->
 
             assert_that(time.monotonic() - started).is_less_than(5)
             assert_that(metadata).described_as(f"{name} -> {target.name}").is_equal_to(
-                MediaMetadata(audio_flags=(AudioFlag.CORRUPT,)),
+                MediaMetadata(audio_flags=(AudioFlag.UNSUPPORTED,)),
             )
 
 
@@ -586,3 +750,109 @@ def test_leading_dash_names_are_not_options(
 
     assert_that((video.width, video.height)).is_equal_to((64, 48))
     assert_that(audio.duration_seconds).is_equal_to(6.0)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    UNSUPPORTED_FIXTURES,
+    ids=lambda fixture: fixture.name,
+)
+def test_formats_outside_the_allow_list_are_unsupported(fixture: AudioFixture) -> None:
+    """A12b: healthy AU and Core Audio Format files are unsupported."""
+    metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
+
+    assert_that(metadata).is_equal_to(
+        MediaMetadata(audio_flags=(AudioFlag.UNSUPPORTED,)),
+    )
+
+
+@pytest.mark.parametrize("fixture", EMPTY_FIXTURES, ids=lambda fixture: fixture.name)
+def test_empty_files_are_not_damaged(fixture: AudioFixture) -> None:
+    """A12d: an empty FLAC or AIFF keeps its facts and is never truncated."""
+    metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
+
+    assert_that(metadata.container).is_equal_to(fixture.format_name)
+    assert_that(metadata.codec).is_equal_to(fixture.codec)
+    assert_that(metadata.sample_rate).is_equal_to(fixture.sample_rate)
+    assert_that(metadata.channels).is_equal_to(fixture.channels)
+    assert_that(metadata.bit_depth).is_equal_to(fixture.bit_depth)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.bitrate).is_none()
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.INCONSISTENT,))
+
+
+@pytest.mark.parametrize(
+    "name", ["latin1_tag.wav", "latin1_tag.aiff", "latin1_tag.avi"]
+)
+def test_non_utf8_tags_do_not_hide_the_facts(name: str) -> None:
+    """A12a: a Latin-1 title tag is never read, so the facts stand."""
+    fixture = BY_NAME[name]
+
+    metadata = extract_audio_metadata(AUDIO_DIR / name)
+
+    assert_that((metadata.container, metadata.codec)).is_equal_to(
+        (fixture.format_name, fixture.codec),
+    )
+    assert_that(_duration(metadata)).is_close_to(fixture.duration, DURATION_TOLERANCE)
+    assert_that(_flags(metadata)).does_not_contain(
+        AudioFlag.CORRUPT,
+        AudioFlag.UNRECOGNIZED_OUTPUT,
+    )
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg not installed")
+@pytest.mark.parametrize(
+    ("muxer", "codec", "flag"),
+    [
+        ("wav", "pcm_s16le", AudioFlag.UNRECOGNIZED_OUTPUT),
+        ("aiff", "pcm_s16be", AudioFlag.UNSUPPORTED),
+    ],
+)
+def test_written_to_a_pipe_is_unknown_never_damaged(
+    muxer: str,
+    codec: str,
+    flag: AudioFlag,
+    tmp_path: Path,
+) -> None:
+    """A12b: WAV and AIFF written to a pipe are both all unknown, no damage.
+
+    ``-seekable 0`` makes ffmpeg write exactly what it writes to a pipe: it
+    cannot seek back to fill in the sizes. The WAV header still
+    parses, with a ``Packet corrupt`` warning (A1); the AIFF header does not
+    parse at all (A12b). Neither is a claim that the file is damaged.
+    """
+    binary = find_binary(FFMPEG)
+    if binary is None:
+        pytest.fail("ffmpeg not found")
+    target = tmp_path / f"piped.{muxer}"
+    completed = run_command(
+        argv=[
+            binary,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=8000:cl=mono",
+            "-t",
+            "1",
+            "-c:a",
+            codec,
+            "-seekable",
+            "0",
+            "-f",
+            muxer,
+            f"file:{target}",
+        ],
+        timeout=60,
+        operation="pipe fixture",
+        path=target,
+    )
+    assert_that(completed.returncode).is_equal_to(0)
+
+    assert_that(extract_audio_metadata(target)).is_equal_to(
+        MediaMetadata(audio_flags=(flag,)),
+    )

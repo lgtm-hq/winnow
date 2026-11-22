@@ -30,9 +30,9 @@ class AudioFlag(StrEnum):
 
     ``truncated`` is not a flag: it has three states and lives in
     :attr:`MediaMetadata.truncated`. ``truncated=True`` and ``CORRUPT``
-    claim damage; ``INCONSISTENT``, ``ESTIMATED`` and ``UNRECOGNIZED_OUTPUT``
-    only say the evidence does not establish a value, and a healthy file may
-    carry them.
+    claim damage; ``INCONSISTENT``, ``ESTIMATED``, ``UNRECOGNIZED_OUTPUT`` and
+    ``UNSUPPORTED`` only say the evidence does not establish a value, and a
+    healthy file may carry them.
     """
 
     INCONSISTENT = auto()
@@ -44,13 +44,27 @@ class AudioFlag(StrEnum):
     """
 
     CORRUPT = auto()
-    """ffprobe exited non-zero, wrote invalid JSON, or flagged a packet."""
+    """The packet walk established damage.
+
+    The walk exited non-zero after an accepted header, or ffprobe flagged a
+    packet corrupt. ``corrupt`` is a claim about the file, never about
+    ffprobe or about a format winnow does not accept.
+    """
 
     UNRECOGNIZED_OUTPUT = auto()
     """ffprobe wrote a stderr line that is not benign for this file.
 
     An unexpected line is not proof of damage, so it is not ``corrupt``; it
-    still makes every value it could affect unknown.
+    still makes every value it could affect unknown. Header output that is
+    not valid UTF-8 or JSON is also unrecognized: output ffprobe cannot
+    render says nothing about the file.
+    """
+
+    UNSUPPORTED = auto()
+    """No accepted format recognised the file: the header call exited non-zero.
+
+    This covers formats outside the allow-list, garbage, and playlists. It is
+    not a damage claim.
     """
 
     ESTIMATED = auto()
@@ -60,7 +74,11 @@ class AudioFlag(StrEnum):
     """An ffprobe run breached its time or output bound and was killed."""
 
     BACKEND_UNAVAILABLE = auto()
-    """ffprobe is missing or could not be started."""
+    """ffprobe is missing, could not be started, or failed as a program.
+
+    A signal, exit 126 or 127, or an unreadable ``ffprobe -version`` says
+    nothing about the file.
+    """
 
 
 class MediaMetadata(BaseModel):

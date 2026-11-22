@@ -9,15 +9,20 @@ through an extension-less symlink in a private directory that points at
 so ffprobe never sees the file's name. Anything ffprobe does not establish is
 reported as unknown.
 
-The rules are those of issue #400 and its amendments A1 to A11 (with A9b
-and A10b). This module
-runs ffprobe; the decisions on its output live in
+The rules are those of issue #400 and its amendments A1 to A12 (with A9b
+and A10b). This module runs ffprobe; the decisions on its output live in
 :mod:`winnow.media._audio_rules`:
 
-* R1/R2: one header call with a format allow-list; every fact is unknown
-  unless the call exits 0, names an allowed container, has an audio stream
-  with codec, sample rate, and channels, and writes only benign stderr lines
-  (an unexpected line is ``unrecognized_output``, not ``corrupt``).
+* R1/R2: one header call with a format allow-list that asks only for the
+  fields the rules read, never tags (A12a); every fact is unknown unless
+  the call exits 0, names an allowed container, has an audio stream with
+  codec, sample rate, and channels, and writes only benign stderr lines.
+  The header call never claims damage: an unexpected line or output that
+  is not UTF-8 JSON is ``unrecognized_output``, a non-zero exit
+  ``unsupported`` (A12b).
+* A12c: ffprobe failing is not about the file. A signal or exit 126/127
+  is ``backend_unavailable``; so is a ``-version`` banner that cannot be
+  read or parsed, and then nothing is probed.
 * R3: cover art is never a stream to read; the primary stream is the first
   default audio stream, else the first audio stream.
 * R4/R5/R7: facts come from the primary stream; a declared duration is the
@@ -27,6 +32,8 @@ runs ffprobe; the decisions on its output live in
   units after zero (A9); a Matroska ``DURATION`` tag is never used; AVI
   never declares a duration (A9b); in ASF nothing is declared when the
   file has another non-picture stream besides the primary audio (A8);
+  AAC and MP3 in Matroska, and AAC in MP4 whose first packet is not before
+  zero, declare nothing because the duration counts the priming (A12h);
   bitrate is the stream's own.
 * R6: a packet walk of the primary stream checks the declared duration and
   measures it where none is declared. A walk that ends more than max(5 ms,
@@ -34,14 +41,20 @@ runs ffprobe; the decisions on its output live in
   truncated (A5). In MP4 a packet longer than twice the median packet
   makes the duration unknown with ``inconsistent`` (A10b). In FLV a packet
   without a time makes every audio fact unknown with ``inconsistent``
-  (A11).
+  (A11). A walk with no packet is ``truncated`` only against a positive
+  declared duration (A12d); a negative packet duration is a missing time,
+  and a measured span or median that is not positive is ``inconsistent``
+  (A12e). ``corrupt`` is set only here, where the walk establishes damage.
 * ``truncated`` and ``corrupt`` claim damage; ``inconsistent``,
-  ``estimated`` and ``unrecognized_output`` only say the evidence does not
-  establish a value, and a healthy file may carry them.
+  ``estimated``, ``unrecognized_output`` and ``unsupported`` only say the
+  evidence does not establish a value, and a healthy file may carry them.
 * R8: both calls are bounded in time and output and are never retried.
 * A6: the file's device, inode, size, and modification time are taken before
   the header call and after the walk; any change makes every fact unknown
-  with ``inconsistent``.
+  with ``inconsistent``. Where ffprobe reads the file through its path,
+  the path must also name the opened file before and after (A12g).
+* A12f: a ``probe_score`` outside 0 to 100 is unknown; no value from
+  ffprobe can fail the metadata model's validation.
 
 Known limits (not worked around):
 
@@ -77,6 +90,16 @@ Known limits (not worked around):
 * Stereo PCM in Matroska can come back with the duration unknown and
   ``inconsistent``: ffprobe gives the last packet no duration.
 * ADTS at 8 kHz is ``estimated`` up to about 170 ms long.
+* AAC and MP3 in Matroska, and AAC in MP4 whose first packet starts at
+  or after zero (no edit list, as in fragmented MP4), are ``estimated``
+  (A12h): the duration counts the encoder priming as audio. Measured on
+  FFmpeg 9.0.2, the excess is one priming block at every sample rate:
+  AAC 1024 samples (128 ms at 8 kHz, 92.9 ms at 11.025 kHz, 85.3 ms at
+  12 kHz, 64 ms at 16 kHz, 46.4 ms at 22.05 kHz, 42.7 ms at 24 kHz,
+  32 ms at 32 kHz, 23.2 ms at 44.1 kHz, 21.3 ms at 48 kHz), the same in
+  Matroska and fragmented MP4; LAME MP3 in Matroska 1105 samples (138,
+  100, 92, 69, 50, 46, 35, 25 and 23 ms). The measured length still
+  includes it.
 * MP3 is ``estimated`` only when ffprobe says it estimated the duration (no
   Xing/Info or VBRI header); with such a header the duration is declared and
   checked like any other.
@@ -84,8 +107,12 @@ Known limits (not worked around):
   boundary leaves no evidence; those formats are always ``estimated``, never
   ``truncated=false``.
 * Chained Ogg is reported ``inconsistent``.
-* A WAV written to a pipe is flagged; an MS ADPCM WAV whose ``fact`` chunk
-  ffprobe ignores is ``estimated``.
+* A WAV written to a pipe is ``unrecognized_output`` and an AIFF written
+  to a pipe ``unsupported``: every fact is unknown, neither is a damage
+  claim. An MS ADPCM WAV whose ``fact`` chunk ffprobe ignores is
+  ``estimated``.
+* Formats outside the allow-list (AU, Core Audio Format, raw DTS, VOC,
+  W64, MLP, ADX) are ``unsupported``.
 * The file identity check (A6) cannot see a file that is changed and then
   restored with the same size and modification time.
 """
@@ -109,6 +136,7 @@ from winnow.media._audio_rules import (
     BENIGN_STDERR_BY_MAJOR,
     BIT_DEPTH_CODECS,
     ESTIMATE_STDERR_LINES,
+    HEADER_SHOW_ENTRIES,
     NO_DECLARED_DURATION_FORMATS,
     DurationOutcome,
     PacketWalk,
@@ -166,6 +194,9 @@ class _ProbeSource:
         size: File size in bytes.
         rewind: Resets the descriptor before each run.
         identity: Returns the file's current identity (A6).
+        path_matches: Reports whether the path ffprobe reads names the
+            opened file (A12g); always ``True`` when ffprobe reads the
+            descriptor.
     """
 
     protocol: str
@@ -174,6 +205,7 @@ class _ProbeSource:
     size: int
     rewind: Callable[[], None]
     identity: Callable[[], FileIdentity]
+    path_matches: Callable[[], bool] = lambda: True
 
 
 def extract_audio_metadata(path: Path) -> MediaMetadata:
@@ -201,7 +233,10 @@ def extract_audio_metadata(path: Path) -> MediaMetadata:
     binary = find_binary(FFPROBE)
     if binary is None:
         return _unavailable("ffprobe not found on PATH")
-    benign = benign_stderr_lines(binary)
+    major = parse_version_major(ffprobe_version(binary) or "")
+    if major is None:
+        return _unavailable("ffprobe -version could not be read or parsed")
+    benign = BENIGN_STDERR_BY_MAJOR.get(major, frozenset())
     with _probe_source(path=path, binary=binary) as source:
         try:
             return _checked_probe(binary=binary, source=source, benign=benign)
@@ -253,6 +288,10 @@ def _checked_probe(
 ) -> MediaMetadata:
     """Run :func:`_probe` and discard its result if the file changed (A6).
 
+    Where ffprobe reads the file through its path, the path must name the
+    opened file both before and after the probe (A12g); a mismatch, or a
+    path that no longer exists, is ``inconsistent``.
+
     Args:
         binary: Absolute path of the ffprobe binary.
         source: How ffprobe receives the file.
@@ -260,12 +299,16 @@ def _checked_probe(
 
     Returns:
         The audio metadata, or all unknown with ``inconsistent`` when the
-        file's identity differs after the last call from before the first.
+        file's identity differs after the last call from before the first,
+        or the path does not name the opened file.
     """
+    changed = MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,))
+    if not source.path_matches():
+        return changed
     before = source.identity()
     metadata = _probe(binary=binary, source=source, benign=benign)
-    if source.identity() != before:
-        return MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,))
+    if source.identity() != before or not source.path_matches():
+        return changed
     return metadata
 
 
@@ -291,8 +334,8 @@ def _probe(
             *_base_argv(binary, source),
             "-of",
             "json=sv=ignore",
-            "-show_format",
-            "-show_streams",
+            "-show_entries",
+            HEADER_SHOW_ENTRIES,
             *source.input_args,
         ],
         stdin=source.stdin,
@@ -407,8 +450,8 @@ def _probe_source(*, path: Path, binary: str) -> Iterator[_ProbeSource]:
     temporary directory; the link points at ``/dev/fd/0``, ffprobe's own
     stdin, so it reads the file that was opened even if the path is replaced
     later. Where ``/dev/fd`` does not exist the link points at the file's
-    absolute path, and the path's identity is also compared with the
-    descriptor's (A6).
+    absolute path, and the path's identity must equal the descriptor's
+    before and after the probe (A6, A12g).
 
     Args:
         path: The audio file.
@@ -452,10 +495,11 @@ def _probe_source(*, path: Path, binary: str) -> Iterator[_ProbeSource]:
                 stdin=descriptor,
                 size=size,
                 rewind=lambda: _rewind(descriptor),
-                identity=(
-                    (lambda: _identity(descriptor))
+                identity=lambda: _identity(descriptor),
+                path_matches=(
+                    (lambda: True)
                     if by_descriptor
-                    else (lambda: _identity(descriptor) + _path_identity(path))
+                    else (lambda: _path_identity(path) == _identity(descriptor))
                 ),
             )
 

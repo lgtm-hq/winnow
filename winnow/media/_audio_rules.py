@@ -2,9 +2,10 @@
 
 Everything here works on ffprobe output that has already been captured:
 stderr filtering against the benign list (R2 with amendments A1 to A3),
-strict JSON parsing (R1), stream selection and facts (R2 to R4), the declared
-duration (R5 with A5, A8, A9 and A9b), and the packet-walk decision (R6
-with A5, A10b and A11).
+strict JSON parsing (R1), the header outcome (R2 with A12a to A12c), stream
+selection and facts (R2 to R4, A12f), the declared duration (R5 with A5, A8,
+A9 and A9b), and the packet-walk decision (R6 with A5, A10b, A11, A12d and
+A12e).
 Nothing here starts a process or touches a file; :mod:`winnow.media.audio`
 runs ffprobe and feeds these functions.
 """
@@ -137,6 +138,28 @@ fixtures have at most a handful.
 """
 
 
+PROGRAM_FAILURE_EXIT_CODES: Final[frozenset[int]] = frozenset({126, 127})
+"""Shell exit codes for a program that could not run (A12c).
+
+126 is "found but not executable" and 127 "not found"; like a negative
+return code (killed by a signal), they say nothing about the file.
+"""
+
+
+PROBE_SCORE_MAX: Final[int] = 100
+"""Largest ``probe_score`` ffprobe can report; anything outside 0 to 100 is
+unknown (A12f)."""
+
+
+HEADER_SHOW_ENTRIES: Final[str] = (
+    "format=format_name,probe_score,duration,start_time"
+    ":stream=index,id,codec_type,codec_name,sample_rate,channels,"
+    "bits_per_raw_sample,bits_per_sample,bit_rate,time_base,duration"
+    ":stream_disposition=default,attached_pic"
+)
+"""The only header fields the rules read (A12a); tags are never requested."""
+
+
 BIT_DEPTH_CODECS: Final[frozenset[str]] = frozenset(
     {"flac", "alac", "wavpack", "tta", "ape", "mlp", "truehd", "wmalossless"},
 )
@@ -165,6 +188,30 @@ _DATA_TRACK_LINE: Final[re.Pattern[str]] = re.compile(
 
 
 MP4_FORMAT_NAME: Final[str] = "mov,mp4,m4a,3gp,3g2,mj2"
+
+
+MATROSKA_FORMAT_NAME: Final[str] = "matroska,webm"
+
+
+PRIMED_MATROSKA_CODECS: Final[frozenset[str]] = frozenset({"aac", "mp3"})
+"""Codecs whose Matroska duration counts the encoder priming (A12h).
+
+ffmpeg's Matroska muxer writes no codec delay for AAC or MP3, so the first
+packet starts before zero by the priming (1024 samples for AAC, 1105 for
+LAME MP3) and ``format.duration`` is measured from that negative start. The
+declared length then overshoots the audio by one priming block at every
+sample rate: 21 to 23 ms at 48 kHz, 128 to 138 ms at 8 kHz.
+"""
+
+
+PRIMED_MP4_CODECS: Final[frozenset[str]] = frozenset({"aac"})
+"""Codecs whose MP4 duration counts the priming when it is not trimmed (A12h).
+
+An MP4 muxer that writes an edit list hides the AAC priming: the first
+packet starts before zero and the stream duration is the audio's length.
+Fragmented MP4 (``empty_moov``) has no edit list, so the first packet starts
+at zero and the stream duration counts the 1024 priming samples as audio.
+"""
 
 
 _THREE: Final[Decimal] = Decimal(3)
@@ -304,7 +351,7 @@ class PacketWalk:
             self.corrupt_packet = True
         time = parse_decimal(fields[0])
         duration = parse_decimal(fields[1])
-        if time is None or duration is None:
+        if time is None or duration is None or duration < 0:
             self.missing_time = True
             return
         if self.last_time is not None and time < self.last_time:
@@ -402,8 +449,11 @@ def interpret_header(
 ) -> tuple[ProbeHeader | None, tuple[AudioFlag, ...]]:
     """Apply R2 to R5 and R7 to a finished header call.
 
-    A non-zero exit or JSON that fails strict parsing is ``corrupt``; a
-    stderr line off the benign list is ``unrecognized_output`` (A1).
+    The header call never claims damage. A signal or exit 126 or 127 is
+    ``backend_unavailable`` (A12c); any other non-zero exit means no accepted
+    format recognised the file, ``unsupported`` (A12b). Stdout that is not
+    valid UTF-8 or JSON, and a stderr line off the benign list, are
+    ``unrecognized_output`` (A1, A12a).
 
     Args:
         run: The header call; it must not have breached a bound.
@@ -412,11 +462,13 @@ def interpret_header(
     Returns:
         The accepted header, or ``None`` with the flags that explain why not.
     """
+    if program_failed(run.returncode):
+        return None, (AudioFlag.BACKEND_UNAVAILABLE,)
     if run.returncode != 0:
-        return None, (AudioFlag.CORRUPT,)
+        return None, (AudioFlag.UNSUPPORTED,)
     data = load_probe_json(run.stdout)
     if data is None:
-        return None, (AudioFlag.CORRUPT,)
+        return None, (AudioFlag.UNRECOGNIZED_OUTPUT,)
     lines = stderr_lines(run.stderr)
     context = stderr_context(data)
     if has_unrecognized_line(lines, benign=benign, context=context):
@@ -426,6 +478,18 @@ def interpret_header(
     if header is None:
         return None, ()
     return replace(header, stderr_context=context), ()
+
+
+def program_failed(returncode: int) -> bool:
+    """Report whether an exit status says ffprobe itself failed (A12c).
+
+    Args:
+        returncode: Exit status after reaping.
+
+    Returns:
+        ``True`` for a signal (negative status) or exit 126 or 127.
+    """
+    return returncode < 0 or returncode in PROGRAM_FAILURE_EXIT_CODES
 
 
 def has_unrecognized_line(
@@ -575,7 +639,7 @@ def header_from_json(
     index, codec, sample_rate, channels = facts
     return ProbeHeader(
         container=container,
-        probe_score=_int_or_none(container_section.get("probe_score")),
+        probe_score=parse_probe_score(container_section.get("probe_score")),
         stream_index=index,
         codec=codec,
         sample_rate=sample_rate,
@@ -694,7 +758,9 @@ def declared_duration(
     or edit lists are allowed (A9). In AVI, ASF and Matroska a stream's
     duration field can be the end time of the file's timeline rather than
     the audio's length, so a stream that starts late declares nothing. AVI
-    never declares a duration (A9b).
+    never declares a duration (A9b). AAC and MP3 in Matroska, and AAC in MP4
+    whose first packet starts at or after zero, declare nothing: their
+    duration counts the encoder priming (A12h).
 
     The stream's own ``duration`` is declared. Otherwise ``format.duration``
     is declared only for a file with one non-picture stream whose
@@ -712,14 +778,62 @@ def declared_duration(
     Returns:
         The declared duration, or ``None`` when nothing declares one.
     """
+    if not _starts_at_zero(header, walk.first_time):
+        return None
+    if _priming_untrimmed(header, walk.first_time):
+        return None
+    return declared_without_packets(header, estimate_warned=estimate_warned)
+
+
+def _priming_untrimmed(header: ProbeHeader, first_time: Decimal | None) -> bool:
+    """Report whether MP4 AAC counts its priming as audio (A12h).
+
+    Args:
+        header: Accepted header facts.
+        first_time: The first packet time.
+
+    Returns:
+        ``True`` for AAC in MP4 whose first packet starts at or after zero,
+        so no edit list removed the priming from the declared duration.
+    """
+    return (
+        header.container == MP4_FORMAT_NAME
+        and header.codec in PRIMED_MP4_CODECS
+        and first_time is not None
+        and first_time >= 0
+    )
+
+
+def declared_without_packets(
+    header: ProbeHeader,
+    *,
+    estimate_warned: bool,
+) -> Decimal | None:
+    """Return the declared duration R5 allows, without the first-packet bound.
+
+    This is :func:`declared_duration` for a walk that found no packet (A12d):
+    there is no first packet to hold to the A9 bound, so only the other R5
+    conditions apply. It is used for nothing but deciding whether an empty
+    walk is truncated.
+
+    Args:
+        header: Accepted header facts.
+        estimate_warned: Whether either call's stderr carried an estimate line.
+
+    Returns:
+        The declared duration, always positive, or ``None``.
+    """
     if estimate_warned or header.container in NO_DECLARED_DURATION_FORMATS:
+        return None
+    if (
+        header.container == MATROSKA_FORMAT_NAME
+        and header.codec in PRIMED_MATROSKA_CODECS
+    ):
         return None
     if (
         header.container in AUDIO_ONLY_DECLARED_FORMATS
         and header.non_picture_stream_count > 1
     ):
-        return None
-    if not _starts_at_zero(header, walk.first_time):
         return None
     if header.stream_duration is not None:
         return header.stream_duration
@@ -760,6 +874,12 @@ def decide_duration(
 ) -> DurationOutcome:
     """Apply R6 to a finished packet walk.
 
+    A walk with no packet is truncated only against a positive declared
+    duration; otherwise its duration is unknown with ``inconsistent``
+    (A12d). A measured span or median packet duration that is not positive
+    is ``inconsistent`` (A12e), so no unknown duration is reported as zero
+    or negative.
+
     Args:
         header: Accepted header facts.
         walk: The walk's packet summary.
@@ -779,14 +899,51 @@ def decide_duration(
     )
     if damage is not None:
         return damage
-    measured = walk.measured_duration()
-    median = walk.median_duration()
-    if measured is None or median is None:
-        return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
     warned = header.estimate_warned or any(
         line in ESTIMATE_STDERR_LINES for line in lines
     )
-    declared = declared_duration(header, walk, estimate_warned=warned)
+    if walk.packets == 0:
+        return _empty_walk(header, estimate_warned=warned)
+    return _measured_walk(header, walk, estimate_warned=warned)
+
+
+def _empty_walk(header: ProbeHeader, *, estimate_warned: bool) -> DurationOutcome:
+    """Decide a walk that found no packet (R6 step 2 with A12d).
+
+    Args:
+        header: Accepted header facts.
+        estimate_warned: Whether either call's stderr carried an estimate line.
+
+    Returns:
+        ``truncated`` against a positive declared duration, otherwise the
+        duration unknown with ``inconsistent``.
+    """
+    if declared_without_packets(header, estimate_warned=estimate_warned) is None:
+        return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
+    return DurationOutcome(None, True)
+
+
+def _measured_walk(
+    header: ProbeHeader,
+    walk: PacketWalk,
+    *,
+    estimate_warned: bool,
+) -> DurationOutcome:
+    """Decide a walk with packets (R6 steps 5 to 8 with A5 and A12e).
+
+    Args:
+        header: Accepted header facts.
+        walk: The walk's packet summary.
+        estimate_warned: Whether either call's stderr carried an estimate line.
+
+    Returns:
+        The duration outcome.
+    """
+    measured = walk.measured_duration()
+    median = walk.median_duration()
+    if measured is None or median is None or measured <= 0 or median <= 0:
+        return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
+    declared = declared_duration(header, walk, estimate_warned=estimate_warned)
     if declared is None:
         return DurationOutcome(measured, None, (AudioFlag.ESTIMATED,))
     if declared - measured > shortfall_tolerance(header):
@@ -823,9 +980,12 @@ def _walk_damage(
 ) -> DurationOutcome | None:
     """Apply R6 steps 1 to 4 and the gap-packet step after step 3.
 
-    Step 1 is split by A1: a non-zero exit is ``corrupt``, a stderr line off
-    the benign list is ``unrecognized_output``. A walk with more distinct
-    packet durations than it keeps counts as inconsistent (step 3). In FLV a
+    Step 1 is split by A1 and A12c: a signal or exit 126 or 127 is
+    ``backend_unavailable``, any other non-zero exit ``corrupt``, and a
+    stderr line off the benign list ``unrecognized_output``. Step 2, a walk
+    with no packet, is decided by :func:`decide_duration` (A12d). A walk
+    with more distinct packet durations than it keeps counts as
+    inconsistent (step 3). In FLV a
     packet without a time makes every audio fact unknown (A11). In MP4 a
     packet longer than two median packets is stretched across a gap, so the
     measured span is not evidence of the audio's length (A10b).
@@ -841,12 +1001,12 @@ def _walk_damage(
     Returns:
         The outcome of the first matching step, or ``None`` when none matches.
     """
+    if program_failed(run.returncode):
+        return DurationOutcome(None, None, (AudioFlag.BACKEND_UNAVAILABLE,))
     if run.returncode != 0:
         return DurationOutcome(None, None, (AudioFlag.CORRUPT,))
     if has_unrecognized_line(lines, benign=benign, context=header.stderr_context):
         return DurationOutcome(None, None, (AudioFlag.UNRECOGNIZED_OUTPUT,))
-    if walk.packets == 0:
-        return DurationOutcome(None, True)
     if (
         walk.missing_time
         or walk.backwards
@@ -987,18 +1147,18 @@ def _disposition(stream: dict[str, object], key: str) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value == 1
 
 
-def _int_or_none(value: object) -> int | None:
-    """Return a JSON integer as is, anything else as ``None``.
+def parse_probe_score(value: object) -> int | None:
+    """Return ``probe_score`` when it is a JSON integer from 0 to 100 (A12f).
 
     Args:
         value: Raw ffprobe value.
 
     Returns:
-        The integer or ``None``.
+        The score, or ``None`` for anything else.
     """
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= PROBE_SCORE_MAX else None
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1045,9 +1205,15 @@ __all__ = [
     "ESTIMATE_STDERR_LINES",
     "GAP_PACKET_FORMATS",
     "GAP_PACKET_MEDIAN_RATIO",
+    "HEADER_SHOW_ENTRIES",
+    "MATROSKA_FORMAT_NAME",
     "MAX_DISTINCT_PACKET_DURATIONS",
     "MP4_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
+    "PRIMED_MATROSKA_CODECS",
+    "PRIMED_MP4_CODECS",
+    "PROBE_SCORE_MAX",
+    "PROGRAM_FAILURE_EXIT_CODES",
     "PacketWalk",
     "ProbeHeader",
     "SHORTFALL_FLOOR_SECONDS",
@@ -1058,6 +1224,7 @@ __all__ = [
     "bit_depth_for",
     "decide_duration",
     "declared_duration",
+    "declared_without_packets",
     "has_unrecognized_line",
     "header_from_json",
     "interpret_header",
@@ -1067,6 +1234,8 @@ __all__ = [
     "parse_positive_int",
     "parse_time_base",
     "primary_audio_stream",
+    "parse_probe_score",
+    "program_failed",
     "shortfall_tolerance",
     "spans_gap",
     "stderr_context",

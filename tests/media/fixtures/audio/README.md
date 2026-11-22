@@ -74,6 +74,9 @@ packets, truncation not checked).
 | `late_pcm.mka`       | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
 | `frames.mp3`         | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | declared  |
 | `frames.m4a`         | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
+| `latin1_tag.wav`     | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
+| `latin1_tag.aiff`    | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
+| `latin1_tag.avi`     | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
 
 Notes:
 
@@ -88,9 +91,10 @@ Notes:
   Matroska audio's `DURATION` tag is never used either (amendment A5).
 - `delayed.avi` holds a 2 s MPEG-4 video and 1 s of MP3 audio from 1 s. `video.wmv`
   holds a 2 s WMV2 video and 1 s of WMA audio. In both the audio stream's duration field
-  is not about the audio alone (it includes the delay, or is the whole file's length),
-  so with another stream present nothing is declared and the audio is measured
-  (amendment A8). Without that rule both were reported `truncated`.
+  is not about the audio alone (it includes the delay, or is the whole file's length).
+  AVI never declares a duration (amendment A9b); ASF declares nothing when another
+  stream is present (amendment A8). Both are measured; before these rules both were
+  reported `truncated`.
 - `delayed_audio.avi` (MP3) and `delayed_audio.wma` (WMA) are audio-only and start 1 s
   late. The AVI packets start at 0 and the delay is only in the duration field, so AVI
   never declares a duration (amendment A9b); the ASF packets start at 1 s (amendment
@@ -98,6 +102,27 @@ Notes:
 - `delayed_pcm.mkv` holds a 2 s video and 1 s of PCM audio from 1 s; `late_pcm.mka` is
   PCM audio alone starting 5 ms late. Their stream duration is the end of the file's
   timeline, so the duration is measured (amendment A9).
+- `latin1_tag.wav`, `latin1_tag.aiff` and `latin1_tag.avi` carry a title tag holding the
+  Latin-1 bytes `Gr\xfcn`, which are not valid UTF-8. ffprobe's tag output for them is
+  not UTF-8 either, which made the reader call them `corrupt` before the header call
+  stopped asking for tags (amendment A12a). Each is otherwise the same as `wav.wav`,
+  `aiff.aiff` or `pcm.avi`.
+
+## Unsupported and empty fixtures
+
+| File             | ffprobe `format_name` | Codec       | Rate | Ch  | Bits | Duration | Reported                          |
+| ---------------- | --------------------- | ----------- | ---- | --- | ---- | -------- | --------------------------------- |
+| `au.au`          | `au`                  | `pcm_s16be` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported` |
+| `core_audio.bin` | Core Audio Format     | `pcm_s16le` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported` |
+| `empty.flac`     | `flac`                | `flac`      | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`        |
+| `empty.aiff`     | `aiff`                | `pcm_s16be` | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`        |
+
+- `UNSUPPORTED_FIXTURES` are healthy files in formats outside the allow-list. The header
+  call exits non-zero, which says winnow does not accept the format, not that the file
+  is damaged (amendment A12b).
+- `EMPTY_FIXTURES` are files ffmpeg writes with no audio packet (`-frames:a 0`). The
+  FLAC declares no duration and the AIFF declares zero, so nothing positive is declared
+  and an empty walk is not `truncated` (amendment A12d).
 
 ## Fixtures without an established duration
 
@@ -140,4 +165,6 @@ evidence does not establish the duration, so it is unknown with `inconsistent`.
 `recorded/*.json` holds what ffprobe 9.0.2 returned (exit status, stdout, stderr) for
 the reader's two calls on selected fixtures, some cut to a fraction of their size, and
 on 4 KB of zeros. Tests replay them without ffprobe, so the rules are exercised in CI,
-which has no ffprobe.
+which has no ffprobe. The header call asks only for the fields the rules read
+(`-show_entries`, amendment A12a); rerun `record_ffprobe_outputs.py` whenever its
+arguments change.
