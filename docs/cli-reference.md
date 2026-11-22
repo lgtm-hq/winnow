@@ -175,22 +175,29 @@ does not establish it: container, codec, sample rate, channels, bit depth (PCM a
 lossless codecs only), bitrate (the stream's own), duration, and the number of audio
 streams. Flags explain gaps:
 
-- `corrupt`: `ffprobe` exited non-zero, wrote invalid JSON, or flagged a packet.
+- `corrupt`: the packet walk established damage: it failed after the header was
+  accepted, or `ffprobe` flagged a packet corrupt.
+- `unsupported`: no accepted format recognised the file (the header call failed), as for
+  AU, Core Audio Format, garbage, or a playlist. It is not a claim of damage.
 - `unrecognized_output`: `ffprobe` wrote a warning that is not known to be harmless for
-  this file. It is not proof of damage, but every value it could affect is unknown.
+  this file, or header output that is not valid UTF-8 or JSON. It is not proof of
+  damage, but every value it could affect is unknown.
 - `inconsistent`: packet times contradict each other or the declared duration, an MP4
   packet is longer than twice the median packet, an FLV packet has no time, or the file
   changed (device, inode, size, or modification time) while it was read.
 - `estimated`: nothing declares the duration, so it was measured from the packets.
 - `timeout`: an `ffprobe` call ran too long or wrote too much and was stopped.
-- `backend_unavailable`: `ffprobe` is missing or could not start.
+- `backend_unavailable`: `ffprobe` is missing, could not start, was killed by a signal,
+  exited 126 or 127, or its version could not be read.
 
 `truncated` is `true`, `false`, or not checked. It is `false` only after a packet walk
 found the audio present matches the declared duration; it says nothing more.
 
-`truncated=true` and `corrupt` claim damage. `inconsistent`, `estimated`, and
-`unrecognized_output` do not: they say the evidence does not establish a value, and a
-healthy file may carry them.
+`truncated=true` and `corrupt` claim damage. `inconsistent`, `estimated`,
+`unrecognized_output`, and `unsupported` do not: they say the evidence does not
+establish a value, and a healthy file may carry them. A stream with no packet at all is
+`truncated` only when a positive duration is declared; otherwise its duration is unknown
+and `inconsistent`, as for an empty FLAC or AIFF file.
 
 Each `ffprobe` call runs in its own process group with a time limit and bounded output;
 on a breach the whole group is stopped. On Linux its address space is capped at 1 GiB.
@@ -228,6 +235,12 @@ Known limits:
 - Stereo PCM in Matroska can report no duration and `inconsistent`, because `ffprobe`
   gives its last packet no duration.
 - ADTS at 8 kHz is `estimated` up to about 170 ms long.
+- AAC and MP3 in Matroska, and AAC in MP4 without an edit list (fragmented MP4), are
+  `estimated`: their duration counts the encoder priming as audio, one priming block
+  over the real length at every sample rate. Measured with FFmpeg 9.0.2: AAC 1024
+  samples (128 ms at 8 kHz, 93 ms at 11.025 kHz, 21 ms at 48 kHz), MP3 1105 samples (138
+  ms at 8 kHz, 100 ms at 11.025 kHz, 23 ms at 48 kHz). The measured length still
+  includes it.
 - Chained Ogg reports no duration and `inconsistent`.
 - A WAV written to a pipe is flagged; an MS ADPCM WAV whose `fact` chunk ffprobe ignores
   is `estimated`.
