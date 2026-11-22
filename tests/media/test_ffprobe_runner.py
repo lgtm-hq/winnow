@@ -783,6 +783,8 @@ def test_run_bounded_unreaped_child_is_timed_out(
     """A12c: a child not reaped in time after the kill is a time-out, no raise."""
     real_spawn = _ffprobe._spawn
     reaps: list[float | None] = []
+    # The runner's own subprocess module: importing subprocess here would need
+    # a new bandit suppression, and _ffprobe does not export the name for mypy.
     timeout_expired = vars(_ffprobe)["subprocess"].TimeoutExpired
 
     def spawn(argv: list[str], **kwargs: Any) -> object:
