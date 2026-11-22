@@ -57,8 +57,12 @@ _VERSION_TIMEOUT_SECONDS: Final[float] = 10.0
 _VERSION_OUTPUT_LIMIT: Final[int] = 1024 * 1024
 _READ_CHUNK: Final[int] = 64 * 1024
 _REAP_TIMEOUT_SECONDS: Final[float] = 5.0
-_UNREAPED_RETURNCODE: Final[int] = -signal.SIGKILL
-"""Exit status reported for a killed child that was not reaped in time."""
+_UNREAPED_RETURNCODE: Final[int] = -9
+"""Exit status reported for a killed child that was not reaped in time.
+
+The number of SIGKILL on POSIX, written as a literal because ``signal`` has
+no ``SIGKILL`` on Windows and this module must still import there.
+"""
 _VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^ffprobe version (?:[0-9]+:)?n?(?P<major>[0-9]+)\.[0-9]+",
 )
