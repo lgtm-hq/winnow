@@ -2495,3 +2495,15 @@ def test_adpcm_outside_mp4_keeps_its_checks() -> None:
     outcome = decide_duration(header, walk, run_result(), benign=BENIGN_9)
 
     assert_that(outcome.truncated).is_true()
+
+
+def test_pcm_without_indexed_samples_is_fragmented_however_short() -> None:
+    """A15a: an ``empty_moov`` PCM walk is fragmented even within the tolerance.
+
+    One 4 ms packet is all that is left of a cut file; with nothing indexed
+    in ``moov`` it is fragmented and never reported complete.
+    """
+    header = _header(container=MP4_FORMAT_NAME, codec="pcm_s24le", frame_count=None)
+    walk = _walk(*_packets(1, step="0.004000"))
+
+    assert_that(is_fragmented(header, walk)).is_true()

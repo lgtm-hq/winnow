@@ -1002,10 +1002,10 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     a fragment index (``sidx`` or ``mfra``) apart, so every fragmented MP4
     is treated as unindexed.
 
-    For PCM and ADPCM an MP4 sample is one audio sample, so ``nb_frames``
-    exceeds the packet count and a packet comparison never finds the
-    fragments. When ``nb_frames`` exceeds the packet count, the comparison
-    is made in audio samples instead (A15f-1): the measured span times the
+    For PCM an MP4 sample is one audio sample, so ``nb_frames`` exceeds
+    the packet count and a packet comparison never finds the fragments.
+    When ``nb_frames`` exceeds the packet count, the comparison is made
+    in audio samples instead (A15f-1): the measured span times the
     sample rate, rounded, against ``nb_frames``, with the A5 tolerance
     converted to samples. The rule keys on that count mismatch, and PCM is
     always compared in samples (A15g): a cut can leave exactly as many
@@ -1024,6 +1024,8 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     if header.container != MP4_FORMAT_NAME:
         return False
     indexed = header.frame_count or 0
+    if indexed == 0:
+        return walk.packets > 0
     if indexed <= walk.packets and not header.codec.startswith(PCM_CODEC_PREFIX):
         return walk.packets > indexed
     measured = walk.measured_duration()

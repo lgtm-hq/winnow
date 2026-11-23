@@ -289,14 +289,14 @@ Known limits:
   tells an indexed file apart, so every fragmented MP4 is treated as unindexed: it is
   `truncated` when the declared duration is longer than the packets, and otherwise
   `estimated`, healthy files included. A file counts as fragmented when its packets
-  outnumber the samples its `moov` box indexes. For PCM and ADPCM, whose MP4 samples are
-  audio samples, the index counts more samples than there are packets; such a file
-  counts as fragmented when its packets span more samples than the index counts, by more
-  than the tolerance. A file that keeps its first fragment in `moov` and is cut at its
-  first `moof` has lost every fragment, looks unfragmented, and reports
-  `truncated=false`. So does a cut at a later `moof` when no fragment before it held
-  audio, as with ALAC at 8 kHz beside video (512 ms packets, 200 ms fragments), and a
-  cut that leaves one fragment of a PCM file written with `+delay_moov`.
+  outnumber the samples its `moov` box indexes. For PCM, whose MP4 samples are audio
+  samples, the index counts more samples than there are packets; such a file counts as
+  fragmented when its packets span more samples than the index counts, by more than the
+  tolerance. A file that keeps its first fragment in `moov` and is cut at its first
+  `moof` has lost every fragment, looks unfragmented, and reports `truncated=false`. So
+  does a cut at a later `moof` when no fragment before it held audio, as with ALAC at 8
+  kHz beside video (512 ms packets, 200 ms fragments), and a cut that leaves one
+  fragment of a PCM file written with `+delay_moov`.
 - ADPCM in MP4 and MOV has no established duration: ffprobe's packet durations do not
   match the decoded audio, so the duration is unknown with `inconsistent`, never
   `truncated`. ADPCM in WAV, AVI and Matroska keeps its checks.
