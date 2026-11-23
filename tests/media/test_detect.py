@@ -189,12 +189,24 @@ def test_detect_audio_only_mp4_is_audio(tmp_path: Path) -> None:
 )
 def test_detect_zero_prefixed_text_is_not_audio(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     name: str,
     expected: MediaType | None,
 ) -> None:
     """Two leading zero bytes never make a file audio."""
     target = tmp_path / name
     target.write_bytes(b"\x00\x00hello, this is plain text\n")
+    # Not every puremagic version reports this match; pin it so the test
+    # proves the two-byte match cannot decide wherever it does appear.
+    two_byte_match = puremagic.main.PureMagicWithConfidence(
+        byte_match=b"\x00\x00",
+        offset=0,
+        extension=".sndr",
+        mime_type="audio/x-sndr",
+        name="Macintosh SNDR resource",
+        confidence=0.2,
+    )
+    monkeypatch.setattr(puremagic, "magic_file", lambda _: [two_byte_match])
 
     result = detect(target)
 
