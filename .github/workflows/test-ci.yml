@@ -54,49 +54,57 @@ jobs:
 
   # macOS leg (#375): the full suite, integration tests included, on the
   # oldest and newest supported Python, so the platform branches in winnow
-  # and its tests run somewhere. There is no ruleset entry for it: the
-  # all-checks gate fails on any failed check on the head, which includes
-  # each `test-macos / 🍎 macOS` matrix leg and its Aggregate job.
+  # and its tests run somewhere. A direct job, as #375 prescribes for when
+  # the lgtm-ci reusable cannot run on macOS: at v0.116.3 its aggregate job
+  # needs coreutils `timeout`, which hosted macOS lacks (seen on #476). There
+  # is no ruleset entry for it: the all-checks gate fails on any failed check
+  # on the head, which includes each `🍎 macOS (Python <version>)` leg.
   #
-  # EGRESS EXCEPTION: egress is NOT enforced on this job. On GitHub-hosted
-  # macOS the reusable skips harden-runner (it runs only on Linux and
-  # self-hosted runners) and its verify step passes with a notice instead of
-  # checking an agent; `egress-policy: block` is still passed because that
-  # step rejects anything else. So the leg gets no secrets, no id-token and
-  # no write scope that any macOS job receives (see permissions), its own
-  # artifact prefix, and nothing needs it but the failure notifier: it
-  # feeds neither publish-coverage nor any release path.
+  # EGRESS EXCEPTION: egress is NOT enforced on this job. It runs no
+  # harden-runner: lgtm-ci's verify step does not enforce on macOS (it passes
+  # with a notice), and its reusable cannot run here at v0.116.3. So the job
+  # holds no secrets, no id-token and only contents: read, persists no
+  # checkout credentials, uploads nothing, and nothing needs it but the
+  # failure notifier: it feeds neither publish-coverage nor any release path.
   test-macos:
-    # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
-    with:
-      publish-test-summary: false
-      python-versions: '3.11,3.15'
-      # Own namespace: artifacts are macos-results-<version>, so this call
-      # cannot overwrite the Linux calls' compat-* and coverage-* results.
-      artifact-prefix: macos
-      test-path: tests
-      coverage: false
-      # Same override as the compat call, so integration tests run here too.
-      extra-args: '--override-ini=addopts=--strict-markers --strict-config'
-      draft-pr-skip: true
-      job-name: '🍎 macOS'
-      # Pinned GitHub-hosted macOS 26 (arm64), not the moving macos-latest.
-      runner-image: macos-26
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
-      egress-policy: block
-    # A ceiling, not a grant: each job in the reusable asks for its own
-    # scopes. The macOS jobs get contents: read (aggregate adds actions:
-    # read); only the summary job asks for pull-requests: write, and it is
-    # off here (publish-test-summary: false).
+    name: '🍎 macOS (Python ${{ matrix.python-version }})'
+    # Skip drafts like the Linux calls (draft-pr-skip: true);
+    # ready_for_review runs it.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.draft == false
+    # Pinned GitHub-hosted macOS 26 (arm64), not the moving macos-latest.
+    runs-on: macos-26
+    # A leg took under 5 minutes on #476.
+    timeout-minutes: 20
     permissions:
-      # read: the aggregate job lists this run's artifacts
-      actions: read
-      # read: checkout repository and install dependencies
+      # read: check out the repository
       contents: read
-      # write: required by the reusable's publish-test-summary job at parse
-      # time even though summaries are disabled for this call
-      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.15']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          # The uv the Dockerfile copies in.
+          version: '0.13.9'
+          # Sets UV_PYTHON for every uv command below.
+          python-version: ${{ matrix.python-version }}
+          enable-cache: false
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+      - name: Run tests
+        # The compat call's test path and extra-args: the override drops
+        # '-m "not integration"', so the integration test runs too.
+        run: >-
+          uv run --frozen pytest tests
+          --override-ini=addopts=--strict-markers --strict-config
 
   # Coverage mode: single version with coverage reporting and PR summary
   test-coverage:

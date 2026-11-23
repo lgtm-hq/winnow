@@ -493,27 +493,33 @@ def test_main_push_ignore_hides_no_other_job() -> None:
 # The macOS test leg (#375) is required only through this gate: the reusable
 # polls every check on the head and fails on anything but success, skipped or
 # neutral, so its checks need no ruleset entry. They stop counting if the
-# ignore pattern hides them, or if the leg can be skipped (a skipped check
-# passes): a job ``if``, ``pipeline-skip``, or a path filter on the workflow.
+# ignore pattern hides them, if a failure is swallowed (continue-on-error), or
+# if the leg can be skipped (a skipped check passes): a job ``if`` beyond the
+# draft skip every test job has, a step ``if``, or a path filter.
 _TEST_CI = "test-ci.yml"
 _MACOS_JOB = "test-macos"
-_TEST_REUSABLE = "lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@"
+# Skips draft pull requests only, as the Linux calls' draft-pr-skip does.
+_DRAFT_ONLY_IF = (
+    "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+)
+_MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z0-9_-]+)\s*\}\}")
 
 
 def _macos_check_names(job: dict[str, Any]) -> list[str]:
-    """Return the check-run names the macOS leg's reusable call creates.
+    """Return the check-run names the macOS job's matrix legs report.
 
-    A called workflow's checks are named ``<caller job id> / <job name>``.
-    The reusable sets its test job's ``name`` from ``job-name``, so every
-    matrix leg shares that one name, with no version suffix (seen on #476).
+    A job whose ``name`` uses a matrix value reports that name with the value
+    filled in, and GitHub adds no suffix of its own (seen on #476).
     """
-    inputs = cast(dict[str, Any], job["with"])
-    jobs = (
-        str(inputs["job-name"]),
-        "Prepare Python Matrix",
-        "Aggregate Python Results",
+    template = str(job["name"])
+    keys = {match.group("key") for match in _MATRIX_VALUE.finditer(template)}
+    assert_that(keys).described_as("matrix keys in the job name").is_equal_to(
+        {"python-version"}
     )
-    return [f"{_MACOS_JOB} / {name}" for name in jobs]
+    versions = job["strategy"]["matrix"]["python-version"]
+    names = [_MATRIX_VALUE.sub(str(version), template) for version in versions]
+    assert_that(names).described_as("check names").does_not_contain_duplicates()
+    return names
 
 
 def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
@@ -521,11 +527,14 @@ def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
     tests = _workflow_text(workflows[_TEST_CI])
     assert_that(tests["jobs"]).contains_key(_MACOS_JOB)
     job = cast(dict[str, Any], tests["jobs"][_MACOS_JOB])
-    assert_that(str(job["uses"]).strip().lower()).starts_with(_TEST_REUSABLE)
-    assert_that(str(job["with"]["runner-image"])).starts_with("macos-")
-    for key in ("if", "continue-on-error", "strategy"):
-        assert_that(job).described_as(f"{_MACOS_JOB} {key}").does_not_contain_key(key)
-    assert_that(job["with"].get("pipeline-skip", False)).is_false()
+    assert_that(str(job["runs-on"])).starts_with("macos-")
+    assert_that(job).does_not_contain_key("continue-on-error")
+    condition = " ".join(str(job.get("if", _DRAFT_ONLY_IF)).split())
+    assert_that(condition).is_equal_to(_DRAFT_ONLY_IF)
+    for index, step in enumerate(job["steps"]):
+        label = f"{_MACOS_JOB} step {index} ({step.get('name')})"
+        assert_that(step).described_as(label).does_not_contain_key("if")
+        assert_that(step).described_as(label).does_not_contain_key("continue-on-error")
 
     # It runs wherever the gate runs: pull requests, main pushes and the
     # merge queue, with no filter that leaves it out of a run.
@@ -553,9 +562,12 @@ def test_a_macos_only_failure_fails_the_gate() -> None:
     workflows = _workflow_texts()
     _assert_macos_leg_is_gated(workflows)
     job = _workflow_text(workflows[_TEST_CI])["jobs"][_MACOS_JOB]
-    assert_that(_macos_check_names(job)).contains(
-        "test-macos / 🍎 macOS", "test-macos / Aggregate Python Results"
+    assert_that(_macos_check_names(job)).is_equal_to(
+        ["🍎 macOS (Python 3.11)", "🍎 macOS (Python 3.15)"]
     )
+
+
+_RUN_TESTS = "      - name: Run tests\n"
 
 
 @pytest.mark.parametrize(
@@ -574,19 +586,31 @@ def test_a_macos_only_failure_fails_the_gate() -> None:
         (
             "all-checks-gate.yml",
             "'^Publish - PyPI Production$'",
-            "'^Publish - PyPI Production$|^test-macos / '",
+            "'^Publish - PyPI Production$|3.15'",
         ),
         (
             "test-ci.yml",
-            "  test-macos:\n",
-            "  test-macos:\n    if: github.event_name != 'pull_request'\n",
+            "      github.event_name != 'pull_request'\n"
+            "      || github.event.pull_request.draft == false\n",
+            "      github.event_name != 'pull_request'\n",
         ),
         (
             "test-ci.yml",
-            "      runner-image: macos-26\n",
-            "      runner-image: macos-26\n      pipeline-skip: true\n",
+            "    timeout-minutes: 20\n",
+            "    timeout-minutes: 20\n    continue-on-error: true\n",
         ),
-        ("test-ci.yml", "      runner-image: macos-26\n", "      runner-image: x\n"),
+        ("test-ci.yml", _RUN_TESTS, _RUN_TESTS + "        continue-on-error: true\n"),
+        (
+            "test-ci.yml",
+            _RUN_TESTS,
+            _RUN_TESTS + "        if: github.event_name == 'push'\n",
+        ),
+        ("test-ci.yml", "    runs-on: macos-26\n", "    runs-on: ubuntu-26.04\n"),
+        (
+            "test-ci.yml",
+            "    name: '🍎 macOS (Python ${{ matrix.python-version }})'\n",
+            "    name: '🍎 macOS'\n",
+        ),
         (
             "test-ci.yml",
             "  pull_request:\n    branches: [main]\n",
@@ -598,10 +622,13 @@ def test_a_macos_only_failure_fails_the_gate() -> None:
     ids=[
         "ignored-by-name",
         "ignored-workflow",
-        "ignored-job",
+        "ignored-leg",
         "skipped-on-prs",
-        "pipeline-skip",
+        "job-continues-on-error",
+        "step-continues-on-error",
+        "step-skipped",
         "not-macos",
+        "legs-share-a-name",
         "path-filtered",
         "not-in-merge-queue",
         "missing",
@@ -610,7 +637,7 @@ def test_a_macos_only_failure_fails_the_gate() -> None:
 def test_a_macos_leg_the_gate_cannot_see_fails(
     workflow: str, old: str, new: str
 ) -> None:
-    """Hiding, skipping or dropping the macOS leg fails the check."""
+    """Hiding, skipping, swallowing or dropping the macOS leg fails the check."""
     workflows = _workflow_texts()
     assert_that(workflows[workflow]).contains(old)
     workflows[workflow] = workflows[workflow].replace(old, new, 1)
