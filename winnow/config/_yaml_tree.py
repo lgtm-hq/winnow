@@ -251,17 +251,17 @@ class _Builder:
         self._text = text
         self._stack: list[tuple[YamlNode, list[YamlNode]]] = []
         self._anchors: dict[str, YamlNode] = {}
-        self._properties = {
+        self._properties: dict[int, int] = {
             token.end_mark.index: token.start_mark.index
             for token in tokens
             if isinstance(token, AnchorToken | TagToken)
         }
-        self._values = sorted(
+        self._values: list[tuple[int, int]] = sorted(
             (token.start_mark.index, token.end_mark.index)
             for token in tokens
             if isinstance(token, ValueToken)
         )
-        self._ends = sorted(
+        self._ends: list[int] = sorted(
             token.end_mark.index
             for token in tokens
             if token.end_mark.index > token.start_mark.index
