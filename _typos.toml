@@ -13,3 +13,5 @@ unparseable = "unparseable"
 certifi = "certifi"
 # Core Audio Format: the container's short name and ffmpeg's muxer name.
 caf = "caf"
+# The track box of ISO-BMFF and QuickTime files, matched by its four-byte name.
+trak = "trak"
