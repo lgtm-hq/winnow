@@ -117,12 +117,16 @@ from winnow.media._matroska import inspect_matroska
 from winnow.media._signatures import HEAD_BYTES, TAIL_BYTES, match_signature
 from winnow.media._signatures import MAX_BYTES_READ as SIGNATURE_BYTES_READ
 from winnow.media._text_formats import text_media_marker
+from winnow.models.evidence import FileSnapshot
 from winnow.models.media import MediaType
 
 MIN_PUREMAGIC_MATCH_BYTES: Final[int] = 3
 """Shortest ``puremagic`` byte match that may decide."""
 
-NOT_REGULAR: Final[str] = "unavailable=content not read: not a regular file"
+CONTENT_UNAVAILABLE: Final[str] = "unavailable=content"
+"""Start of the detail of a signal saying the content could not be read."""
+
+NOT_REGULAR: Final[str] = f"{CONTENT_UNAVAILABLE} not read: not a regular file"
 """Signal detail for a path whose content was not read."""
 
 _MIME_PREFIX_TYPES: Final[dict[str, MediaType]] = {
@@ -172,6 +176,7 @@ def detect(
             extension_type=extension_type,
         )
     with handle:
+        opened = _opened_snapshot(path, handle)
         matches = _puremagic_matches(handle)
         advisory = (*_puremagic_signals(matches), extension_signal)
         outcome = _override(active, path) or _inspect_content(
@@ -180,7 +185,29 @@ def detect(
             extension_type=extension_type,
             suffix=suffix,
         )
-    return _result(outcome, advisory=advisory, extension_type=extension_type)
+    unread = any(s.detail.startswith(CONTENT_UNAVAILABLE) for s in outcome.signals)
+    return _result(
+        outcome,
+        advisory=advisory,
+        extension_type=extension_type,
+        snapshot=None if unread else opened,
+    )
+
+
+def _opened_snapshot(path: Path, handle: BinaryIO) -> FileSnapshot | None:
+    """Snapshot the open file, for :attr:`DetectionResult.snapshot`.
+
+    Args:
+        path: The path as given.
+        handle: The open regular file.
+
+    Returns:
+        The snapshot, or ``None`` if ``fstat`` fails.
+    """
+    try:
+        return FileSnapshot.from_stat(path, os.fstat(handle.fileno()))
+    except OSError:
+        return None
 
 
 def _suffix(path: Path) -> str:
@@ -220,6 +247,7 @@ def _result(
     *,
     advisory: tuple[TypeSignal, ...],
     extension_type: MediaType | None,
+    snapshot: FileSnapshot | None = None,
 ) -> DetectionResult:
     """Build the public result from a rule's outcome.
 
@@ -227,6 +255,7 @@ def _result(
         outcome: The deciding rule's outcome.
         advisory: Evidence recorded after the decision.
         extension_type: Media type the extension gives.
+        snapshot: The open file's snapshot when its content was read.
 
     Returns:
         The result.
@@ -245,6 +274,7 @@ def _result(
         signals=(*outcome.signals, *advisory),
         extension_media_type=extension_type,
         agrees_with_extension=agrees,
+        snapshot=snapshot,
     )
 
 
@@ -313,7 +343,7 @@ def _unavailable_detail(exc: OSError) -> str:
     """
     if isinstance(exc, _NotRegularFileError):
         return NOT_REGULAR
-    return f"unavailable=content {type(exc).__name__}"
+    return f"{CONTENT_UNAVAILABLE} {type(exc).__name__}"
 
 
 def _inspect_content(
@@ -618,6 +648,7 @@ __all__ = [
     "MAX_BYTES_READ",
     "MAX_FTYP_PAYLOAD_BYTES",
     "MIN_PUREMAGIC_MATCH_BYTES",
+    "CONTENT_UNAVAILABLE",
     "NOT_REGULAR",
     "STRUCTURAL_IMAGE_BRANDS",
     "TRACK_BOX",

@@ -15,6 +15,7 @@ from typing import BinaryIO, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from winnow.models.evidence import FileSnapshot
 from winnow.models.media import MediaType
 
 SignalSource = Literal[
@@ -61,6 +62,11 @@ class DetectionResult(BaseModel):
         extension_media_type: What the extension alone would say.
         agrees_with_extension: Whether ``media_type`` equals
             ``extension_media_type``; ``None`` when either is unknown.
+        snapshot: The file's ``fstat`` when detection opened it and read
+            its content, with the path as given; ``None`` when the content
+            was not read (missing, not a regular file, or an open or read
+            error) and for a result not made by ``detect``. Lets a later
+            reader check the result still describes the file (#394).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -72,6 +78,7 @@ class DetectionResult(BaseModel):
     signals: tuple[TypeSignal, ...]
     extension_media_type: MediaType | None
     agrees_with_extension: bool | None
+    snapshot: FileSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)

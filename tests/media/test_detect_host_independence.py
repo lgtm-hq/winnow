@@ -721,7 +721,10 @@ def test_trailing_dot_name_matches_a_name_without_extension(tmp_path: Path) -> N
     with_dot.write_bytes(OPAQUE_BYTES)
     without.write_bytes(OPAQUE_BYTES)
 
-    assert_that(detect(with_dot)).is_equal_to(detect(without))
+    different_files = {"snapshot"}
+    assert_that(detect(with_dot).model_dump(exclude=different_files)).is_equal_to(
+        detect(without).model_dump(exclude=different_files),
+    )
 
 
 def test_import_does_not_mutate_global_mimetypes() -> None:
