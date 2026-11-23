@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.18] - 2026-11-23
+
+### Fixed
+
+- **media**: detect media from winnow's own signature table (#454) (be2ec20)
+
 ## [0.37.17] - 2026-11-23
 
 ### Changed
