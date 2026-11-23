@@ -7,14 +7,13 @@ answer or needs the real one.
 from __future__ import annotations
 
 import struct
-import time
 from pathlib import Path
 
 import puremagic
 import pytest
 from assertpy import assert_that
 
-from tests.media.detect_support import FFPROBE, detect_with_deadline
+from tests.media.detect_support import FFPROBE, cpu_seconds, detect_with_deadline
 from tests.media.signature_support import ogg_page, program_stream
 from winnow.media import _stream_probe
 from winnow.media._detect import DetectionResult, detect
@@ -321,10 +320,9 @@ def test_hostile_tables_are_fast_with_ffprobe(tmp_path: Path) -> None:
     target = tmp_path / "x.ts"
     target.write_bytes(_hostile_ts())
 
-    start = time.perf_counter()
-    detect_with_deadline(target)
+    _, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
 
-    assert_that(time.perf_counter() - start).is_less_than(3.0)
+    assert_that(elapsed).is_less_than(3.0)
 
 
 def test_detection_probe_time_out_is_two_seconds() -> None:
