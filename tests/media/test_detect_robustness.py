@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+import time
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,28 @@ def _detect_bytes(tmp_path: Path, data: bytes, name: str = "x.bin") -> Detection
     target = tmp_path / name
     target.write_bytes(data)
     return detect(target)
+
+
+SWEEP_LIMIT_SECONDS = 2.0
+"""Longest any single ``detect`` call in the sweeps may take."""
+
+
+def _timed_detect(target: Path) -> DetectionResult:
+    """Detect ``target`` and fail when it takes longer than the sweep limit.
+
+    Args:
+        target: File to detect.
+
+    Returns:
+        The result.
+    """
+    start = time.perf_counter()
+    result = detect(target)
+    elapsed = time.perf_counter() - start
+    assert_that(elapsed).described_as(f"detect({target.name})").is_less_than(
+        SWEEP_LIMIT_SECONDS,
+    )
+    return result
 
 
 # --- the seven findings --------------------------------------------------------
@@ -327,7 +350,7 @@ def test_every_prefix_of_a_small_file_is_safe(tmp_path: Path, name: str) -> None
 
     for length in range(len(data) + 1):
         target.write_bytes(data[:length])
-        result = detect(target)
+        result = _timed_detect(target)
         assert_that(result.media_type).described_as(f"{name}[:{length}]").is_in(
             None, full
         )
@@ -348,7 +371,7 @@ def test_random_bytes_after_each_signature_are_safe(tmp_path: Path, name: str) -
         keep = 1 + noise[0] % max(1, min(len(data), 64))
         tail = noise[2 : 2 + int.from_bytes(noise[:2], "big") % 2048]
         target.write_bytes(data[:keep] + tail)
-        detect(target)
+        _timed_detect(target)
 
 
 def _noise(seed: str) -> bytes:
@@ -414,7 +437,9 @@ def test_deep_nesting_prefixes_are_safe(tmp_path: Path, name: str) -> None:
 
     for length in [*range(0, len(data), 97), len(data)]:
         target.write_bytes(data[:length])
-        assert_that(detect(target).media_type).described_as(f"{name}[:{length}]").is_in(
+        assert_that(_timed_detect(target).media_type).described_as(
+            f"{name}[:{length}]"
+        ).is_in(
             None,
             MediaType.VIDEO,
         )

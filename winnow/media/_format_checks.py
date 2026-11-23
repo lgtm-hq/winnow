@@ -15,6 +15,7 @@ import struct
 from typing import Final
 
 from winnow.media._detect_base import Content
+from winnow.media._markup import element_named, skip_xml_prolog
 
 PLAYLIST_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {
@@ -564,12 +565,6 @@ def sgi_movie(content: Content) -> bool:
 
 # --- playlists ----------------------------------------------------------------
 
-_XML_PLAYLIST: Final[re.Pattern[bytes]] = re.compile(
-    rb"\A(?:\xef\xbb\xbf)?\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--.*?-->\s*)*"
-    rb"(?:<asx\b|<\?wpl\b|<playlist\b[^>]*xspf\.org)",
-    re.IGNORECASE | re.DOTALL,
-)
-
 
 def playlist(content: Content) -> bool:
     """A playlist: text or a list that points at media, not media itself.
@@ -591,7 +586,31 @@ def playlist(content: Content) -> bool:
         return True
     if head[4:18] == b"iriver UMS PLA":
         return True
-    return _XML_PLAYLIST.match(head[:8192]) is not None
+    return _xml_playlist(head)
+
+
+def _xml_playlist(head: bytes) -> bool:
+    """Recognise an XML playlist after its prolog, in one forward pass.
+
+    Args:
+        head: The file's opening bytes.
+
+    Returns:
+        Whether the first markup is ``<asx``, ``<?wpl`` or an XSPF
+        ``<playlist`` start tag.
+    """
+    position = skip_xml_prolog(head, instructions=False, doctype=False)
+    if position is None:
+        return False
+    if element_named(head, position, b"asx"):
+        return True
+    if head[position : position + 5].lower() == b"<?wpl":
+        return head[position + 5 : position + 6] in {b" ", b"\t", b"\r", b"\n", b"?"}
+    if not element_named(head, position, b"playlist"):
+        return False
+    tag_end = head.find(b">", position)
+    tag = head[position : tag_end if tag_end >= 0 else len(head)]
+    return b"xspf.org" in tag
 
 
 __all__ = [

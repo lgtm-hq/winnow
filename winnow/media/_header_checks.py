@@ -14,6 +14,12 @@ import struct
 from typing import Final
 
 from winnow.media._detect_base import Content
+from winnow.media._markup import (
+    element_named,
+    skip_c_space,
+    skip_space,
+    skip_xml_prolog,
+)
 from winnow.media._packet_streams import mpeg_video_sequence
 
 TEXT_BYTES: Final[int] = 8 * 1024
@@ -132,10 +138,44 @@ _NETPBM_FIELDS: Final[dict[bytes, int]] = {
 }
 """Header numbers after each Netpbm magic: width, height and maxval."""
 
-_NETPBM_TOKEN: Final[re.Pattern[bytes]] = re.compile(
-    rb"(?:\s|#[^\n]*\n)+([0-9]{1,10})(?![0-9])",
-)
-"""One header number; more than ten digits is not a Netpbm dimension."""
+_NETPBM_DIGITS: Final[int] = 10
+"""Longest header number; more than ten digits is not a Netpbm dimension."""
+
+
+def _netpbm_number(head: bytes, position: int) -> tuple[int, int] | None:
+    """Read the next Netpbm header number after whitespace and comments.
+
+    Netpbm: whitespace separates the fields and ``#`` starts a comment
+    that runs to the end of the line. The scan moves forward only.
+
+    Args:
+        head: The file's opening bytes.
+        position: Where to start.
+
+    Returns:
+        The number and the position after it, or ``None`` when there is no
+        separator, no number, or a number of more than ten digits.
+    """
+    start = position
+    while True:
+        position = skip_space(head, position)
+        if head[position : position + 1] != b"#":
+            break
+        newline = head.find(b"\n", position)
+        if newline < 0:
+            return None
+        position = newline + 1
+    if position == start:
+        return None
+    end = position
+    while end < len(head) and head[end] in _DIGITS:
+        end += 1
+    if not 0 < end - position <= _NETPBM_DIGITS:
+        return None
+    return int(head[position:end]), end
+
+
+_DIGITS: Final[frozenset[int]] = frozenset(b"0123456789")
 
 
 def netpbm(content: Content) -> bool:
@@ -167,21 +207,21 @@ def netpbm(content: Content) -> bool:
     position = 2
     numbers: list[int] = []
     for _ in range(fields):
-        token = _NETPBM_TOKEN.match(head, position)
+        token = _netpbm_number(head, position)
         if token is None:
             return False
-        numbers.append(int(token.group(1)))
-        position = token.end()
+        number, position = token
+        numbers.append(number)
     width, height = numbers[0], numbers[1]
     maxval_ok = fields == 2 or 1 <= numbers[2] <= 65535
     return width > 0 and height > 0 and maxval_ok
 
 
-_XBM: Final[re.Pattern[bytes]] = re.compile(
-    rb"#define[ \t]+(\w*)_width[ \t]+[0-9]{1,10}"
-    rb"(?:\s|/\*.*?\*/)+"
-    rb"#define[ \t]+(\w*)_height[ \t]+[0-9]{1,10}",
-    re.DOTALL,
+_XBM_WIDTH: Final[re.Pattern[bytes]] = re.compile(
+    rb"#define[ \t]+(\w{0,256})_width[ \t]+[0-9]{1,10}",
+)
+_XBM_HEIGHT: Final[re.Pattern[bytes]] = re.compile(
+    rb"#define[ \t]+(\w{0,256})_height[ \t]+[0-9]{1,10}",
 )
 
 
@@ -190,7 +230,8 @@ def xbm(content: Content) -> bool:
 
     The file starts with ``#define <name>_width <n>`` and, after blank
     lines or comments, ``#define <name>_height <n>``, and holds a
-    ``<name>_bits[]`` array.
+    ``<name>_bits[]`` array. The space and comments between the defines
+    are skipped by :func:`~winnow.media._markup.skip_c_space`, in one pass.
 
     Args:
         content: File content.
@@ -198,24 +239,26 @@ def xbm(content: Content) -> bool:
     Returns:
         Whether the file is an XBM.
     """
-    match = _XBM.match(content.head)
-    if match is None or match.group(1) != match.group(2):
+    head = content.head
+    width = _XBM_WIDTH.match(head)
+    if width is None:
         return False
-    bits = re.compile(rb"char[ \t]+" + re.escape(match.group(1)) + rb"_bits[ \t]*\[")
-    return bits.search(content.head, match.end()) is not None
-
-
-_XML_SKIPS: Final[tuple[tuple[bytes, bytes], ...]] = (
-    (b"<?", b"?>"),
-    (b"<!--", b"-->"),
-)
+    position = skip_c_space(head, width.end())
+    if position is None or position == width.end():
+        return False
+    height = _XBM_HEIGHT.match(head, position)
+    if height is None or height.group(1) != width.group(1):
+        return False
+    bits = re.compile(rb"char[ \t]+" + re.escape(width.group(1)) + rb"_bits[ \t]*\[")
+    return bits.search(head, height.end()) is not None
 
 
 def svg(content: Content) -> bool:
     """SVG: an ``svg`` root element (W3C SVG 1.1, 5.1.1).
 
     An XML declaration, processing instructions, comments and a DOCTYPE
-    may come first, anywhere in the opening bytes read.
+    may come first, anywhere in the opening bytes read; they are skipped
+    by :func:`~winnow.media._markup.skip_xml_prolog`, in one pass.
 
     Args:
         content: File content.
@@ -223,50 +266,9 @@ def svg(content: Content) -> bool:
     Returns:
         Whether the document's root element is ``svg``.
     """
-    text = content.head.removeprefix(b"\xef\xbb\xbf")
-    position = 0
-    while True:
-        position = len(text) - len(text[position:].lstrip())
-        rest = text[position:]
-        for opener, closer in _XML_SKIPS:
-            if rest.startswith(opener):
-                end = rest.find(closer)
-                if end < 0:
-                    return False
-                position += end + len(closer)
-                break
-        else:
-            if rest.startswith(b"<!DOCTYPE"):
-                end = _doctype_end(rest)
-                if end < 0:
-                    return False
-                position += end
-                continue
-            return rest[:4] == b"<svg" and rest[4:5] in {
-                b" ",
-                b"\t",
-                b"\n",
-                b"\r",
-                b">",
-                b"/",
-            }
-
-
-def _doctype_end(text: bytes) -> int:
-    """Return the offset after a DOCTYPE, internal subset included.
-
-    Args:
-        text: Bytes starting with ``<!DOCTYPE``.
-
-    Returns:
-        The offset after its closing ``>``, or -1 when it does not close.
-    """
-    bracket = text.find(b"[")
-    close = text.find(b">")
-    if 0 <= bracket < close:
-        subset = text.find(b"]", bracket)
-        close = text.find(b">", subset) if subset >= 0 else -1
-    return close + 1 if close >= 0 else -1
+    head = content.head
+    position = skip_xml_prolog(head, instructions=True, doctype=True)
+    return position is not None and element_named(head, position, b"svg")
 
 
 def icns(content: Content) -> bool:
