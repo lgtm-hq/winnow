@@ -559,8 +559,10 @@ def _without(where: str, host: str) -> dict[str, _Call]:
 )
 def test_dropping_a_used_appended_host_fails(where: str, host: str) -> None:
     """A host the job uses cannot leave the appended list unnoticed."""
+    # Built outside the block, so a failed setup cannot pass for the check.
+    calls = _without(where, host)
     with pytest.raises(AssertionError):
-        _assert_required_hosts_reachable(_without(where, host))
+        _assert_required_hosts_reachable(calls)
 
 
 def test_dropping_an_unused_fallback_host_passes() -> None:
