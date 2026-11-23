@@ -21,6 +21,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.17] - 2026-11-23
+
+### Changed
+
+- **lint**: teach the spell-checker that trak is a box name (#456) (4739f39)
+
+### Fixed
+
+- **config**: make config set change only the key it was asked to change (#448)
+  (d6712af)
+
 ## [0.37.16] - 2026-11-23
 
 ### Fixed
