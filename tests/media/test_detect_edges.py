@@ -135,13 +135,15 @@ def test_too_many_id3_tags_stop_the_search(tmp_path: Path) -> None:
 
 def test_asf_header_shorter_than_its_fixed_part() -> None:
     """An ASF GUID without the rest of the header lists no stream."""
-    assert_that(asf_streams(ASF_HEADER + b"\x00" * 4)).is_empty()
+    assert_that(asf_streams(ASF_HEADER + b"\x00" * 4).kinds).is_empty()
 
 
 def test_asf_object_smaller_than_its_header_stops_the_walk() -> None:
     """An object size below 24 bytes ends the walk."""
     header = ASF_HEADER + struct.pack("<Q", 200) + b"\x01\x00\x00\x00\x01\x02"
-    assert_that(asf_streams(header + b"\x00" * 16 + struct.pack("<Q", 8))).is_empty()
+    assert_that(
+        asf_streams(header + b"\x00" * 16 + struct.pack("<Q", 8)).kinds
+    ).is_empty()
 
 
 @pytest.mark.parametrize(
@@ -158,14 +160,14 @@ def test_realmedia_media_properties(body: bytes, expected: list[str | None]) -> 
     data = b".RMF" + struct.pack(">IH", 18, 0) + b"\x00" * 8
     data += b"MDPR" + struct.pack(">IH", 10 + len(body), 0) + body
 
-    assert_that(realmedia_streams(data)).is_equal_to(expected)
+    assert_that(realmedia_streams(data).kinds).is_equal_to(expected)
 
 
 def test_realmedia_without_data_chunk_ends_with_the_bytes() -> None:
     """The walk stops at the end of the bytes read."""
     data = b".RMF" + struct.pack(">IH", 18, 0) + b"\x00" * 8 + b"PROP"
 
-    assert_that(realmedia_streams(data)).is_empty()
+    assert_that(realmedia_streams(data).kinds).is_empty()
 
 
 def test_program_stream_mpeg1_pack(tmp_path: Path) -> None:
@@ -203,14 +205,14 @@ def test_program_stream_mpeg1_pack(tmp_path: Path) -> None:
 )
 def test_program_stream_packets(data: bytes, expected: list[str | None]) -> None:
     """Malformed or unrecognised packets give no or unknown streams."""
-    assert_that(program_stream_streams(data)).is_equal_to(expected)
+    assert_that(program_stream_streams(data).kinds).is_equal_to(expected)
 
 
 def test_ogg_cut_segment_table() -> None:
     """A BOS page whose segment table is cut lists no stream."""
     page = ogg_page(VORBIS_ID)
 
-    assert_that(ogg_streams(page[:27])).is_empty()
+    assert_that(ogg_streams(page[:27]).kinds).is_empty()
 
 
 def test_ogg_packet_spanning_full_segments() -> None:
@@ -220,7 +222,7 @@ def test_ogg_packet_spanning_full_segments() -> None:
     table_end = 27 + page[26]
     trimmed = page[:26] + bytes([2]) + b"\xff\xff" + page[table_end:]
 
-    assert_that(ogg_streams(trimmed)).is_equal_to([AUDIO])
+    assert_that(ogg_streams(trimmed).kinds).is_equal_to([AUDIO])
 
 
 # --- EBML and transport streams ------------------------------------------------

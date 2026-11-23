@@ -187,7 +187,7 @@ def frames_follow(
             return True
         start = position - data_offset
         length = frame_length(data[start : start + 16])
-        if length is None:
+        if length is None or position + length > size:
             return False
         count += 1
         position += length

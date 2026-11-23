@@ -114,7 +114,7 @@ def test_webm_without_probe_unknown(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
 ) -> None:
-    """Without ffprobe, Matroska is unknown; the extension never decides."""
+    """Unresolved tracks without ffprobe are unknown; the extension never decides."""
     _stub_ffprobe(monkeypatch, None)
     target = tmp_path / name
     target.write_bytes(_ebml())
@@ -128,7 +128,7 @@ def test_webm_without_probe_unknown(
         "unavailable=ffprobe not found on PATH",
     )
     assert_that(decision(result).detail).is_equal_to(
-        "decision=matroska unknown unavailable: stream types need ffprobe",
+        "decision=matroska unknown unavailable: tracks unresolved and ffprobe needed",
     )
 
 

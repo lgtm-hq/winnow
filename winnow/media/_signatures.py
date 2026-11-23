@@ -43,7 +43,7 @@ from winnow.media._audio_frames import (
 )
 from winnow.media._containers import (
     ASF_HEADER,
-    StreamKinds,
+    StreamList,
     asf_streams,
     avi_streams,
     flv_streams,
@@ -61,6 +61,7 @@ from winnow.media._detect_base import (
     evidence,
 )
 from winnow.media._mpegts import inspect_transport_stream
+from winnow.media._stream_probe import probe_stream_types
 from winnow.models.media import MediaType
 
 HEAD_BYTES: Final[int] = 64 * 1024
@@ -76,7 +77,7 @@ ID3_FRAME_BYTES: Final[int] = 64 * 1024
 """Bytes read after an ID3v2 tag to check the frames that follow it."""
 
 Matcher = Callable[[Content], bool]
-Walker = Callable[[bytes], StreamKinds]
+Walker = Callable[[bytes], StreamList]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ class Signature:
         media_type: Media type of a match, when the format fixes it.
         streams: Walk that lists the container's streams; the media type
             then comes from them.
+        demuxer: ffprobe demuxer asked when the walk cannot settle the type.
         non_media: The format is not media; a match is final.
     """
 
@@ -96,6 +98,7 @@ class Signature:
     matches: Matcher
     media_type: MediaType | None = None
     streams: Walker | None = None
+    demuxer: str = ""
     non_media: bool = False
 
 
@@ -210,14 +213,16 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("realaudio", _starts(b".ra\xfd"), MediaType.AUDIO),
     # Containers whose streams decide.
     # Microsoft AVI RIFF File Reference: RIFF form type "AVI ".
-    Signature("avi", _form(b"RIFF", b"AVI "), streams=avi_streams),
+    Signature("avi", _form(b"RIFF", b"AVI "), streams=avi_streams, demuxer="avi"),
     # ASF specification 3.1: the Header Object GUID first.
-    Signature("asf", _starts(ASF_HEADER), streams=asf_streams),
-    Signature("flv", checks.flv, streams=flv_streams),
-    Signature("realmedia", checks.realmedia, streams=realmedia_streams),
+    Signature("asf", _starts(ASF_HEADER), streams=asf_streams, demuxer="asf"),
+    Signature("flv", checks.flv, streams=flv_streams, demuxer="flv"),
+    Signature("realmedia", checks.realmedia, streams=realmedia_streams, demuxer="rm"),
     # RFC 3533, 6: capture pattern "OggS" and stream structure version 0.
-    Signature("ogg", _starts(b"OggS\x00"), streams=ogg_streams),
-    Signature("mpeg-ps", checks.program_stream, streams=program_stream_streams),
+    Signature("ogg", _starts(b"OggS\x00"), streams=ogg_streams, demuxer="ogg"),
+    Signature(
+        "mpeg-ps", checks.program_stream, streams=program_stream_streams, demuxer="mpeg"
+    ),
     # Video.
     Signature("mpeg-video", checks.mpeg_video, MediaType.VIDEO),
     # YUV4MPEG2 stream header "YUV4MPEG2 " (mjpegtools yuv4mpeg(5)).
@@ -280,7 +285,7 @@ def _outcome(signature: Signature, content: Content) -> Outcome:
         return decide(signature.container, None, "non-media signature")
     if signature.streams is None:
         return decide(signature.container, signature.media_type, "signature")
-    kinds = signature.streams(content.head)
+    streams = signature.streams(content.head)
     names = {
         MediaType.VIDEO.value: MediaType.VIDEO,
         MediaType.AUDIO.value: MediaType.AUDIO,
@@ -291,15 +296,28 @@ def _outcome(signature: Signature, content: Content) -> Outcome:
             names.get(kind or ""),
             source="track-handler",
         )
-        for kind in kinds
+        for kind in streams.kinds
     )
-    media_type = media_type_of(kinds)
+    listed = evidence(f"streams={'complete' if streams.complete else 'incomplete'}")
+    media_type = media_type_of(streams)
     if media_type is not None:
         reason = f"stream declarations {media_type.value}"
-    elif not kinds:
-        reason = "unknown unresolved: no stream declaration in the bytes read"
+        return decide(
+            signature.container, media_type, reason, evidence=(*found, listed)
+        )
+    if streams.complete:
+        reason = "unknown unresolved: no audio or video stream established"
+        return decide(signature.container, None, reason, evidence=(*found, listed))
+    probe = probe_stream_types(content.descriptor, demuxer=signature.demuxer)
+    probed = evidence(probe.detail, probe.media_type, source="track-handler")
+    media_type = probe.media_type
+    if media_type is not None:
+        reason = f"stream types {media_type.value} from ffprobe"
+    elif not probe.available:
+        reason = "unknown unavailable: stream list incomplete, ffprobe needed"
     else:
         reason = "unknown unresolved: no audio or video stream established"
+    found = (*found, listed, probed)
     return decide(signature.container, media_type, reason, evidence=found)
 
 
@@ -359,7 +377,7 @@ def _after_id3(content: Content) -> Outcome | None:
         offset = after + data_offset
         if offset >= content.size:
             break
-        if offset + 16 > data_offset + len(data):
+        if data_offset + len(data) < min(offset + ID3_FRAME_BYTES, content.size):
             try:
                 data = content.reader.read_at(offset, ID3_FRAME_BYTES)
             except BudgetExceededError:

@@ -42,7 +42,7 @@ from tests.media.signature_support import (
     realmedia,
     riff,
 )
-from winnow.media import _detect, _signatures
+from winnow.media import _detect, _signatures, _stream_probe
 from winnow.media._detect import detect
 from winnow.media._header_checks import TEXT_BYTES, is_text
 from winnow.media._signatures import SIGNATURES
@@ -200,8 +200,15 @@ def test_every_table_entry_is_tested() -> None:
         (realmedia(b"audio/x-pn-realaudio", b"logical-fileinfo"), AUDIO),
         (realmedia(b"application/x-other"), None),
         (program_stream((0xE0, b"\x00" * 8), (0xC0, b"\x00" * 8)), VIDEO),
-        (program_stream((0xC0, b"\x00" * 8)), AUDIO),
-        (program_stream((0xBD, b"\x80\x01\x00\x01"), (0xBE, b"\xff" * 8)), AUDIO),
+        (program_stream((0xC0, b"\x00" * 8), video_bound=0), AUDIO),
+        (program_stream((0xC0, b"\x00" * 8)), None),
+        (program_stream((0xC0, b"\x00" * 8), video_bound=1), None),
+        (
+            program_stream(
+                (0xBD, b"\x80\x01\x00\x01"), (0xBE, b"\xff" * 8), video_bound=0
+            ),
+            AUDIO,
+        ),
         (program_stream((0xBD, b"\x20\x00")), None),
     ],
     ids=[
@@ -223,16 +230,20 @@ def test_every_table_entry_is_tested() -> None:
         "rm-unknown",
         "ps-video",
         "ps-audio",
+        "ps-audio-no-system-header",
+        "ps-audio-video-bound",
         "ps-dvd-ac3",
         "ps-subpicture-only",
     ],
 )
 def test_container_streams_decide(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     data: bytes,
     expected: MediaType | None,
 ) -> None:
     """A container's stream declarations, not its magic, decide its type."""
+    monkeypatch.setattr(_stream_probe, "find_binary", lambda _: None)
     target = tmp_path / "clip.mp4"
     target.write_bytes(data)
 
@@ -292,15 +303,20 @@ def test_ogg_vorbis_then_theora(tmp_path: Path) -> None:
     assert_that(details(result)).contains("stream=audio", "stream=video")
 
 
-def test_ogg_without_bos_first_is_unknown(tmp_path: Path) -> None:
+def test_ogg_without_bos_first_is_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An Ogg file whose first page is not a BOS page is unknown."""
+    monkeypatch.setattr(_stream_probe, "find_binary", lambda _: None)
     target = tmp_path / "x.ogg"
     target.write_bytes(ogg_page(VORBIS_ID, bos=False))
 
     result = detect(target)
 
     assert_that(result.media_type).is_none()
-    assert_that(decision(result).detail).contains("no stream declaration")
+    assert_that(details(result)).contains("streams=incomplete")
+    assert_that(decision(result).detail).contains("ffprobe needed")
 
 
 # --- ID3v2 and frame-based audio ---------------------------------------------

@@ -283,8 +283,8 @@ def _walk_top_level(reader: Reader, state: _BmffState) -> None:
             if box.kind == _FTYP and not state.has_ftyp:
                 _read_ftyp(reader, box, state)
             elif box.kind == _MOOV and not state.has_moov:
-                state.has_moov = True
                 _walk_children(reader, box, state, path=(_MOOV,))
+                state.has_moov = True
             if _walk_done(state):
                 return
     except MalformedError:

@@ -112,7 +112,10 @@ _NETPBM_FIELDS: Final[dict[bytes, int]] = {
 }
 """Header numbers after each Netpbm magic: width, height and maxval."""
 
-_NETPBM_TOKEN: Final[re.Pattern[bytes]] = re.compile(rb"(?:\s|#[^\n]*\n)+([0-9]+)")
+_NETPBM_TOKEN: Final[re.Pattern[bytes]] = re.compile(
+    rb"(?:\s|#[^\n]*\n)+([0-9]{1,10})(?![0-9])",
+)
+"""One header number; more than ten digits is not a Netpbm dimension."""
 
 
 def netpbm(content: Content) -> bool:
@@ -297,7 +300,10 @@ def flac_at(data: bytes, offset: int) -> bool:
     """
     block = data[offset : offset + 8]
     return (
-        block[:4] == b"fLaC" and block[4] & 0x7F == 0 and block[5:8] == b"\x00\x00\x22"
+        len(block) == 8
+        and block[:4] == b"fLaC"
+        and block[4] & 0x7F == 0
+        and block[5:8] == b"\x00\x00\x22"
     )
 
 

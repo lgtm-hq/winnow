@@ -181,8 +181,10 @@ def asf(*stream_kinds: str) -> bytes:
         return uuid.UUID(_ASF_GUIDS[name]).bytes_le
 
     objects = b""
-    for kind in stream_kinds:
-        body = guid(kind) + b"\x00" * 32
+    for number, kind in enumerate(stream_kinds, start=1):
+        # Stream type, error correction type, time offset, two lengths, flags
+        # (the stream number), reserved: ASF specification 3.3.
+        body = guid(kind) + b"\x00" * 32 + struct.pack("<H", number) + b"\x00" * 4
         objects += guid("stream") + struct.pack("<Q", 24 + len(body)) + body
     size = 30 + len(objects)
     header = (
@@ -225,17 +227,24 @@ def realmedia(*mime_types: bytes) -> bytes:
     return data + b"DATA" + struct.pack(">IH", 18, 0) + b"\x00" * 8
 
 
-def program_stream(*packets: tuple[int, bytes]) -> bytes:
+def program_stream(
+    *packets: tuple[int, bytes], video_bound: int | None = None
+) -> bytes:
     """Build an MPEG-2 program stream: a pack header then PES packets.
 
     Args:
         packets: ``(stream_id, payload)`` of each PES packet.
+        video_bound: Write a system header with this ``video_bound``;
+            ``None`` writes none.
 
     Returns:
         The stream.
     """
     pack = b"\x00\x00\x01\xba\x44\x00\x04\x00\x04\x01\x01\x89\xc3\xf8"
     data = pack
+    if video_bound is not None:
+        data += b"\x00\x00\x01\xbb\x00\x06\x80\x00\x01\x04"
+        data += bytes([0x20 | video_bound]) + b"\xff"
     for stream_id, payload in packets:
         body = b"\x81\x80\x05" + b"\x21\x00\x01\x00\x01" + payload
         data += (

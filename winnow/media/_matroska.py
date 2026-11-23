@@ -6,17 +6,22 @@ variable-size integers, the header fits in the file, ``EBMLReadVersion`` is
 1, ``EBMLMaxIDLength`` and ``EBMLMaxSizeLength`` are within the RFC's
 limits) and its ``DocType`` must be ``matroska`` or ``webm`` (RFC 9559,
 section 4). Neither the magic nor the DocType says whether the file holds
-video: ffprobe is asked for the stream types (a video stream that is not
-cover art gives video, audio streams only give audio). Without that check
-the answer is unknown with a signal saying the check was unavailable; the
-extension never replaces it.
+video, so the track types decide. They are read natively first
+(:mod:`winnow.media._matroska_tracks`: the ``TrackType`` of every
+``TrackEntry`` in ``Tracks``). Only when that walk cannot settle the type
+(no ``Tracks`` found, a complex track, malformed or over-budget input) is
+ffprobe asked for the stream types (a video stream that is not cover art
+gives video, audio streams only give audio). Without ffprobe the answer is
+then unknown with a signal saying the check was unavailable. The signals
+record which path decided; the extension never replaces the answer.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from winnow.media._detect_base import Content, Outcome, decide, evidence
+from winnow.media import _matroska_tracks
+from winnow.media._detect_base import Content, Outcome, Reader, decide, evidence
 from winnow.media._stream_probe import probe_stream_types
 
 EBML_MAGIC: Final[bytes] = bytes.fromhex("1a45dfa3")
@@ -55,7 +60,7 @@ def inspect_matroska(content: Content) -> Outcome | None:
     if not content.head.startswith(EBML_MAGIC):
         return None
     try:
-        doctype = _read_doctype(content.head)
+        doctype, header_end = _read_doctype(content.head)
     except _EbmlError as exc:
         return decide(_CONTAINER, None, f"unknown malformed: {exc}")
     header = evidence(f"ebml doctype={doctype}")
@@ -66,30 +71,43 @@ def inspect_matroska(content: Content) -> Outcome | None:
             "unknown unsupported: doctype",
             evidence=(header,),
         )
+    reader = Reader(
+        handle=content.reader.handle,
+        size=content.size,
+        budget=_matroska_tracks.MAX_BYTES_READ,
+    )
+    walk = _matroska_tracks.walk_tracks(reader, header_end)
+    tracks = evidence(walk.detail, walk.media_type, source="track-handler")
+    if walk.settled:
+        if walk.media_type is None:
+            reason = "unknown unresolved: no audio or video track"
+        else:
+            reason = f"track types {walk.media_type.value}"
+        return decide(_CONTAINER, walk.media_type, reason, evidence=(header, tracks))
     probe = probe_stream_types(content.descriptor, demuxer=_DEMUXER)
     streams = evidence(probe.detail, probe.media_type, source="track-handler")
     if not probe.available:
-        reason = "unknown unavailable: stream types need ffprobe"
+        reason = "unknown unavailable: tracks unresolved and ffprobe needed"
     elif probe.media_type is None:
         reason = "unknown unresolved: no audio or video stream established"
     else:
-        reason = f"stream types {probe.media_type.value}"
+        reason = f"stream types {probe.media_type.value} from ffprobe"
     return decide(
         _CONTAINER,
         probe.media_type,
         reason,
-        evidence=(header, streams),
+        evidence=(header, tracks, streams),
     )
 
 
-def _read_doctype(head: bytes) -> str:
+def _read_doctype(head: bytes) -> tuple[str, int]:
     """Validate the EBML header and return its DocType.
 
     Args:
         head: The file's opening bytes, starting with the EBML magic.
 
     Returns:
-        The DocType string.
+        The DocType string and the file offset just past the header.
 
     Raises:
         _EbmlError: When the header breaks RFC 8794 or has no DocType.
@@ -115,7 +133,7 @@ def _read_doctype(head: bytes) -> str:
             _check_limit(element, payload)
     if doctype is None:
         raise _EbmlError("no DocType")
-    return doctype
+    return doctype, end
 
 
 def _check_limit(element: int, payload: bytes) -> None:

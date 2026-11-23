@@ -129,14 +129,27 @@ class _Tables:
         parsed_pmts: PMT PIDs whose section has been read.
         streams: ``(stream_type, kind)`` of every elementary stream.
         buffers: Partly assembled sections by PID.
-        pat_read: Whether the PAT has been read.
+        pat_sections: PAT ``section_number`` values read.
+        pat_last: The PAT's ``last_section_number``, once a section is read.
     """
 
     pmt_pids: set[int] = field(default_factory=set)
     parsed_pmts: set[int] = field(default_factory=set)
     streams: list[tuple[int, str | None]] = field(default_factory=list)
     buffers: dict[int, bytes] = field(default_factory=dict)
-    pat_read: bool = False
+    pat_sections: set[int] = field(default_factory=set)
+    pat_last: int | None = None
+
+    @property
+    def pat_read(self) -> bool:
+        """Report whether every section of the PAT has been read.
+
+        Returns:
+            ``True`` once sections 0 to ``last_section_number`` are read.
+        """
+        if self.pat_last is None:
+            return False
+        return set(range(self.pat_last + 1)) <= self.pat_sections
 
     @property
     def complete(self) -> bool:
@@ -304,16 +317,23 @@ def _feed_packet(tables: _Tables, packet: bytes) -> None:
 def _read_pat(tables: _Tables, section: bytes) -> None:
     """Read the PMT PIDs from a PAT section (13818-1, 2.4.4.3).
 
+    A PAT may span several sections; each records its ``section_number``
+    and the ``last_section_number``, so the PAT counts as read only once
+    every section is.
+
     Args:
         tables: Tables being assembled.
         section: The whole section, CRC included.
     """
+    if len(section) < 8 + _CRC_BYTES:
+        return
+    tables.pat_sections.add(section[6])
+    tables.pat_last = section[7]
     for index in range(8, len(section) - _CRC_BYTES - 3, 4):
         program = (section[index] << 8) | section[index + 1]
         pid = ((section[index + 2] & 0x1F) << 8) | section[index + 3]
         if program != 0:
             tables.pmt_pids.add(pid)
-    tables.pat_read = True
 
 
 def _read_pmt(tables: _Tables, section: bytes) -> None:
