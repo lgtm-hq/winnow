@@ -32,6 +32,7 @@ from ruamel.yaml.events import (
 from ruamel.yaml.scanner import RoundTripScanner
 from ruamel.yaml.tokens import (
     AnchorToken,
+    BlockEntryToken,
     CommentToken,
     KeyToken,
     ScalarToken,
@@ -66,12 +67,12 @@ class YamlNode:
     start: int
     """Where the node starts, its anchor and tag included."""
     end: int
+    """Where the parser ends the node; a block collection ends after the
+    comments that follow it, so the editor uses :meth:`YamlTree.leaf_end`."""
     column: int
     """The column the parser gives the node's start, kept apart from
     ``start`` so a misplaced start cannot also misplace the column it is
     checked against."""
-    """Where the parser ends the node; a block collection ends after the
-    comments that follow it, so the editor uses :meth:`YamlTree.leaf_end`."""
     anchor: str | None = None
     tag: str | None = None
     value: str = ""
@@ -107,6 +108,11 @@ class YamlNode:
             and self.style is None
             and not self.value
         )
+
+    @property
+    def is_block_scalar(self) -> bool:
+        """Return whether the node is a ``|`` or ``>`` block scalar."""
+        return self.kind is NodeKind.SCALAR and self.style in _BLOCK_STYLES
 
     def resolved(self) -> YamlNode:
         """Return the node an alias refers to, or the node itself."""
@@ -146,6 +152,8 @@ class YamlTree:
     document_end: int | None
     """Where an explicit ``...`` document end starts, if there is one."""
     line_starts: list[int]
+    entries: list[tuple[int, int]]
+    """Where each block sequence entry's ``-`` is, and its column, in order."""
 
     def line_of(self, position: int) -> int:
         """Return the zero-based line a position lies on."""
@@ -210,6 +218,17 @@ class YamlTree:
         content = len(text.rstrip(_SPACE + LINE_BREAKS))
         return min(last.end, self.line_end(last.start + max(content - 1, 0)))
 
+    def first_entry_column(self, sequence: YamlNode) -> int:
+        """Return the column of a block sequence's first ``-``.
+
+        The sequence's own start may lie at an anchor or tag on a line
+        above its first entry; its first ``-`` is the first after that.
+        """
+        index = bisect.bisect_left(self.entries, (sequence.start, -1))
+        if index < len(self.entries):
+            return self.entries[index][1]
+        return sequence.column
+
     def nodes(self, top: YamlNode | None = None) -> Iterator[YamlNode]:
         """Yield every node of the document, or below ``top``, keys included."""
         start = self.root if top is None else top
@@ -246,6 +265,11 @@ def parse_yaml(text: str) -> YamlTree:
     builder = _Builder(text, tokens)
     for event in events:
         builder.add(event)
+    entries: list[tuple[int, int]] = [
+        (token.start_mark.index, token.start_mark.column)
+        for token in tokens
+        if isinstance(token, BlockEntryToken)
+    ]
     return YamlTree(
         text=text,
         root=builder.root,
@@ -255,6 +279,7 @@ def parse_yaml(text: str) -> YamlTree:
         anchored=builder.anchored,
         document_end=builder.document_end,
         line_starts=line_starts,
+        entries=entries,
     )
 
 

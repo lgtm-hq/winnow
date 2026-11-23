@@ -17,21 +17,35 @@ from winnow.config import (
     set_config_value,
     validate_config,
 )
+from winnow.config._shape import MAX_DEPTH, text_depth
+from winnow.exceptions import ConfigError
 
 __all__ = ["config"]
 
 _SHOW_FORMATS = ("yaml", "json")
 
 
-def _parse_value(raw: str) -> object:
+def _parse_value(raw: str, *, key: str) -> object:
     """Parse a raw CLI value into a JSON-native type when possible.
 
     Args:
         raw: Raw string value supplied on the command line.
+        key: The key being set, for the error.
 
     Returns:
         The parsed value, or the original string when it is not valid JSON.
+
+    Raises:
+        ConfigError: If the value's brackets nest more than ``MAX_DEPTH``
+            deep, measured before ``json`` recurses once per level.
     """
+    if text_depth(raw) > MAX_DEPTH:
+        raise ConfigError(
+            f"config set cannot write {key}: the value nests more than "
+            f"{MAX_DEPTH} levels deep",
+            operation="set_config",
+            details={"key": key},
+        )
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -102,7 +116,7 @@ def set_value(
     """
     set_config_value(
         key=key,
-        value=_parse_value(value),
+        value=_parse_value(value, key=key),
         config_path=config_path,
     )
 

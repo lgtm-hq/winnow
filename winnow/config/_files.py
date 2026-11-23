@@ -36,16 +36,22 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Mapping, Set
+from collections.abc import Mapping, Sequence
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Final
 
-import tomli
 from ruamel.yaml import YAML
 from ruamel.yaml.composer import MaxDepthExceededError
 
 from winnow.config._markers import cast_markers_in
+from winnow.config._shape import (
+    MAX_DEPTH,
+    NestingError,
+    load_toml,
+    nesting_depth,
+    text_depth,
+)
 from winnow.exceptions import ConfigError
 
 _LOCAL_INFIX: Final = ".local."
@@ -67,8 +73,6 @@ _FILE_LEVEL_KEYS: Final = frozenset(
 _MERGE_TOKENS: Final = frozenset({"dynaconf_merge", "dynaconf_merge_unique"})
 """Keys or list items that changed how Dynaconf merged a value."""
 _FOR_DYNACONF_SUFFIX: Final = "_for_dynaconf"
-MAX_DEPTH: Final = 100
-"""How many collections deep a config file, or a value set in one, may nest."""
 
 
 class ConfigFormat(StrEnum):
@@ -188,21 +192,44 @@ def settings_of(
     return store
 
 
-def read_value(value: object, *, cast: bool = True) -> object:
+def read_value(
+    value: object,
+    *,
+    cast: bool = True,
+    parts: Sequence[str] = (),
+    path: Path | None = None,
+) -> object:
     """Return a value as reading it from a config file gives it.
 
+    This is where a read value is measured: after cast markers are applied
+    and a flat key's parts are nested, before any recursive function walks
+    it. The mapping the value sits in counts as one level, as it does in
+    :func:`parse_document`.
+
     Args:
-        value: A value as written in a file.
+        value: A value as written in a file, which
+            :func:`parse_document` has measured.
         cast: Whether to apply cast markers.
+        parts: The parts of a flat key after its first, which nest the
+            value one mapping each.
+        path: The file the value is read from, for the error.
 
     Returns:
-        The value with mapping keys lowercased and, when ``cast`` is set,
-        cast markers applied.
+        The value, nested in ``parts``, with mapping keys lowercased and,
+        when ``cast`` is set, cast markers applied.
 
     Raises:
+        ConfigError: If the value read nests more than :data:`MAX_DEPTH`
+            deep with the mapping it sits in.
         ValueError: If the value uses a cast marker winnow does not support.
     """
-    return _lowercase_keys(cast_markers_in(value) if cast else value)
+    read = cast_markers_in(value) if cast else value
+    for part in reversed(parts):
+        read = {part.lower(): read}
+    depth = nesting_depth(read)
+    if depth is None or depth >= MAX_DEPTH:
+        raise _shape_error(path, too_deep=depth is not None)
+    return _lowercase_keys(read)
 
 
 def _read_document(path: Path) -> Mapping[str, object]:
@@ -241,19 +268,21 @@ def parse_document(text: str, path: Path) -> Mapping[str, object]:
     """
     file_format = config_format(path)
     document: object
-    try:
-        if file_format is ConfigFormat.TOML:
-            document = tomli.loads(text)
-        elif file_format is ConfigFormat.JSON:
-            document = json.loads(text)
-        else:
-            stream = io.StringIO(text)
-            stream.name = str(path)
-            yaml = YAML(typ="safe", pure=True)
-            yaml.max_depth = MAX_DEPTH + 1
+    if file_format is ConfigFormat.TOML:
+        document = _load_toml(text, path)
+    elif file_format is ConfigFormat.JSON:
+        if text_depth(text) > MAX_DEPTH:
+            raise _shape_error(path, too_deep=True)
+        document = json.loads(text)
+    else:
+        stream = io.StringIO(text)
+        stream.name = str(path)
+        yaml = YAML(typ="safe", pure=True)
+        yaml.max_depth = MAX_DEPTH + 1
+        try:
             document = yaml.load(stream)
-    except (MaxDepthExceededError, RecursionError) as exc:
-        raise _shape_error(path, too_deep=True) from exc
+        except MaxDepthExceededError as exc:
+            raise _shape_error(path, too_deep=True) from exc
     depth = nesting_depth(document)
     if depth is None or depth > MAX_DEPTH:
         raise _shape_error(path, too_deep=depth is not None)
@@ -268,49 +297,20 @@ def parse_document(text: str, path: Path) -> Mapping[str, object]:
     return document
 
 
-def nesting_depth(value: object) -> int | None:
-    """Return how many collections deep a value nests, without recursing.
+def _load_toml(text: str, path: Path) -> object:
+    """Parse TOML content, refusing what tomli refuses as too deep.
 
-    A scalar is 0 deep and a collection one more than its deepest item. A
-    value reached twice through an alias is measured once.
-
-    Returns:
-        The depth, or ``None`` when the value contains itself.
+    Raises:
+        ConfigError: If tomli refuses the content as nested too deeply.
+        ValueError: If the content is not valid TOML.
     """
-    depths: dict[int, int] = {}
-    open_ids: set[int] = set()
-    pending: list[tuple[object, bool]] = [(value, False)]
-    while pending:
-        item, finished = pending.pop()
-        children = _children(item)
-        if children is None:
-            continue
-        key = id(item)
-        if finished:
-            open_ids.discard(key)
-            depths[key] = 1 + max(
-                (depths.get(id(child), 0) for child in children),
-                default=0,
-            )
-        elif key in open_ids:
-            return None
-        elif key not in depths:
-            open_ids.add(key)
-            pending.append((item, True))
-            pending.extend((child, False) for child in children)
-    return depths.get(id(value), 0)
+    try:
+        return load_toml(text)
+    except NestingError as exc:
+        raise _shape_error(path, too_deep=True) from exc
 
 
-def _children(value: object) -> list[object] | None:
-    """Return a collection's keys and items, or ``None`` for a scalar."""
-    if isinstance(value, Mapping):
-        return [*value.keys(), *value.values()]
-    if isinstance(value, list | tuple | Set):
-        return list(value)
-    return None
-
-
-def _shape_error(path: Path, *, too_deep: bool) -> ConfigError:
+def _shape_error(path: Path | None, *, too_deep: bool) -> ConfigError:
     """Build the error for a file nested too deeply or holding a cycle."""
     reason = (
         f"it nests values more than {MAX_DEPTH} levels deep"
@@ -351,9 +351,7 @@ def _apply_file(
     for key, value in collapsed.values():
         parts = key.replace("__", ".").split(".")
         top = parts[0].strip().lower()
-        nested = read_value(value, cast=cast)
-        for part in reversed(parts[1:]):
-            nested = {part.lower(): nested}
+        nested = read_value(value, cast=cast, parts=parts[1:], path=path)
         store[top] = merge_values(store.get(top), nested)
 
 

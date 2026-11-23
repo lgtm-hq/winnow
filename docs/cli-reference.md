@@ -124,7 +124,9 @@ back in its own format:
   the key's line; a non-empty list or mapping is written as a block below the key, in
   the file's own indents; an empty one as `[]` or `{}`; inside a flow collection, in
   flow style. A null or boolean that `set` writes is `null`, `true` or `false`. A
-  comment after a value that stays on one line keeps its place.
+  comment after a scalar or flow collection on the key's own line keeps its place when
+  the new value is also written on that line (a scalar, `[]` or `{}`, or any value
+  inside a flow collection), as it still follows the same key.
 - A JSON file is re-serialised with the indent it uses. Keys, their order and values are
   kept, while spacing, number forms and escapes can change: a compact one-line file
   `{"workers":2}` comes back as `{"workers": 3}`, and an inline array such as
@@ -147,9 +149,13 @@ fail with an error and leave the file untouched:
 - a symlink loop;
 - a file that mixes CRLF and LF line endings or holds a lone CR;
 - a YAML file that holds more than one document;
-- an edit that would drop or move a comment: a comment inside the value being replaced,
-  or after it on its last line, unless the old and the new value each fit on one line. A
-  comment is never carried over to an item or key the new value happens to keep;
+- an edit that would drop or move a comment: a comment inside the text being replaced,
+  such as a block scalar's header comment, and a comment after it on its last line
+  unless the old and the new value are each a scalar or flow collection on the key's own
+  line. A comment after a block list or mapping, even of one entry, or after a block
+  scalar's header is refused, and is never carried over to an item or key the new value
+  happens to keep. A whole-document `null` with a comment after it (`null # note`) is
+  refused too, as the comment would then follow the new key;
 - a `NaN` or infinite number, or a value the file's format cannot hold;
 - a file with a duplicate key, a JSON file with a byte order mark, or a YAML file that
   does not parse;
@@ -158,16 +164,18 @@ fail with an error and leave the file untouched:
   through an alias or merged elsewhere with a `<<` merge key;
 - a file that nests values more than 100 levels deep or holds a value that contains
   itself through a recursive anchor (`x: &r {self: *r}`), and a value that contains
-  itself or would nest more than 100 levels deep with its key; every command that reads
-  the file refuses it the same way;
+  itself or would nest more than 100 levels deep with its key. The depth counts what the
+  file gives once read: a `@json` cast string's value and a flat key's parts (`a.b.c: 1`
+  is three levels) count too. Every command that reads the file refuses it the same way;
 - a key in, or a value holding, a YAML mapping written with an explicit `?` key or with
   a key that has no `:`;
 - a new key for a flow mapping (`{...}`) that holds a comment, which would then follow
   the new key;
 - a YAML file that holds a U+0085, U+2028 or U+2029 line break;
-- an edit whose new lines would not start at the file's indentation, or whose result
-  does not parse; the message says the edit could not be made safely, not that the file
-  is invalid;
+- an edit whose new lines would not start at the file's indentation (such as a block
+  list or mapping below an anchor or tag on a line of its own at another column), whose
+  result does not parse, or that would change another setting; the message says the edit
+  could not be made safely, not that the file is invalid;
 - a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
   value instead;
 - a key a later entry or a flat key elsewhere in the file would override or merge into,

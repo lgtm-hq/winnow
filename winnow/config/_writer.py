@@ -26,9 +26,7 @@ from winnow.config._env import (
     _sync_symlink_settings,
 )
 from winnow.config._files import (
-    MAX_DEPTH,
     ConfigFormat,
-    nesting_depth,
     parse_document,
     read_config_layers,
     read_value,
@@ -40,6 +38,7 @@ from winnow.config._reader import (
     _KNOWN_TOP_LEVEL_KEYS,
     validate_config_data,
 )
+from winnow.config._shape import MAX_DEPTH, nesting_depth
 from winnow.config._yaml_splice import plan_edit
 from winnow.config.defaults import cwd_config_path
 from winnow.config.schema import _yaml_safe, render_config_yaml
@@ -187,9 +186,8 @@ def set_config_value(
         new_document,
         target_path=target_path,
         updates=updates,
+        old_document=old_document,
     )
-    if old_document is not None:
-        _refuse_other_changes(old_document, new_document, target_path, updates)
     _write_text(new_text, config_path=write_path, mode=mode, newline="")
     return updated_config
 
@@ -314,7 +312,8 @@ def _refuse_other_changes(
         updates: The keys set.
 
     Raises:
-        ConfigError: If another setting changed.
+        ConfigError: If another setting changed: the edit went wrong, not
+            the user's file.
     """
     readings = [
         (
@@ -335,8 +334,9 @@ def _refuse_other_changes(
             _drop_setting(after, _key_parts(update_key.lower()))
         if not _same(before, after):
             raise ConfigError(
-                "config set would change other settings of this file; the file "
-                "is unchanged, edit it by hand",
+                "config set could not make this edit safely: it would change "
+                "other settings of this file; the file is unchanged, edit it "
+                "by hand",
                 operation="set_config",
                 file_path=target_path,
                 details={"keys": list(updates)},
@@ -510,18 +510,26 @@ def _validate_new_text(
     *,
     target_path: Path,
     updates: Mapping[str, object],
+    old_document: Mapping[str, object] | None = None,
 ) -> WinnowConfig:
     """Check new file content, parsed, before it is written.
 
     Read on its own, the content must set each updated key to exactly its
     value, compared as :func:`_already_set` compares, both as written and
-    with casts applied, so an earlier cast string cannot join the value. It
-    must also give a valid configuration together with the companion file.
+    with casts applied, so an earlier cast string cannot join the value.
+    Every other setting must read as it did in ``old_document``, which is
+    checked before the configuration is validated: an edit that changed
+    another key is reported as an edit that went wrong, never as an invalid
+    file. Last, the content must give a valid configuration together with
+    the companion file; with nothing else changed, an invalid one comes from
+    the values set or from the file as it was.
 
     Args:
         new_document: The content about to be written, parsed.
         target_path: The file it will be written to.
         updates: The keys set, with their values.
+        old_document: The file's content before the edit, parsed; ``None``
+            for a new file or when nothing is changed.
 
     Returns:
         The validated configuration of the content and its companion.
@@ -548,6 +556,8 @@ def _validate_new_text(
                 )
     except _CONFIG_LOAD_ERRORS as exc:
         raise _load_error(target_path, exc) from exc
+    if old_document is not None:
+        _refuse_other_changes(old_document, new_document, target_path, updates)
 
     top_keys = {_key_parts(update_key)[0].lower() for update_key in updates}
     known = {

@@ -23,7 +23,7 @@ from ruamel.yaml.events import Event
 from winnow.cli import main
 from winnow.cli.errors import ExitCode
 from winnow.config import _files, _writer, _yaml_splice, load_config, set_config_value
-from winnow.config._files import MAX_DEPTH, nesting_depth
+from winnow.config._shape import MAX_DEPTH, nesting_depth
 from winnow.config._yaml_splice import Splice, plan_edit
 from winnow.config._yaml_tree import YamlTree, _Builder, parse_yaml
 from winnow.exceptions import ConfigError

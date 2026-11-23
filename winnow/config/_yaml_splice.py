@@ -13,12 +13,12 @@ collection. A scalar or empty collection is written on the key's line, a
 non-empty collection as a block below the key, or, inside a flow
 collection, in flow style. The edit is refused when the old value is an
 alias, holds an anchor something outside it refers to, or lies in a mapping
-an alias or merge key shares; when a comment inside the replaced text, or
-after it on its last line, would be dropped or moved; when a mapping on the
-key's way has an explicit ``?`` key or a key without ``:``; when a new key
-would go into a flow mapping that holds a comment; when the file holds a
-U+0085, U+2028 or U+2029 line break; and when the new lines would not start
-at the column the parser gives the lines around them.
+an alias or merge key shares; when a comment would be dropped or moved, as
+:meth:`_Planner._checked` decides; when a mapping on the key's way has an
+explicit ``?`` key or a key without ``:``; when a new key would go into a
+flow mapping that holds a comment; when the file holds a U+0085, U+2028 or
+U+2029 line break; and when the new lines would not start at the column the
+parser gives the lines around them.
 """
 
 from __future__ import annotations
@@ -266,6 +266,9 @@ class _Planner:
         """Return the splice that adds an entry at the end of a flow mapping.
 
         The entry goes after the last one, or after the comma that ends it.
+        After an empty last value a space keeps the ``:`` out of the last
+        key, which a plain key in a flow mapping would otherwise take in; a
+        key the parser reads with its ``:``, as ``{review:}``, keeps it.
 
         Raises:
             ConfigError: If the mapping holds a comment, which would then
@@ -294,6 +297,11 @@ class _Planner:
         if after.startswith(","):
             comma = closing - len(after) + 1
             return Splice(comma, comma, f" {entry}")
+        if last.value.is_empty:
+            gap = self._text[position:closing]
+            spaces = len(gap) - len(gap.lstrip(_SPACE))
+            space = "" if last.colon_end == last.key.end else " "
+            return Splice(position, position + spaces, f"{space}, {entry}")
         return Splice(position, position, f", {entry}")
 
     def _lines_at(
@@ -319,13 +327,23 @@ class _Planner:
         if tree.column_of(start) != 0:
             start = len(self._text[:start].rstrip(_SPACE))
             lines = f"\n{lines}"
-        return self._checked(Splice(start, end, lines), self._parts[0])
+        return self._checked(
+            Splice(start, end, lines),
+            self._parts[0],
+            old_inline=False,
+            new_inline=False,
+        )
 
     def _replace(self, pair: YamlPair, value: object, *, flow: bool) -> Splice:
         """Return the splice that replaces an entry's value.
 
+        A block collection replaced by one of its kind keeps its place and
+        column: its first key's or first ``-``'s column, which an anchor or
+        tag on a line of its own above it does not share.
+
         Raises:
-            ConfigError: If the old value is an alias.
+            ConfigError: If the old value is an alias, or its first key or
+                ``-`` is not at the column the replaced text starts at.
         """
         tree = self._tree
         old = pair.value
@@ -338,6 +356,12 @@ class _Planner:
         end = tree.leaf_end(old)
         on_key_line = tree.line_of(old.start) == tree.line_of(max(colon - 1, 0))
         old_block = old.kind is not NodeKind.SCALAR and not old.flow
+        old_inline = (
+            on_key_line
+            and not old.is_block_scalar
+            and (old.kind is NodeKind.SCALAR or old.flow)
+            and not any(char in LINE_BREAKS for char in self._text[old.start : end])
+        )
         if flow:
             inline = render_inline(value, self._style, flow=True)
             splice = Splice(old.start, end, f" {inline}" if old.is_empty else inline)
@@ -348,7 +372,11 @@ class _Planner:
                 column = tree.column_of(old.start)
                 self._refuse_indent(
                     column,
-                    old.pairs[0].key.column if old.pairs else old.column,
+                    (
+                        old.pairs[0].key.column
+                        if old.pairs
+                        else tree.first_entry_column(old)
+                    ),
                 )
                 lines = render_block(
                     value,
@@ -375,16 +403,47 @@ class _Planner:
                 splice = Splice(colon, end, f" {inline}")
             else:
                 splice = Splice(old.start, end, inline)
-        return self._checked(splice, name)
+        return self._checked(
+            splice,
+            name,
+            old_inline=old_inline,
+            new_inline=flow or not is_block(value),
+        )
 
-    def _checked(self, splice: Splice, name: str) -> Splice:
+    def _checked(
+        self,
+        splice: Splice,
+        name: str,
+        *,
+        old_inline: bool,
+        new_inline: bool,
+    ) -> Splice:
         """Return a replacing splice once its anchors and comments allow it.
+
+        The comment rule: a comment strictly inside the replaced text is
+        always refused, as the edit would drop it. A comment after the
+        replaced text on its last line is kept only when the old and the
+        new value are each a scalar or flow collection written on the
+        key's own line, so the comment still follows the same key; a block
+        scalar's header, a block collection and a value below its key are
+        not. In every other case such a comment is refused, as it would
+        then follow another key or item. Comments on other lines are not
+        touched.
+
+        When no comment follows an old value that is not on the key's own
+        line, the spaces after it on its last line are replaced with it, so
+        they do not trail the new value.
+
+        Args:
+            splice: The replacement.
+            name: The key's name, for the error.
+            old_inline: Whether the old value is a scalar or flow collection
+                on the key's own line, other than a block scalar.
+            new_inline: Whether the new value is written on that line.
 
         Raises:
             ConfigError: If the replaced text holds an anchor that something
-                outside it refers to, or a comment the edit would drop or
-                move: one inside the text, or after it on its last line,
-                unless the old and the new value are each on one line.
+                outside it refers to, or the comment rule refuses the edit.
         """
         tree = self._tree
         start, end = splice.start, splice.end
@@ -394,11 +453,10 @@ class _Planner:
             for name_used, position in tree.aliases
         ):
             raise self._shared_error(name)
-        old_lines = any(char in LINE_BREAKS for char in self._text[start:end])
-        if (old_lines or "\n" in splice.text) and tree.comments_in(
-            start,
-            max(tree.line_end(end), end),
-        ):
+        line_end = max(tree.line_end(end), end)
+        trailing = tree.comments_in(end, line_end)
+        same_line = old_inline and new_inline
+        if tree.comments_in(start, end) or (trailing and not same_line):
             raise ConfigError(
                 f"config set cannot replace {self._dotted}: a comment inside its "
                 "old value, or after it on the same line, would be dropped or "
@@ -406,6 +464,8 @@ class _Planner:
                 operation="set_config",
                 details={"key": self._dotted},
             )
+        if not old_inline and not self._text[end:line_end].strip(_SPACE):
+            return Splice(start, line_end, splice.text)
         return splice
 
     def _shared_error(self, name: str) -> ConfigError:

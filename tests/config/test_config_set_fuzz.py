@@ -17,7 +17,8 @@ The oracle shares no code with the editor. It finds what changed by
 comparing the texts, reads values with ``ruamel.yaml``'s safe loader and
 comments with its scanner. An accepted edit must change only text inside
 the key's old value, or insert whole lines for a new key; keep every
-comment token, in order and in number; leave every other key equal; give
+comment token, in order and in number, each belonging to the key path it
+belonged to (:mod:`tests.config.fuzz_oracle`); leave every other key equal; give
 the key the value set; start every line it inserts or replaces at the
 file's own indent; keep the file's line ends and byte order mark; and be a
 no-op when made again. A refused edit must raise :class:`ConfigError` for a
@@ -43,6 +44,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.nodes import MappingNode, Node, SequenceNode
 from ruamel.yaml.tokens import CommentToken
 
+from tests.config.fuzz_oracle import comment_owners
 from winnow.config import set_config_value
 from winnow.exceptions import ConfigError
 
@@ -612,6 +614,8 @@ def _check_replaced(case: Case, before: str, after: str, style: _Style) -> None:
     """Check a replaced value: inside the old one, its new lines at the indent."""
     start, end, text = _changed(before, after)
     region_start, region_end, column = _value_region(before, case.key)
+    while region_end < len(before) and before[region_end] in " \t":
+        region_end += 1
     assert_that(start).is_greater_than_or_equal_to(region_start)
     assert_that(end).is_less_than_or_equal_to(region_end)
     offsets = _sequence_offsets(before, style)
@@ -642,6 +646,7 @@ def _check_accepted(case: Case, after: str, style: _Style) -> None:
         _without(old_settings, case.key),
     )
     assert_that(_comments(after)).is_equal_to(_comments(before))
+    assert_that(comment_owners(after)).is_equal_to(comment_owners(before))
     if after == before:
         return
     if case.shape is Shape.FLOW_INSERT:

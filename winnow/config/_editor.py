@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, MutableMapping, Sequence, Set
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from winnow.config._files import ConfigFormat, config_format
 from winnow.config._markers import cast_marker
+from winnow.config._shape import children
 from winnow.config.schema import render_config_yaml
 from winnow.exceptions import ConfigError
 
@@ -174,26 +175,27 @@ def check_finite(value: object, *, key: str) -> None:
     """Refuse NaN and infinite numbers anywhere in a value.
 
     Neither JSON nor the config model can hold them, and YAML reads them
-    back as a different value.
+    back as a different value. The value is walked without recursing, into
+    what :func:`~winnow.config._shape.children` calls a collection, mapping
+    keys included.
 
     Raises:
         ConfigError: If ``value`` holds a float that is not finite.
     """
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ConfigError(
-            f"{value} is not a finite number; config values must be finite",
-            operation="set_config",
-            details={"key": key},
-        )
-    if isinstance(value, Mapping):
-        for item in value.values():
-            check_finite(item, key=key)
-    elif isinstance(value, Sequence | Set) and not isinstance(
-        value,
-        str | bytes | bytearray,
-    ):
-        for item in value:
-            check_finite(item, key=key)
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ConfigError(
+                f"{item} is not a finite number; config values must be finite",
+                operation="set_config",
+                details={"key": key},
+            )
+        items = children(item)
+        if items is not None and id(item) not in seen:
+            seen.add(id(item))
+            pending.extend(items)
 
 
 def set_in_document(

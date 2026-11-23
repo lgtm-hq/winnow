@@ -301,9 +301,7 @@ def test_comments_after_the_document_start_are_kept(
         ("null\n# footer\n", "workers: 3\n# footer\n"),
         ("{}\n# footer\n", "{workers: 3}\n# footer\n"),
         ("~\n# footer\n", "workers: 3\n# footer\n"),
-        ("null # inline\n", "workers: 3 # inline\n"),
         ("{} # inline\n", "{workers: 3} # inline\n"),
-        ("# header\n---\nnull # inline\n", "# header\n---\nworkers: 3 # inline\n"),
         ("--- ~\n", "---\nworkers: 3\n"),
     ],
 )
@@ -319,6 +317,24 @@ def test_empty_document_with_a_comment_takes_the_key(
     set_config_value("workers", 3, config_path=config_path)
 
     assert_that(config_path.read_text()).is_equal_to(after)
+
+
+@pytest.mark.parametrize(
+    "original",
+    ["null # inline\n", "# header\n---\nnull # inline\n"],
+)
+def test_null_document_with_a_comment_after_it_is_refused(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    """A comment after a ``null`` document would follow the new key instead."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError, match="a comment inside its old value"):
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(original)
 
 
 def test_null_document_with_a_comment_refuses_a_block(tmp_path: Path) -> None:

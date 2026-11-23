@@ -10,11 +10,13 @@ import tomli
 from pydantic import TypeAdapter, ValidationError
 
 from winnow.config._markers import cast_marker
+from winnow.config._shape import MAX_DEPTH, NestingError, load_toml, nesting_depth
 from winnow.config.defaults import (
     CONFIG_DIR_ENVVAR,
     DATA_DIR_ENVVAR,
     ENVVAR_PREFIX,
 )
+from winnow.exceptions import ConfigError
 from winnow.models.enums import SymlinkPolicy
 
 _ENVVAR_PREFIX = f"{ENVVAR_PREFIX}_"
@@ -59,6 +61,11 @@ def _load_env_data(
 
     Returns:
         Parsed override data and explicitly provided top-level setting keys.
+
+    Raises:
+        ConfigError: If a variable's value, with the mappings its name
+            nests it in, nests more than ``MAX_DEPTH`` deep, or tomli
+            refuses it as nested too deeply; the error names the variable.
     """
     data: dict[str, object] = {}
     explicit_keys: set[str] = set()
@@ -72,6 +79,9 @@ def _load_env_data(
         if len(key_parts) == 1:
             explicit_keys.add(key_parts[0])
         parsed_value = _parse_env_value(env_key=env_key, raw=env_value)
+        depth = nesting_depth(parsed_value)
+        if depth is None or depth + len(key_parts) > MAX_DEPTH:
+            raise _env_depth_error(env_key)
         _set_env_value(data=data, key_parts=key_parts, value=parsed_value)
 
     return data, frozenset(explicit_keys)
@@ -97,6 +107,7 @@ def _parse_env_value(*, env_key: str, raw: str) -> object:
         The cast value.
 
     Raises:
+        ConfigError: If tomli refuses the value as nested too deeply.
         ValueError: If a cast marker's value cannot be cast, or the marker is
             one winnow does not support.
     """
@@ -109,9 +120,21 @@ def _parse_env_value(*, env_key: str, raw: str) -> object:
     if matched:
         return value
     try:
-        return tomli.loads(f"key={text}")["key"]
+        return load_toml(f"key={text}")["key"]
+    except NestingError as exc:
+        raise _env_depth_error(env_key) from exc
     except (tomli.TOMLDecodeError, KeyError):
         return text
+
+
+def _env_depth_error(env_key: str) -> ConfigError:
+    """Return the error for an environment value nested too deeply."""
+    return ConfigError(
+        f"Unable to load Winnow configuration: {env_key} nests values more "
+        f"than {MAX_DEPTH} levels deep",
+        operation="load_config",
+        details={"variable": env_key},
+    )
 
 
 def _set_env_value(
