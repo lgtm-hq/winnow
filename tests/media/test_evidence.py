@@ -727,9 +727,15 @@ def test_collect_evidence_invalid_path_is_unreadable(tmp_path: Path) -> None:
     _assert_unreadable(evidence, contains="ValueError")
 
 
+@pytest.mark.parametrize(
+    "name",
+    [b"caf\xe9.jpg", b"photo.jp\xffg", b"\xff.\xfe"],
+    ids=["basename", "extension", "both"],
+)
 def test_collect_evidence_non_utf8_file_name(
     tmp_path: Path,
     fixtures_dir: Path,
+    name: bytes,
 ) -> None:
     """A non-UTF-8 file name collects and round-trips where it can exist.
 
@@ -737,7 +743,7 @@ def test_collect_evidence_non_utf8_file_name(
     UTF-8 with ``EILSEQ``, so there the test asserts that refusal instead;
     ``tests/models/test_evidence.py`` covers the encoding on every platform.
     """
-    path = tmp_path / os.fsdecode(b"caf\xe9.jpg")
+    path = tmp_path / os.fsdecode(name)
     try:
         shutil.copyfile(fixtures_dir / "sample.jpg", path)
     except OSError as exc:
@@ -757,6 +763,40 @@ def test_collect_evidence_non_utf8_file_name(
         pytest.fail("expected a snapshot")
     assert_that(snapshot.path).is_equal_to(path)
     assert_that({o.origin for o in restored.observations}).is_equal_to({path})
+
+
+def test_signal_detail_with_undecodable_bytes_is_stored_as_hex(
+    media_file: Path,
+) -> None:
+    """A signal that copied a non-UTF-8 extension is stored, not raised on.
+
+    Runs on every platform: the detection result is supplied, so no file with
+    such a name has to exist.
+    """
+    suffix = os.fsdecode(b".jp\xffg")
+    fresh = detect(media_file)
+    detection = fresh.model_copy(
+        update={
+            "signals": (
+                *fresh.signals,
+                TypeSignal(
+                    source="extension",
+                    detail=f"suffix={suffix}",
+                    media_type=None,
+                ),
+            ),
+        },
+    )
+
+    evidence = collect_evidence(media_file, readers=(), detection=detection)
+    restored = EvidenceSet.model_validate_json(evidence.model_dump_json())
+
+    expected = "hex:" + os.fsencode(f"suffix={suffix}").hex()
+    assert_that([o.raw for o in evidence.observations]).contains(expected)
+    assert_that(restored).is_equal_to(evidence)
+    assert_that(bytes.fromhex(expected.removeprefix("hex:"))).is_equal_to(
+        b"suffix=.jp\xffg",
+    )
 
 
 def test_collect_evidence_container_without_decision_signal(

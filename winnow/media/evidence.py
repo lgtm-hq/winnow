@@ -426,6 +426,28 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
     return observations
 
 
+def _stored_detail(detail: str) -> str:
+    """Return a signal's detail in a form that can be stored exactly.
+
+    Detection copies the file's extension into the detail, and on Linux an
+    extension may hold bytes that are not UTF-8, which Python carries as lone
+    surrogates. Such a detail is written as ``hex:`` followed by its bytes, as
+    file names are; every other detail is returned unchanged. No detail starts
+    with ``hex:`` on its own: each starts with a field name or a dot.
+
+    Args:
+        detail: The signal's detail as detection produced it.
+
+    Returns:
+        The detail, or its bytes in ``hex:`` form when it is not valid Unicode.
+    """
+    try:
+        detail.encode("utf-8")
+    except UnicodeEncodeError:
+        return "hex:" + os.fsencode(detail).hex()
+    return detail
+
+
 def _signal_observation(
     path: Path,
     *,
@@ -451,7 +473,7 @@ def _signal_observation(
         source=source,
         locator=locator,
         origin=path,
-        raw=signal.detail,
+        raw=_stored_detail(signal.detail),
         value=None if media_type is None else media_type.value,
         status=ParseStatus.EMPTY if media_type is None else ParseStatus.OK,
         family=str(source),
