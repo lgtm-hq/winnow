@@ -107,7 +107,17 @@ def plan_edit(text: str, key_parts: list[str], value: object) -> Splice:
             operation="set_config",
             details={"key": ".".join(key_parts)},
         )
-    return _Planner(text, key_parts, value).plan()
+    try:
+        return _Planner(text, key_parts, value).plan()
+    except NotImplementedError as exc:
+        # The round-trip parser gives up on some comment placements, such as
+        # a comment after a key whose value starts on the next line.
+        raise ConfigError(
+            "config set cannot edit this YAML file: the place of one of its "
+            "comments cannot be established; edit the file by hand",
+            operation="set_config",
+            details={"key": ".".join(key_parts), "error": str(exc)},
+        ) from exc
 
 
 class _Planner:
@@ -369,6 +379,10 @@ class _Planner:
             key_column = tree.column_of(pair.key.start)
             same_kind = (old.kind is NodeKind.MAPPING) == isinstance(value, dict)
             if old_block and same_kind and not on_key_line:
+                # A comment between the key and the first entry describes the
+                # entries being replaced, and sits outside the replaced text.
+                if tree.comments_in(tree.line_end(colon), old.start):
+                    raise self._comment_error()
                 column = tree.column_of(old.start)
                 self._refuse_indent(
                     column,
@@ -457,16 +471,20 @@ class _Planner:
         trailing = tree.comments_in(end, line_end)
         same_line = old_inline and new_inline
         if tree.comments_in(start, end) or (trailing and not same_line):
-            raise ConfigError(
-                f"config set cannot replace {self._dotted}: a comment inside its "
-                "old value, or after it on the same line, would be dropped or "
-                "moved; edit the file by hand",
-                operation="set_config",
-                details={"key": self._dotted},
-            )
+            raise self._comment_error()
         if not old_inline and not self._text[end:line_end].strip(_SPACE):
             return Splice(start, line_end, splice.text)
         return splice
+
+    def _comment_error(self) -> ConfigError:
+        """Return the error for a comment the edit would drop or move."""
+        return ConfigError(
+            f"config set cannot replace {self._dotted}: a comment inside its "
+            "old value, above its first entry, or after it on the same line, "
+            "would be dropped or moved; edit the file by hand",
+            operation="set_config",
+            details={"key": self._dotted},
+        )
 
     def _shared_error(self, name: str) -> ConfigError:
         """Return the error for a key that a YAML anchor shares."""

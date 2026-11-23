@@ -696,7 +696,8 @@ def _write_text(
     except BaseException as exc:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
-        if not isinstance(exc, OSError):
+        # UnicodeError: text the encoding cannot hold, such as a lone surrogate.
+        if not isinstance(exc, OSError | UnicodeError):
             raise
         raise ConfigError(
             "Unable to write Winnow configuration",

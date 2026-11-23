@@ -154,8 +154,12 @@ fail with an error and leave the file untouched:
   unless the old and the new value are each a scalar or flow collection on the key's own
   line. A comment after a block list or mapping, even of one entry, or after a block
   scalar's header is refused, and is never carried over to an item or key the new value
-  happens to keep. A whole-document `null` with a comment after it (`null # note`) is
-  refused too, as the comment would then follow the new key;
+  happens to keep. A comment line between a key and the first entry of its list or
+  mapping blocks replacing that list or mapping, as it describes the entries; a comment
+  on the key's own line does not. A whole-document `null` with a comment after it
+  (`null # note`) is refused too, as the comment would then follow the new key;
+- a YAML file with a comment whose place cannot be established: a comment after a key's
+  colon when the value starts on the next line and a blank line follows;
 - a `NaN` or infinite number, or a value the file's format cannot hold;
 - a file with a duplicate key, a JSON file with a byte order mark, or a YAML file that
   does not parse;
