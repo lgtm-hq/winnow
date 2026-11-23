@@ -170,6 +170,125 @@ _CORPUS: dict[str, tuple[str, str, object]] = {
 }
 """Name to file content, key and value, for files with ``\\n`` line ends."""
 
+_EDIT_CORPUS: dict[str, tuple[str, str, object, str]] = {
+    "list then a comment": (
+        "source_dirs:\n  - /a\n# about workers\nworkers: 2\n",
+        "source_dirs",
+        ["/a", "/b"],
+        "source_dirs:\n  - /a\n  - /b\n# about workers\nworkers: 2\n",
+    ),
+    "list then a blank line": (
+        "source_dirs:\n  - /a\n\nworkers: 2\n",
+        "source_dirs",
+        ["/a", "/b"],
+        "source_dirs:\n  - /a\n  - /b\n\nworkers: 2\n",
+    ),
+    "nested list then a sibling": (
+        "paths:\n  include_patterns:\n    - '*.jpg'\n  # outputs\n  output_dir: /out\n",
+        "paths.include_patterns",
+        ["*.jpg", "*.png"],
+        "paths:\n  include_patterns:\n    - '*.jpg'\n    - '*.png'\n"
+        "  # outputs\n  output_dir: /out\n",
+    ),
+    "mapping then the next section": (
+        "routing:\n  review: Review\n# caching\ncache:\n  enabled: true\n",
+        "routing",
+        {"review": "Later", "graphics": "Art"},
+        "routing:\n  review: Later\n  graphics: Art\n"
+        "# caching\ncache:\n  enabled: true\n",
+    ),
+    "list then a footer": (
+        "workers: 2\nsource_dirs:\n  - /a\n# end of file\n",
+        "source_dirs",
+        ["/a", "/b"],
+        "workers: 2\nsource_dirs:\n  - /a\n  - /b\n# end of file\n",
+    ),
+    "null list then a comment": (
+        "source_dirs: null\n# about workers\nworkers: 2\n",
+        "source_dirs",
+        ["/a"],
+        "source_dirs:\n  - /a\n# about workers\nworkers: 2\n",
+    ),
+    "null mapping then a comment": (
+        "cache: null\n# about workers\nworkers: 2\n",
+        "cache.enabled",
+        True,
+        "cache:\n  enabled: true\n# about workers\nworkers: 2\n",
+    ),
+    "new nested key then a comment": (
+        "cache:\n  enabled: true\n# about workers\nworkers: 2\n",
+        "cache.directory",
+        "/data/cache",
+        "cache:\n  enabled: true\n  directory: /data/cache\n"
+        "# about workers\nworkers: 2\n",
+    ),
+    "new key after a trailing blank line": (
+        "cache:\n  enabled: true\n\n",
+        "workers",
+        3,
+        "cache:\n  enabled: true\nworkers: 3\n\n",
+    ),
+    "replace a list": (
+        "source_dirs:\n  - /photos  # main\n  - /videos\nworkers: 2\n",
+        "source_dirs",
+        ["/photos", "/music"],
+        "source_dirs:\n  - /photos  # main\n  - /music\nworkers: 2\n",
+    ),
+    "replace a mapping": (
+        "cache:\n  enabled: true  # on\n  directory: /c\n\nworkers: 2\n",
+        "cache",
+        {"enabled": False},
+        "cache:\n  enabled: false # on\n\nworkers: 2\n",
+    ),
+    "set a nested scalar": (
+        "cache:\n  enabled: true\n\n# threads\nworkers: 2\n",
+        "cache.enabled",
+        False,
+        "cache:\n  enabled: false\n\n# threads\nworkers: 2\n",
+    ),
+    "add a top-level key": (
+        "workers: 2  # threads\n\n# the end\n",
+        "dry_run",
+        True,
+        "workers: 2  # threads\ndry_run: true\n\n# the end\n",
+    ),
+    "add a nested key": (
+        "routing:\n  review: Review\n\nworkers: 2\n",
+        "routing.graphics",
+        "Art",
+        "routing:\n  review: Review\n  graphics: Art\n\nworkers: 2\n",
+    ),
+    "set a key to null": (
+        "paths:\n  output_dir: /out  # here\n  quarantine_dir: ~\n",
+        "paths.output_dir",
+        None,
+        "paths:\n  output_dir: ~     # here\n  quarantine_dir: ~\n",
+    ),
+    "replace null with a list": (
+        "source_dirs:  # none yet\nworkers: 2\n",
+        "source_dirs",
+        ["/a", "/b"],
+        "source_dirs:  # none yet\n  - /a\n  - /b\nworkers: 2\n",
+    ),
+    "replace null with a mapping": (
+        "workers: 2\ncache: ~\n\n# end\n",
+        "cache",
+        {"enabled": True},
+        "workers: 2\ncache:\n  enabled: true\n\n# end\n",
+    ),
+    "capitalised booleans": (
+        "dry_run: True\nrecursive: False\n",
+        "recursive",
+        True,
+        "dry_run: True\nrecursive: True\n",
+    ),
+}
+"""Name to file content, key, value and the content the edit gives.
+
+The review"s reproductions of comments and blank lines next to an edited
+key, and one file per edit shape the fuzz makes.
+"""
+
 
 def _changed_lines(before: str, after: str) -> list[tuple[str, str]]:
     """Return the lines that differ; the line counts must be equal."""
@@ -288,5 +407,17 @@ def test_null_set_by_config_set_uses_the_file_spelling(
     config_path.write_text(original, encoding="utf-8")
 
     set_config_value("paths.output_dir", None, config_path=config_path)
+
+    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(after)
+
+
+@pytest.mark.parametrize("name", list(_EDIT_CORPUS))
+def test_edit_keeps_the_lines_around_the_key(tmp_path: Path, name: str) -> None:
+    """Comments and blank lines next to the key stay where they were."""
+    original, key, value, after = _EDIT_CORPUS[name]
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original, encoding="utf-8")
+
+    set_config_value(key, value, config_path=config_path)
 
     assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(after)
