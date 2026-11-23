@@ -2435,3 +2435,63 @@ def test_stretched_first_packet_in_mp4_declares_nothing(
     assert_that(_decide(_stretched_walk("0.552"), header=header)).is_equal_to(
         expected,
     )
+
+
+def test_pcm_with_as_many_packets_as_indexed_samples_is_fragmented() -> None:
+    """A15g: a cut can leave exactly as many PCM packets as ``nb_frames``.
+
+    Here ``nb_frames`` counts the 2,048 samples ``moov`` indexes, and the walk
+    finds 2,048 packets spanning 40.96 s. PCM is compared in samples, so the
+    file is fragmented and never reported complete.
+    """
+    header = _header(
+        container=MP4_FORMAT_NAME,
+        codec="pcm_s16le",
+        frame_count=2048,
+    )
+    walk = _walk(*_packets(2048))
+
+    assert_that(is_fragmented(header, walk)).is_true()
+
+
+def test_equal_counts_for_a_packet_codec_are_not_fragmented() -> None:
+    """A15g keeps the packet comparison where ``nb_frames`` counts packets."""
+    header = _header(container=MP4_FORMAT_NAME, codec="aac", frame_count=2048)
+    walk = _walk(*_packets(2048))
+
+    assert_that(is_fragmented(header, walk)).is_false()
+
+
+@pytest.mark.parametrize("codec", ["adpcm_ms", "adpcm_ima_qt", "adpcm_ima_wav"])
+def test_adpcm_in_mp4_has_no_established_duration(codec: str) -> None:
+    """A15g: ADPCM packet durations in MP4 do not match the audio.
+
+    A healthy 2 s file whose packets span 1.0 s is never ``truncated``.
+    """
+    header = _header(
+        container=MP4_FORMAT_NAME,
+        codec=codec,
+        frame_count=None,
+        stream_duration=Decimal("2.000000"),
+        format_duration=Decimal("2.000000"),
+    )
+    walk = _walk(*_packets(50))
+    outcome = decide_duration(header, walk, run_result(), benign=BENIGN_9)
+
+    assert_that(outcome.duration).is_none()
+    assert_that(outcome.truncated).is_none()
+    assert_that(outcome.flags).is_equal_to((AudioFlag.INCONSISTENT,))
+
+
+def test_adpcm_outside_mp4_keeps_its_checks() -> None:
+    """A15g is limited to MP4: ADPCM in WAV still reports a cut."""
+    header = _header(
+        container="wav",
+        codec="adpcm_ms",
+        stream_duration=Decimal("2.000000"),
+        format_duration=Decimal("2.000000"),
+    )
+    walk = _walk(*_packets(50))
+    outcome = decide_duration(header, walk, run_result(), benign=BENIGN_9)
+
+    assert_that(outcome.truncated).is_true()

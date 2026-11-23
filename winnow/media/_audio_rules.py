@@ -213,6 +213,16 @@ PCM_CODEC_PREFIX: Final[str] = "pcm_"
 """Codec-name prefix of PCM, which has no encoder priming (A14a)."""
 
 
+ADPCM_CODEC_PREFIX: Final[str] = "adpcm_"
+"""Codec-name prefix of ADPCM.
+
+In MP4 and MOV, ffprobe gives an ADPCM packet a duration that does not match
+the audio it decodes to (A15g): a healthy mono ``adpcm_ms`` file at 96 kHz
+spans 1.01 s of packets against 2.0 s of audio. Its duration is unknown with
+``inconsistent`` there, never ``truncated``.
+"""
+
+
 UNPRIMED_CODECS: Final[frozenset[str]] = frozenset(
     {"flac", "alac", "wavpack", "tta", "truehd", "mlp"},
 )
@@ -997,8 +1007,9 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     fragments. When ``nb_frames`` exceeds the packet count, the comparison
     is made in audio samples instead (A15f-1): the measured span times the
     sample rate, rounded, against ``nb_frames``, with the A5 tolerance
-    converted to samples. The rule keys on that count mismatch, not on the
-    codec.
+    converted to samples. The rule keys on that count mismatch, and PCM is
+    always compared in samples (A15g): a cut can leave exactly as many
+    packets as ``nb_frames`` holds samples.
 
     Args:
         header: Accepted header facts.
@@ -1013,7 +1024,7 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     if header.container != MP4_FORMAT_NAME:
         return False
     indexed = header.frame_count or 0
-    if indexed <= walk.packets:
+    if indexed <= walk.packets and not header.codec.startswith(PCM_CODEC_PREFIX):
         return walk.packets > indexed
     measured = walk.measured_duration()
     if measured is None:
@@ -1021,6 +1032,20 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     rate = Decimal(header.sample_rate)
     span_samples = (measured * rate).to_integral_value(rounding=ROUND_HALF_EVEN)
     return span_samples - indexed > shortfall_tolerance(header) * rate
+
+
+def _adpcm_in_mp4(header: ProbeHeader) -> bool:
+    """Report whether the primary stream is ADPCM in MP4 or MOV (A15g).
+
+    Args:
+        header: Accepted header facts.
+
+    Returns:
+        ``True`` when its packet durations cannot establish a duration.
+    """
+    return header.container == MP4_FORMAT_NAME and header.codec.startswith(
+        ADPCM_CODEC_PREFIX,
+    )
 
 
 def may_be_primed(codec: str) -> bool:
@@ -1177,7 +1202,13 @@ def _measured_walk(
     """
     measured = walk.measured_duration()
     median = walk.median_duration()
-    if measured is None or median is None or measured <= 0 or median <= 0:
+    if (
+        measured is None
+        or median is None
+        or measured <= 0
+        or median <= 0
+        or _adpcm_in_mp4(header)
+    ):
         return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
     declared = declared_duration(header, walk, estimate_warned=estimate_warned)
     if declared is None:
@@ -1450,6 +1481,7 @@ __all__ = [
     "MP4_FORMAT_NAME",
     "NO_DECLARED_DURATION_FORMATS",
     "PRIMED_MATROSKA_CODECS",
+    "ADPCM_CODEC_PREFIX",
     "PCM_CODEC_PREFIX",
     "PRIMING_SPAN_FORMATS",
     "PROBE_SCORE_MAX",

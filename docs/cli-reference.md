@@ -261,10 +261,10 @@ Known limits:
   without a fragment index: that shortens the declared duration too, and the result is
   `estimated`. Measured with FFmpeg 9.0.2: AAC 1024 samples (128 ms at 8 kHz, 93 ms at
   11.025 kHz, 21 ms at 48 kHz), MP3 1105 samples (138 ms at 8 kHz, 100 ms at 11.025 kHz,
-  23 ms at 48 kHz; 32 to 104 ms in MP4), Vorbis in MP4 17 to 134 ms, Opus in MP4 6.5 ms,
-  MP2 in MP4 8 to 70 ms, AC-3 and E-AC-3 with `-use_editlist 0` 6 to 44 ms, AAC from
-  `aac_at` 47 to 324 ms, and DTS with no excess (`estimated` at its exact length). The
-  measured length still includes it.
+  23 ms at 48 kHz; 32 to 104 ms in MP4, 160 ms at 8 kHz), Vorbis in MP4 17 to 134 ms,
+  Opus in MP4 6.5 ms, MP2 in MP4 8 to 70 ms, AC-3 and E-AC-3 with `-use_editlist 0` 6 to
+  44 ms, AAC from `aac_at` 47 to 324 ms, and DTS with no excess (`estimated` at its
+  exact length). The measured length still includes it.
 - MP3 with `-use_editlist 0` at 24 to 48 kHz runs about one packet past its declared
   duration, so a cut of exactly one packet looks healthy and is `estimated` (8 of 2,257
   packet-boundary cuts).
@@ -295,7 +295,11 @@ Known limits:
   than the tolerance. A file that keeps its first fragment in `moov` and is cut at its
   first `moof` has lost every fragment, looks unfragmented, and reports
   `truncated=false`. So does a cut at a later `moof` when no fragment before it held
-  audio, as with ALAC at 8 kHz beside video (512 ms packets, 200 ms fragments).
+  audio, as with ALAC at 8 kHz beside video (512 ms packets, 200 ms fragments), and a
+  cut that leaves one fragment of a PCM file written with `+delay_moov`.
+- ADPCM in MP4 and MOV has no established duration: ffprobe's packet durations do not
+  match the decoded audio, so the duration is unknown with `inconsistent`, never
+  `truncated`. ADPCM in WAV, AVI and Matroska keeps its checks.
 - HE-AAC in MP4 is `estimated`: its declared duration is 89 to 376 ms past the true
   length (2 to 3 packets), more than a codec frame. The measured length reported instead
   is 133 to 508 ms past the true length: always over, and by 3 to 4 packets (43 ms
