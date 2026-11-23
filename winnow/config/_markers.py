@@ -12,11 +12,15 @@ instead of keeping the text.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
+import tokenize
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from typing import Final
+
+from winnow.config._shape import MAX_DEPTH, text_depth
 
 _TRUE_WORDS: Final = frozenset({"t", "true", "enabled", "1", "on", "yes"})
 """Words the ``@bool`` marker reads as true; anything else is false."""
@@ -36,10 +40,17 @@ def _cast_none(_text: str) -> None:
 
 
 def _json_objects(text: str) -> Iterator[object]:
-    """Yield every JSON object embedded in ``text``, as Dynaconf did."""
+    """Yield every JSON object embedded in ``text``, as Dynaconf did.
+
+    Raises:
+        ValueError: If an object would nest more than ``MAX_DEPTH`` deep,
+            which ``json`` would parse by recursing once per level.
+    """
     decoder = json.JSONDecoder()
     position = 0
     while (start := text.find("{", position)) != -1:
+        if text_depth(text, start) > MAX_DEPTH:
+            raise ValueError(_TOO_DEEP)
         try:
             result, length = decoder.raw_decode(text[start:])
         except ValueError:
@@ -48,6 +59,18 @@ def _json_objects(text: str) -> Iterator[object]:
         yield result
         position = start + length
 
+
+_TOO_DEEP: Final = f"the value nests more than {MAX_DEPTH} levels deep"
+_LITERAL_NAMES: Final = frozenset({"True", "False", "None", "set"})
+"""The names a Python literal may hold: constants and ``set()``."""
+_LITERAL_OPERATORS: Final = frozenset("[]{}(),:+-")
+_SIGNS: Final = frozenset("+-")
+_MAX_SIGNS: Final = 2
+"""The most signs one literal number holds, as in ``-1-2j``."""
+_LITERAL_TOKENS: Final = frozenset(
+    {tokenize.NUMBER, tokenize.STRING, tokenize.NEWLINE, tokenize.NL}
+    | {tokenize.ENDMARKER, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT},
+)
 
 _PYTHON_LITERALS: Final = {
     ": True": ": true",
@@ -64,22 +87,54 @@ def _cast_json(text: str) -> object:
 
     Standard JSON first; then the first JSON object found in the text after
     replacing Python's ``True``, ``False`` and ``None`` after a colon; then a
-    Python literal (``ast.literal_eval``, which evaluates no code).
+    Python literal (``ast.literal_eval``, which evaluates no code). Text
+    whose brackets nest more than ``MAX_DEPTH`` deep is not given to
+    ``json``, which recurses once per level.
 
     Raises:
-        ValueError: If the text is none of these.
+        ValueError: If the text is none of these, or nests too deeply.
     """
-    with suppress(json.JSONDecodeError):
-        return json.loads(text)
+    too_deep = text_depth(text) > MAX_DEPTH
+    if not too_deep:
+        with suppress(json.JSONDecodeError):
+            return json.loads(text)
     replaced = text
     for old, new in _PYTHON_LITERALS.items():
         replaced = replaced.replace(old, new)
     for found in _json_objects(replaced):
         return found
-    with suppress(ValueError, SyntaxError, TypeError):
-        return ast.literal_eval(text)
-    message = f"cannot parse as JSON: {text}"
+    if _may_be_literal(text):
+        with suppress(ValueError, SyntaxError, TypeError):
+            return ast.literal_eval(text)
+    message = _TOO_DEEP if too_deep else f"cannot parse as JSON: {text}"
     raise ValueError(message)
+
+
+def _may_be_literal(text: str) -> bool:
+    """Return whether text could be a Python literal, read without parsing it.
+
+    ``ast.literal_eval`` parses its text as Python first, and Python's
+    parser runs out of stack on long chains of operators such as
+    ``1+1+...`` or ``- - ... 1``. A literal holds numbers, strings,
+    brackets, commas, colons, ``True``, ``False``, ``None``, ``set()`` and
+    at most two signs between brackets and separators, so text holding
+    anything else is not one and is not parsed.
+    """
+    signs = 0
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.NAME:
+                allowed = token.string in _LITERAL_NAMES
+            elif token.type == tokenize.OP:
+                allowed = token.string in _LITERAL_OPERATORS
+                signs = signs + 1 if token.string in _SIGNS else 0
+            else:
+                allowed = token.type in _LITERAL_TOKENS
+            if not allowed or signs > _MAX_SIGNS:
+                return False
+    except (tokenize.TokenError, SyntaxError):
+        return False
+    return True
 
 
 _CASTS: Final[dict[str, Callable[[str], object]]] = {

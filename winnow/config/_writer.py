@@ -3,17 +3,56 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Final
 
-from winnow.config._env import _sync_symlink_settings
+from pydantic import TypeAdapter, ValidationError
+from ruamel.yaml.error import YAMLError
+
+from winnow.config._editor import (
+    TextLayout,
+    check_finite,
+    dump_document,
+    load_json,
+    set_in_document,
+    split_layout,
+    writable_format,
+)
+from winnow.config._env import (
+    _FOLLOW_SYMLINKS_KEY,
+    _SYMLINK_POLICY_KEY,
+    _sync_symlink_settings,
+)
+from winnow.config._files import (
+    ConfigFormat,
+    parse_document,
+    read_config_layers,
+    read_value,
+    settings_of,
+)
 from winnow.config._paths import _resolve_write_path
-from winnow.config._reader import _load_config_data, validate_config_data
+from winnow.config._reader import (
+    _CONFIG_LOAD_ERRORS,
+    _KNOWN_TOP_LEVEL_KEYS,
+    validate_config_data,
+)
+from winnow.config._shape import MAX_DEPTH, nesting_depth
+from winnow.config._yaml_splice import plan_edit
 from winnow.config.defaults import cwd_config_path
-from winnow.config.schema import render_config_yaml
+from winnow.config.schema import _yaml_safe, render_config_yaml
 from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
+from winnow.models.enums import SymlinkPolicy
+
+_PAIRED_ADAPTERS: dict[str, TypeAdapter[object]] = {
+    _FOLLOW_SYMLINKS_KEY: TypeAdapter(bool),
+    _SYMLINK_POLICY_KEY: TypeAdapter(SymlinkPolicy),
+}
+"""How the model reads each paired symlink setting."""
+_PERMISSION_BITS: Final = 0o777
+"""The mode bits a replaced file keeps; setuid, setgid and sticky are not."""
 
 
 def generate_default_config(
@@ -56,10 +95,25 @@ def set_config_value(
     cwd: Path | None = None,
     home_config_dir: Path | None = None,
 ) -> WinnowConfig:
-    """Set a dotted configuration key and persist the validated config.
+    """Set a dotted configuration key in the config file and nothing else.
 
-    Only the user's sparse configuration data is written back: existing keys in
-    the file are preserved as-is and defaults are never materialized into it.
+    The file is read as written and the one key is changed where the file
+    sets it. In a YAML file only the text of the key's value is replaced, or
+    the new key's lines inserted, and the rest of the file is never
+    rewritten. A JSON file is written back as JSON. Values from the
+    ``.local`` companion file or the environment, cast results and defaults
+    never reach the file. Setting ``follow_symlinks`` or ``symlink_policy``
+    also sets the other only when the file would otherwise contradict
+    itself. When the file already sets the key to the value as written,
+    nothing is written. A symlinked file is written through its link, and
+    the file keeps its permission bits but not setuid, setgid or sticky
+    bits. Edits that cannot be made that way are refused and the file is
+    left untouched: TOML files, files the user cannot write, symlink loops,
+    mixed line ends, non-finite numbers, values that contain themselves or
+    nest more than ``MAX_DEPTH`` deep, values the format cannot hold,
+    several YAML documents, keys an alias or merge key shares, values that
+    hold an anchor used elsewhere, comments a replaced value would drop or
+    move, and keys a cast string or a flat key holds.
 
     Args:
         key: Dotted config key, such as ``cache.enabled``.
@@ -69,26 +123,491 @@ def set_config_value(
         home_config_dir: User config directory override, primarily for tests.
 
     Returns:
-        Persisted validated configuration model.
+        The validated configuration the file and its companion now give,
+        without environment overrides.
 
     Raises:
-        ConfigError: If the key cannot be set or the resulting config is invalid.
+        ConfigError: If the key cannot be set, the file cannot be read or
+            written in its format, or the resulting config is invalid.
     """
     target_path = _resolve_write_path(
         config_path=config_path,
         cwd=cwd,
         home_config_dir=home_config_dir,
     )
-    user_data: dict[str, object] = (
-        _load_config_data(config_path=target_path, load_env=False)
+    file_format = writable_format(target_path)
+    _check_value_shape(value, key=key)
+    value = _tuples_as_lists(value)
+    check_finite(value, key=key)
+    _refuse_unresolvable_link(target_path)
+    write_path = Path(os.path.realpath(target_path))
+    raw = (
+        _read_text(target_path, operation="load_config")
         if target_path.is_file()
-        else {}
+        else None
     )
-    _set_nested_value(data=user_data, dotted_key=key, value=value)
-    _sync_symlink_settings(data=user_data, key=key, value=value)
-    updated_config = validate_config_data(data=user_data, file_path=target_path)
-    _write_config_file(config=user_data, config_path=target_path)
+    mode = None if raw is None else _writable_mode(write_path)
+    original, layout = (
+        (None, TextLayout()) if raw is None else split_layout(raw, path=target_path)
+    )
+    as_read = None if original is None else layout.apply(original)
+    try:
+        old_document = None if as_read is None else parse_document(as_read, target_path)
+        document = load_json(original) if file_format is ConfigFormat.JSON else {}
+        current = {} if old_document is None else settings_of(old_document, target_path)
+        as_written = (
+            {}
+            if old_document is None
+            else settings_of(old_document, target_path, cast=False)
+        )
+    except _CONFIG_LOAD_ERRORS as exc:
+        raise _load_error(target_path, exc) from exc
+
+    updates = _updates_for(key=key, value=value, current=current)
+    if old_document is not None and all(
+        _already_set(as_written, update_key, update_value)
+        for update_key, update_value in updates.items()
+    ):
+        return _validate_new_text(
+            old_document,
+            target_path=target_path,
+            updates=updates,
+        )
+    edited = _edited_text(
+        original,
+        document,
+        file_format,
+        updates,
+        target_path=target_path,
+    )
+    new_text = layout.apply(edited)
+    new_document = _parse_new_text(new_text, target_path=target_path)
+    updated_config = _validate_new_text(
+        new_document,
+        target_path=target_path,
+        updates=updates,
+        old_document=old_document,
+    )
+    _write_text(new_text, config_path=write_path, mode=mode, newline="")
     return updated_config
+
+
+def _edited_text(
+    original: str | None,
+    document: MutableMapping[str, object],
+    file_format: ConfigFormat,
+    updates: Mapping[str, object],
+    *,
+    target_path: Path,
+) -> str:
+    """Return a config file's content with the updates made.
+
+    A YAML file is spliced, one key after the other: only each key's value
+    text changes. A JSON or new file is rendered from ``document``.
+
+    Args:
+        original: The file's content, ``\\n`` line ends and no BOM, or
+            ``None`` for a new file.
+        document: A JSON file's parsed content, or an empty mapping.
+        file_format: The file's format.
+        updates: The keys to set, with their values.
+        target_path: The file, for errors.
+
+    Raises:
+        ConfigError: If a key cannot be set, or the format cannot hold a
+            value.
+    """
+    try:
+        if file_format is ConfigFormat.YAML and original is not None:
+            edited = original
+            for update_key, update_value in updates.items():
+                try:
+                    splice = plan_edit(
+                        edited,
+                        _key_parts(update_key),
+                        _yaml_safe(update_value),
+                    )
+                except YAMLError as exc:
+                    if edited is original:
+                        raise
+                    raise _unsafe_edit_error(target_path, exc) from exc
+                edited = splice.apply(edited)
+            return edited
+        for update_key, update_value in updates.items():
+            set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
+        return dump_document(document, file_format, original=original)
+    except (ValueError, TypeError, YAMLError) as exc:
+        raise ConfigError(
+            f"config set cannot write this value in a {file_format.upper()} file",
+            operation="set_config",
+            file_path=target_path,
+            details={"key": next(iter(updates)), "error": str(exc)},
+        ) from exc
+
+
+def _parse_new_text(new_text: str, *, target_path: Path) -> Mapping[str, object]:
+    """Parse content ``config set`` made, once, for every check that reads it.
+
+    Raises:
+        ConfigError: If the content does not parse: the edit went wrong, not
+            the user's file, and the file is left as it was.
+    """
+    try:
+        return parse_document(new_text, target_path)
+    except (ValueError, YAMLError) as exc:
+        raise _unsafe_edit_error(target_path, exc) from exc
+
+
+def _unsafe_edit_error(path: Path, exc: Exception) -> ConfigError:
+    """Return the error for an edit whose result does not parse."""
+    return ConfigError(
+        "config set could not make this edit safely; the file is unchanged, "
+        "edit it by hand",
+        operation="set_config",
+        file_path=path,
+        details={"error": str(exc)},
+    )
+
+
+def _check_value_shape(value: object, *, key: str) -> None:
+    """Refuse a value that contains itself or would nest too deeply.
+
+    Raises:
+        ConfigError: If ``value`` contains itself, or the key's parts and
+            the value nest more than ``MAX_DEPTH`` collections deep.
+    """
+    parts = _key_parts(key)
+    depth = nesting_depth(value)
+    if depth is not None and depth + len(parts) <= MAX_DEPTH:
+        return
+    reason = (
+        "the value contains itself"
+        if depth is None
+        else f"the key and value nest more than {MAX_DEPTH} levels deep"
+    )
+    raise ConfigError(
+        f"config set cannot write {key}: {reason}",
+        operation="set_config",
+        details={"key": key},
+    )
+
+
+def _refuse_other_changes(
+    old_document: Mapping[str, object],
+    new_document: Mapping[str, object],
+    target_path: Path,
+    updates: Mapping[str, object],
+) -> None:
+    """Refuse new content that changes any key other than the ones set.
+
+    Read alone, with and without casts, and with the companion file, every
+    setting outside the updated keys must read back as it did before.
+    :func:`_validate_new_text` has read both documents the same ways, so
+    reading them again here cannot fail.
+
+    Args:
+        old_document: The file's content before the edit, parsed.
+        new_document: The content after it, parsed.
+        target_path: The file.
+        updates: The keys set.
+
+    Raises:
+        ConfigError: If another setting changed: the edit went wrong, not
+            the user's file.
+    """
+    readings = [
+        (
+            settings_of(old_document, target_path, cast=cast),
+            settings_of(new_document, target_path, cast=cast),
+        )
+        for cast in (False, True)
+    ]
+    readings.append(
+        (
+            read_config_layers(target_path, main_document=old_document),
+            read_config_layers(target_path, main_document=new_document),
+        ),
+    )
+    for before, after in readings:
+        for update_key in updates:
+            _drop_setting(before, _key_parts(update_key.lower()))
+            _drop_setting(after, _key_parts(update_key.lower()))
+        if not _same(before, after):
+            raise ConfigError(
+                "config set could not make this edit safely: it would change "
+                "other settings of this file; the file is unchanged, edit it "
+                "by hand",
+                operation="set_config",
+                file_path=target_path,
+                details={"keys": list(updates)},
+            )
+
+
+def _drop_setting(settings: dict[str, object], parts: list[str]) -> None:
+    """Remove a dotted setting from read settings, and parents it empties.
+
+    A parent that is not a mapping is removed too: setting a key below it
+    replaces it.
+    """
+    head, rest = parts[0], parts[1:]
+    if head not in settings:
+        return
+    child = settings[head]
+    if rest and isinstance(child, dict):
+        _drop_setting(child, rest)
+        if child:
+            return
+    del settings[head]
+
+
+def _refuse_unresolvable_link(path: Path) -> None:
+    """Refuse a config path that is a symlink loop or cannot be resolved.
+
+    A link to a missing file is not refused: its target is created.
+
+    Raises:
+        ConfigError: If ``path`` is a symlink whose target cannot be reached
+            for a reason other than not existing, such as a loop.
+    """
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if not path.is_symlink():
+            return
+        raise ConfigError(
+            "config set cannot follow the configuration file's symlink: it is "
+            "a symlink loop or cannot be resolved; fix the link or edit the "
+            "file by hand",
+            operation="set_config",
+            file_path=path,
+            details={"error": str(exc)},
+        ) from exc
+
+
+def _writable_mode(path: Path) -> int:
+    """Return an existing config file's permission bits, if the user may write it.
+
+    Raises:
+        ConfigError: If the file is not writable.
+    """
+    if not os.access(path, os.W_OK):
+        raise ConfigError(
+            "config set cannot change the configuration file: it is not "
+            "writable; change its permissions or edit it by hand",
+            operation="write_config",
+            file_path=path,
+        )
+    return path.stat().st_mode & _PERMISSION_BITS
+
+
+def _tuples_as_lists(value: object) -> object:
+    """Return a value with every tuple in it turned into a list."""
+    if isinstance(value, list | tuple):
+        return [_tuples_as_lists(item) for item in value]
+    if isinstance(value, Mapping):
+        return {key: _tuples_as_lists(item) for key, item in value.items()}
+    return value
+
+
+def _already_set(
+    settings: Mapping[str, object],
+    key: str,
+    value: object,
+    *,
+    cast: bool = False,
+) -> bool:
+    """Return whether read settings hold exactly ``value`` at ``key``.
+
+    Args:
+        settings: Settings read from a file, with or without casts.
+        key: The dotted key.
+        value: The value set.
+        cast: Whether ``settings`` were read with casts applied; ``value``
+            is read the same way. Uncast, ``"@int 4"`` is not ``4``.
+    """
+    found, existing = _setting_at(settings, key)
+    return found and _same(existing, read_value(_yaml_safe(value), cast=cast))
+
+
+def _same(left: object, right: object) -> bool:
+    """Compare read values, telling ``true`` from ``1`` and ``1`` from ``1.0``."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _same(item, right[name]) for name, item in left.items()
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(_same, left, right))
+    return left == right
+
+
+def _key_parts(key: str) -> list[str]:
+    """Split a dotted key into its non-empty parts.
+
+    Raises:
+        ConfigError: If the key has no parts.
+    """
+    key_parts = [part for part in key.split(".") if part]
+    if not key_parts:
+        raise ConfigError(
+            "Configuration key cannot be empty",
+            operation="set_config",
+            details={"key": key},
+        )
+    return key_parts
+
+
+def _updates_for(
+    *,
+    key: str,
+    value: object,
+    current: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the keys to write for one ``config set``.
+
+    Args:
+        key: The key being set.
+        value: Its new value.
+        current: The settings the target file alone gives today.
+
+    Returns:
+        ``key`` with its value, plus the paired symlink setting when the
+        value the file gives it, or its default, would contradict the change.
+    """
+    matched = ".".join(_key_parts(key)).lower()
+    synced = dict(current)
+    synced[matched] = value
+    _sync_symlink_settings(data=synced, key=matched, value=value)
+    updates: dict[str, object] = {key: synced[matched]}
+    for paired_key in (_FOLLOW_SYMLINKS_KEY, _SYMLINK_POLICY_KEY):
+        if paired_key == matched or paired_key not in synced:
+            continue
+        effective = current.get(
+            paired_key,
+            WinnowConfig.model_fields[paired_key].default,
+        )
+        if _as_model_reads(paired_key, synced[paired_key]) != _as_model_reads(
+            paired_key,
+            effective,
+        ):
+            updates[paired_key] = synced[paired_key]
+    return updates
+
+
+def _as_model_reads(key: str, value: object) -> object:
+    """Return a paired symlink setting as the model reads it, else as given."""
+    try:
+        return _PAIRED_ADAPTERS[key].validate_python(value)
+    except ValidationError:
+        return value
+
+
+def _validate_new_text(
+    new_document: Mapping[str, object],
+    *,
+    target_path: Path,
+    updates: Mapping[str, object],
+    old_document: Mapping[str, object] | None = None,
+) -> WinnowConfig:
+    """Check new file content, parsed, before it is written.
+
+    Read on its own, the content must set each updated key to exactly its
+    value, compared as :func:`_already_set` compares, both as written and
+    with casts applied, so an earlier cast string cannot join the value.
+    Every other setting must read as it did in ``old_document``, which is
+    checked before the configuration is validated: an edit that changed
+    another key is reported as an edit that went wrong, never as an invalid
+    file. Last, the content must give a valid configuration together with
+    the companion file; with nothing else changed, an invalid one comes from
+    the values set or from the file as it was.
+
+    Args:
+        new_document: The content about to be written, parsed.
+        target_path: The file it will be written to.
+        updates: The keys set, with their values.
+        old_document: The file's content before the edit, parsed; ``None``
+            for a new file or when nothing is changed.
+
+    Returns:
+        The validated configuration of the content and its companion.
+
+    Raises:
+        ConfigError: If the content does not read back as intended or the
+            configuration is invalid.
+    """
+    try:
+        written = settings_of(new_document, target_path, cast=False)
+        cast_read = settings_of(new_document, target_path)
+        layered = read_config_layers(target_path, main_document=new_document)
+        for update_key, update_value in updates.items():
+            if not (
+                _already_set(written, update_key, update_value)
+                and _already_set(cast_read, update_key, update_value, cast=True)
+            ):
+                raise ConfigError(
+                    "config set cannot change this key where the file sets it; "
+                    "edit the file by hand",
+                    operation="set_config",
+                    file_path=target_path,
+                    details={"key": update_key},
+                )
+    except _CONFIG_LOAD_ERRORS as exc:
+        raise _load_error(target_path, exc) from exc
+    if old_document is not None:
+        _refuse_other_changes(old_document, new_document, target_path, updates)
+
+    top_keys = {_key_parts(update_key)[0].lower() for update_key in updates}
+    known = {
+        name: setting
+        for name, setting in layered.items()
+        if name in _KNOWN_TOP_LEVEL_KEYS or name in top_keys
+    }
+    return validate_config_data(data=known, file_path=target_path)
+
+
+def _setting_at(settings: Mapping[str, object], key: str) -> tuple[bool, object]:
+    """Look up a dotted key, matched lowercase, in read settings.
+
+    Returns:
+        ``(True, value)`` when the key is set, else ``(False, None)``.
+    """
+    current: object = settings
+    for part in _key_parts(key):
+        if not isinstance(current, Mapping) or part.lower() not in current:
+            return False, None
+        current = current[part.lower()]
+    return True, current
+
+
+def _read_text(path: Path, *, operation: str) -> str:
+    """Read a config file's text.
+
+    Raises:
+        ConfigError: If the file cannot be read.
+    """
+    try:
+        with path.open(encoding="utf-8", newline="") as stream:
+            return stream.read()
+    except (OSError, ValueError) as exc:
+        raise ConfigError(
+            "Unable to load Winnow configuration",
+            operation=operation,
+            file_path=path,
+            details={"error": str(exc)},
+        ) from exc
+
+
+def _load_error(path: Path, exc: Exception) -> ConfigError:
+    """Wrap a read or parse failure of the target file."""
+    return ConfigError(
+        "Unable to load Winnow configuration",
+        operation="load_config",
+        file_path=path,
+        details={"error": str(exc)},
+    )
 
 
 def reset_config(
@@ -120,45 +639,6 @@ def reset_config(
     return config
 
 
-def _set_nested_value(
-    data: dict[str, object],
-    dotted_key: str,
-    value: object,
-) -> None:
-    """Set a dotted key inside a nested dictionary.
-
-    Args:
-        data: Configuration data to mutate.
-        dotted_key: Dot-separated key path.
-        value: Value to assign.
-
-    Raises:
-        ConfigError: If the dotted key is empty or traverses a scalar value.
-    """
-    key_parts = [part for part in dotted_key.split(".") if part]
-    if not key_parts:
-        raise ConfigError(
-            "Configuration key cannot be empty",
-            operation="set_config",
-            details={"key": dotted_key},
-        )
-
-    current = data
-    for key_part in key_parts[:-1]:
-        child = current.get(key_part)
-        if child is None:
-            child = {}
-            current[key_part] = child
-        if not isinstance(child, dict):
-            raise ConfigError(
-                "Configuration key traverses a non-object value",
-                operation="set_config",
-                details={"key": dotted_key, "segment": key_part},
-            )
-        current = child
-    current[key_parts[-1]] = value
-
-
 def _write_config_file(
     config: WinnowConfig | Mapping[str, object],
     config_path: Path,
@@ -169,9 +649,30 @@ def _write_config_file(
         config: Configuration model, or a sparse user-data mapping that has
             already been validated.
         config_path: Destination path.
+    """
+    _write_text(render_config_yaml(config), config_path=config_path)
+
+
+def _write_text(
+    text: str,
+    *,
+    config_path: Path,
+    mode: int | None = None,
+    newline: str | None = None,
+) -> None:
+    """Replace a config file's content atomically.
+
+    Args:
+        text: The new content.
+        config_path: Destination path.
+        mode: Permission bits for the file; ``None`` keeps the private mode
+            of a new temporary file.
+        newline: How line ends are translated on write, as for :func:`open`;
+            ``""`` writes ``text`` as it is.
 
     Raises:
-        ConfigError: If the file cannot be written.
+        ConfigError: If the file cannot be written. The temporary file is
+            removed whatever interrupts the write.
     """
     temp_path: Path | None = None
     try:
@@ -180,18 +681,24 @@ def _write_config_file(
             "w",
             dir=config_path.parent,
             encoding="utf-8",
+            newline=newline,
             prefix=f".{config_path.name}.",
             suffix=".tmp",
             delete=False,
         ) as temp_file:
             temp_path = Path(temp_file.name)
-            temp_file.write(render_config_yaml(config))
+            temp_file.write(text)
             temp_file.flush()
             os.fsync(temp_file.fileno())
+        if mode is not None:
+            temp_path.chmod(mode)
         temp_path.replace(config_path)
-    except OSError as exc:
+    except BaseException as exc:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
+        # UnicodeError: text the encoding cannot hold, such as a lone surrogate.
+        if not isinstance(exc, OSError | UnicodeError):
+            raise
         raise ConfigError(
             "Unable to write Winnow configuration",
             operation="write_config",

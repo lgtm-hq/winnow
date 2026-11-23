@@ -101,6 +101,95 @@ Creates a configuration file through guided prompts.
 `init` uses the standard `--yes` flag rather than a bespoke `--force`; without it the
 command asks before overwriting an existing file.
 
+### `winnow config set`
+
+Sets one dotted key (`winnow config set cache.enabled false`) in the configuration file.
+The value is read as JSON when it is valid JSON and kept as a string otherwise.
+
+| Flag            | Description                 |
+| --------------- | --------------------------- |
+| `--config FILE` | Path to configuration file. |
+
+The target is the `--config` path, else the discovered configuration file, else the
+working-directory default. `set` reads the file as written, changes only that key where
+the file sets it (in a nested mapping or a flat `a.b`/`a__b` key), and writes the file
+back in its own format:
+
+- Values from the `.local` companion file and `WINNOW_*` variables never reach the file,
+  and other keys keep their cast markers (`workers: "@int 4"`).
+- In a YAML file only the text of the key's value is replaced, and a new key is added as
+  whole lines after the mapping it joins. The rest of the file is never rewritten: every
+  other line, comment, blank line, anchor, quote style, null or boolean spelling,
+  document marker and byte order mark stays exactly as it was. A scalar is written on
+  the key's line; a non-empty list or mapping is written as a block below the key, in
+  the file's own indents; an empty one as `[]` or `{}`; inside a flow collection, in
+  flow style. A null or boolean that `set` writes is `null`, `true` or `false`. A
+  comment after a scalar or flow collection on the key's own line keeps its place when
+  the new value is also written on that line (a scalar, `[]` or `{}`, or any value
+  inside a flow collection), as it still follows the same key.
+- A JSON file is re-serialised with the indent it uses. Keys, their order and values are
+  kept, while spacing, number forms and escapes can change: a compact one-line file
+  `{"workers":2}` comes back as `{"workers": 3}`, and an inline array such as
+  `"source_dirs": ["/a", "/b"]` in an indented file is spread over one line per item.
+- CRLF line endings, a UTF-8 byte order mark and a missing final newline are kept.
+- The file is replaced, not rewritten in place, so the user running `set` becomes its
+  owner. It keeps its permission bits, but not setuid, setgid or sticky bits. A
+  symlinked file is written through its link; a link to a missing file creates that file
+  and keeps the link.
+- Setting `follow_symlinks` or `symlink_policy` also sets the other only when the file
+  would otherwise contradict itself.
+- When the file already sets the key to the value as written, nothing is written.
+  `"@int 4"` and `4` count as different values.
+
+The result, read with the companion file, is validated before anything is written. These
+fail with an error and leave the file untouched:
+
+- a TOML (`.toml`, `.tml`), INI (`.ini`, `.conf`, `.properties`) or Python (`.py`) file;
+- a file you cannot write;
+- a symlink loop;
+- a file that mixes CRLF and LF line endings or holds a lone CR;
+- a YAML file that holds more than one document;
+- an edit that would drop or move a comment: a comment inside the text being replaced,
+  such as a block scalar's header comment, and a comment after it on its last line
+  unless the old and the new value are each a scalar or flow collection on the key's own
+  line. A comment after a block list or mapping, even of one entry, or after a block
+  scalar's header is refused, and is never carried over to an item or key the new value
+  happens to keep. A comment line between a key and the first entry of its list or
+  mapping blocks replacing that list or mapping, as it describes the entries; a comment
+  on the key's own line does not. A whole-document `null` with a comment after it
+  (`null # note`) is refused too, as the comment would then follow the new key;
+- a YAML file with a comment whose place cannot be established: a comment after a key's
+  colon when the value starts on the next line and a blank line follows;
+- a `NaN` or infinite number, or a value the file's format cannot hold;
+- a file with a duplicate key, a JSON file with a byte order mark, or a YAML file that
+  does not parse;
+- a key whose value is an alias, or whose value holds an anchor (on a key or a value)
+  that an alias or merge key outside it refers to, and a key inside a mapping reached
+  through an alias or merged elsewhere with a `<<` merge key;
+- a file that nests values more than 100 levels deep or holds a value that contains
+  itself through a recursive anchor (`x: &r {self: *r}`), and a value that contains
+  itself or would nest more than 100 levels deep with its key. The depth counts what the
+  file gives once read: a `@json` cast string's value and a flat key's parts (`a.b.c: 1`
+  is three levels) count too. Every command that reads the file refuses it the same way;
+- a key in, or a value holding, a YAML mapping written with an explicit `?` key or with
+  a key that has no `:`;
+- a new key for a flow mapping (`{...}`) that holds a comment, which would then follow
+  the new key;
+- a YAML file that holds a U+0085, U+2028 or U+2029 line break;
+- an edit whose new lines would not start at the file's indentation (such as a block
+  list or mapping below an anchor or tag on a line of its own at another column), whose
+  result does not parse, or that would change another setting; the message says the edit
+  could not be made safely, not that the file is invalid;
+- a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
+  value instead;
+- a key a later entry or a flat key elsewhere in the file would override or merge into,
+  or that would not read back as exactly the value given, both as written and with cast
+  markers applied (an earlier `'@json ["*.jpg"]'` for the same key would join the list);
+- an invalid result.
+
+A file that does not exist yet is created: a `.json` path as JSON, any other path that
+is not refused above as YAML.
+
 ### `winnow config reset`
 
 Resets the configuration file to validated defaults.

@@ -21,6 +21,9 @@ behaviour beyond plain YAML that users may rely on. This module keeps it:
 - **Formats.** ``.toml``/``.tml`` files are TOML 1.0, ``.json`` is JSON, and
   every other file YAML 1.2. Dynaconf ignored files with other extensions
   without a word; winnow reads them as YAML.
+- **Shape.** A file that nests collections more than :data:`MAX_DEPTH`
+  deep, or holds a value that contains itself through a recursive YAML
+  anchor, is refused with a ``ConfigError`` naming the file (#451).
 
 Dynaconf features winnow does not keep raise ``ConfigError`` naming the key
 instead of being ignored: ``dynaconf_include``, ``includes_for_dynaconf`` and
@@ -33,14 +36,22 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from enum import StrEnum, auto
 from pathlib import Path
 from typing import Final
 
-import tomli
 from ruamel.yaml import YAML
+from ruamel.yaml.composer import MaxDepthExceededError
 
 from winnow.config._markers import cast_markers_in
+from winnow.config._shape import (
+    MAX_DEPTH,
+    NestingError,
+    load_toml,
+    nesting_depth,
+    text_depth,
+)
 from winnow.exceptions import ConfigError
 
 _LOCAL_INFIX: Final = ".local."
@@ -64,6 +75,42 @@ _MERGE_TOKENS: Final = frozenset({"dynaconf_merge", "dynaconf_merge_unique"})
 _FOR_DYNACONF_SUFFIX: Final = "_for_dynaconf"
 
 
+class ConfigFormat(StrEnum):
+    """The format a config file is read in, chosen by its suffix."""
+
+    YAML = auto()
+    TOML = auto()
+    JSON = auto()
+
+
+def config_format(path: Path) -> ConfigFormat:
+    """Return the format a config file is read in.
+
+    Args:
+        path: The config file; it need not exist.
+
+    Returns:
+        TOML for ``.toml``/``.tml``, JSON for ``.json`` and YAML otherwise,
+        whatever the suffix's letter case.
+
+    Raises:
+        ConfigError: If the suffix names a format winnow does not read.
+    """
+    suffix = path.suffix.lower()
+    unsupported = _UNSUPPORTED_SUFFIXES.get(suffix)
+    if unsupported is not None:
+        raise ConfigError(
+            f"{unsupported} config files are not supported; use YAML",
+            operation="load_config",
+            file_path=path,
+        )
+    if suffix in _TOML_SUFFIXES:
+        return ConfigFormat.TOML
+    if suffix in _JSON_SUFFIXES:
+        return ConfigFormat.JSON
+    return ConfigFormat.YAML
+
+
 def companion_path(config_path: Path) -> Path | None:
     """Return the ``.local`` companion of a config file, as Dynaconf named it.
 
@@ -83,11 +130,18 @@ def companion_path(config_path: Path) -> Path | None:
     return config_path.with_name(f"{stem}{_LOCAL_INFIX}{extension}")
 
 
-def read_config_layers(config_path: Path) -> dict[str, object]:
+def read_config_layers(
+    config_path: Path,
+    *,
+    main_document: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """Read a config file and its ``.local`` companion into one mapping.
 
     Args:
         config_path: The config file.
+        main_document: Parsed content to read in place of
+            ``config_path``'s, which then need not exist; used to check a
+            change before writing it without parsing the content again.
 
     Returns:
         The merged settings, all mapping keys lowercase.
@@ -103,8 +157,79 @@ def read_config_layers(config_path: Path) -> dict[str, object]:
     for path in (config_path, companion):
         if path is None or (path is companion and not path.is_file()):
             continue
-        _apply_file(store, _read_document(path), path=path)
+        document = (
+            main_document
+            if path is config_path and main_document is not None
+            else _read_document(path)
+        )
+        _apply_file(store, document, path=path)
     return store
+
+
+def settings_of(
+    document: Mapping[str, object],
+    path: Path,
+    *,
+    cast: bool = True,
+) -> dict[str, object]:
+    """Read one parsed config file's settings, without its companion.
+
+    Args:
+        document: The file's top-level mapping, from :func:`parse_document`.
+        path: The file it belongs to.
+        cast: Whether to apply cast markers.
+
+    Returns:
+        The file's settings, read as :func:`read_config_layers` reads them.
+
+    Raises:
+        ConfigError: If the content uses a Dynaconf feature winnow does not
+            keep.
+        ValueError: If a value uses a cast marker winnow does not support.
+    """
+    store: dict[str, object] = {}
+    _apply_file(store, document, path=path, cast=cast)
+    return store
+
+
+def read_value(
+    value: object,
+    *,
+    cast: bool = True,
+    parts: Sequence[str] = (),
+    path: Path | None = None,
+) -> object:
+    """Return a value as reading it from a config file gives it.
+
+    This is where a read value is measured: after cast markers are applied
+    and a flat key's parts are nested, before any recursive function walks
+    it. The mapping the value sits in counts as one level, as it does in
+    :func:`parse_document`.
+
+    Args:
+        value: A value as written in a file, which
+            :func:`parse_document` has measured.
+        cast: Whether to apply cast markers.
+        parts: The parts of a flat key after its first, which nest the
+            value one mapping each.
+        path: The file the value is read from, for the error.
+
+    Returns:
+        The value, nested in ``parts``, with mapping keys lowercased and,
+        when ``cast`` is set, cast markers applied.
+
+    Raises:
+        ConfigError: If the value read nests more than :data:`MAX_DEPTH`
+            deep with the mapping it sits in.
+        ValueError: If the value uses a cast marker winnow does not support.
+    """
+    read = cast_markers_in(value) if cast else value
+    for part in reversed(parts):
+        read = {part.lower(): read}
+    depth = nesting_depth(read)
+    if depth is None or depth >= MAX_DEPTH:
+        raise _shape_error(path, too_deep=depth is not None)
+    return _lowercase_keys(read)
 
 
 def _read_document(path: Path) -> Mapping[str, object]:
@@ -120,23 +245,47 @@ def _read_document(path: Path) -> Mapping[str, object]:
         ConfigError: If the extension names a format winnow does not read.
         ValueError: If the content is invalid or not a mapping.
     """
-    suffix = path.suffix.lower()
-    unsupported = _UNSUPPORTED_SUFFIXES.get(suffix)
-    if unsupported is not None:
-        raise ConfigError(
-            f"{unsupported} config files are not supported; use YAML",
-            operation="load_config",
-            file_path=path,
-        )
+    if config_format(path) is ConfigFormat.TOML:
+        return parse_document(path.read_bytes().decode("utf-8"), path)
+    return parse_document(path.read_text(encoding="utf-8"), path)
+
+
+def parse_document(text: str, path: Path) -> Mapping[str, object]:
+    """Parse config file content in the format ``path``'s extension names.
+
+    Args:
+        text: The content.
+        path: The file it belongs to.
+
+    Returns:
+        Its top-level mapping; an empty document reads as an empty mapping.
+
+    Raises:
+        ConfigError: If the extension names a format winnow does not read,
+            or the content nests too deeply or holds a value that contains
+            itself.
+        ValueError: If the content is invalid or not a mapping.
+    """
+    file_format = config_format(path)
     document: object
-    if suffix in _TOML_SUFFIXES:
-        document = tomli.loads(path.read_bytes().decode("utf-8"))
-    elif suffix in _JSON_SUFFIXES:
-        document = json.loads(path.read_text(encoding="utf-8"))
+    if file_format is ConfigFormat.TOML:
+        document = _load_toml(text, path)
+    elif file_format is ConfigFormat.JSON:
+        if text_depth(text) > MAX_DEPTH:
+            raise _shape_error(path, too_deep=True)
+        document = json.loads(text)
     else:
-        stream = io.StringIO(path.read_text(encoding="utf-8"))
+        stream = io.StringIO(text)
         stream.name = str(path)
-        document = YAML(typ="safe", pure=True).load(stream)
+        yaml = YAML(typ="safe", pure=True)
+        yaml.max_depth = MAX_DEPTH + 1
+        try:
+            document = yaml.load(stream)
+        except MaxDepthExceededError as exc:
+            raise _shape_error(path, too_deep=True) from exc
+    depth = nesting_depth(document)
+    if depth is None or depth > MAX_DEPTH:
+        raise _shape_error(path, too_deep=depth is not None)
     if document is None:
         return {}
     if not isinstance(document, Mapping):
@@ -148,11 +297,39 @@ def _read_document(path: Path) -> Mapping[str, object]:
     return document
 
 
+def _load_toml(text: str, path: Path) -> object:
+    """Parse TOML content, refusing what tomli refuses as too deep.
+
+    Raises:
+        ConfigError: If tomli refuses the content as nested too deeply.
+        ValueError: If the content is not valid TOML.
+    """
+    try:
+        return load_toml(text)
+    except NestingError as exc:
+        raise _shape_error(path, too_deep=True) from exc
+
+
+def _shape_error(path: Path | None, *, too_deep: bool) -> ConfigError:
+    """Build the error for a file nested too deeply or holding a cycle."""
+    reason = (
+        f"it nests values more than {MAX_DEPTH} levels deep"
+        if too_deep
+        else "it holds a value that contains itself, such as a recursive " "YAML anchor"
+    )
+    return ConfigError(
+        f"Unable to load Winnow configuration: {reason}",
+        operation="load_config",
+        file_path=path,
+    )
+
+
 def _apply_file(
     store: dict[str, object],
     document: Mapping[str, object],
     *,
     path: Path,
+    cast: bool = True,
 ) -> None:
     """Merge one file's settings into ``store``, in the file's key order.
 
@@ -163,6 +340,7 @@ def _apply_file(
         store: Settings read so far; updated in place.
         document: The file's top-level mapping.
         path: The file, for error messages.
+        cast: Whether to apply cast markers.
     """
     collapsed: dict[str, tuple[str, object]] = {}
     for raw_key, value in document.items():
@@ -173,9 +351,7 @@ def _apply_file(
     for key, value in collapsed.values():
         parts = key.replace("__", ".").split(".")
         top = parts[0].strip().lower()
-        nested = _lowercase_keys(cast_markers_in(value))
-        for part in reversed(parts[1:]):
-            nested = {part.lower(): nested}
+        nested = read_value(value, cast=cast, parts=parts[1:], path=path)
         store[top] = merge_values(store.get(top), nested)
 
 
