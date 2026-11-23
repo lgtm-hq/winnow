@@ -52,6 +52,60 @@ jobs:
       # time even though summaries are disabled in compat mode
       pull-requests: write
 
+  # macOS leg (#375): the full suite, integration tests included, on the
+  # oldest and newest supported Python, so the platform branches in winnow
+  # and its tests run somewhere. A direct job, as #375 prescribes for when
+  # the lgtm-ci reusable cannot run on macOS: at v0.116.3 its aggregate job
+  # needs coreutils `timeout`, which hosted macOS lacks (seen on #476). There
+  # is no ruleset entry for it: the all-checks gate fails on any failed check
+  # on the head, which includes each `🍎 macOS (Python <version>)` leg.
+  #
+  # EGRESS EXCEPTION: egress is NOT enforced on this job. It runs no
+  # harden-runner: lgtm-ci's verify step does not enforce on macOS (it passes
+  # with a notice), and its reusable cannot run here at v0.116.3. So the job
+  # holds no secrets, no id-token and only contents: read, persists no
+  # checkout credentials, uploads nothing, and nothing needs it but the
+  # failure notifier: it feeds neither publish-coverage nor any release path.
+  test-macos:
+    name: '🍎 macOS (Python ${{ matrix.python-version }})'
+    # Skip drafts like the Linux calls (draft-pr-skip: true);
+    # ready_for_review runs it.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.draft == false
+    # Pinned GitHub-hosted macOS 26 (arm64), not the moving macos-latest.
+    runs-on: macos-26
+    # A leg took under 5 minutes on #476.
+    timeout-minutes: 20
+    permissions:
+      # read: check out the repository
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.15']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          # The uv the Dockerfile copies in.
+          version: '0.13.9'
+          # Sets UV_PYTHON for every uv command below.
+          python-version: ${{ matrix.python-version }}
+          enable-cache: false
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+      - name: Run tests
+        # The compat call's test path and extra-args: the override drops
+        # '-m "not integration"', so the integration test runs too.
+        run: >-
+          uv run --frozen pytest tests
+          --override-ini=addopts=--strict-markers --strict-config
+
   # Coverage mode: single version with coverage reporting and PR summary
   test-coverage:
     # yamllint disable-line rule:line-length
@@ -128,7 +182,7 @@ jobs:
   # decide. needs.<job>.result is success, failure, cancelled or skipped, so
   # an intended skip and a green run stay quiet.
   notify-failure:
-    needs: [test, test-coverage, publish-coverage]
+    needs: [test, test-macos, test-coverage, publish-coverage]
     if: >-
       always()
       && (contains(needs.*.result, 'failure')
