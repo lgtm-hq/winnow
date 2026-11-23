@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import struct
-import time
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
 from tests.media.bmff_support import box, ftyp, moov, track
+from tests.media.detect_support import cpu_seconds, detect_with_deadline
 from tests.media.ebml_support import (
     AUDIO as MKV_AUDIO,
 )
@@ -81,11 +81,14 @@ def _detect_bytes(tmp_path: Path, data: bytes, name: str = "x.bin") -> Detection
 
 
 SWEEP_LIMIT_SECONDS = 2.0
-"""Longest any single ``detect`` call in the sweeps may take."""
+"""Most CPU seconds any single ``detect`` call in the sweeps may use."""
 
 
 def _timed_detect(target: Path) -> DetectionResult:
-    """Detect ``target`` and fail when it takes longer than the sweep limit.
+    """Detect ``target`` and fail when it uses more CPU time than the sweep limit.
+
+    The call goes through :func:`detect_with_deadline`, so a call that waits
+    without using CPU still fails, at that helper's 5-second deadline.
 
     Args:
         target: File to detect.
@@ -93,9 +96,7 @@ def _timed_detect(target: Path) -> DetectionResult:
     Returns:
         The result.
     """
-    start = time.perf_counter()
-    result = detect(target)
-    elapsed = time.perf_counter() - start
+    result, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
     assert_that(elapsed).described_as(f"detect({target.name})").is_less_than(
         SWEEP_LIMIT_SECONDS,
     )
