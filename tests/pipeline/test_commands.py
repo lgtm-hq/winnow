@@ -8,7 +8,7 @@ import pytest
 from assertpy import assert_that
 
 from winnow.exceptions import PipelineError
-from winnow.fs import BackupOptions, FileOperation
+from winnow.fs import BackupOptions, FileOperation, OperationLog
 from winnow.pipeline import (
     Command,
     CopyFile,
@@ -336,3 +336,31 @@ def test_from_dict_missing_required_field_raises() -> None:
         Command.from_dict({"command": "move_file", "source": "a"})
 
     assert_that(str(excinfo.value)).contains("missing string field 'destination'")
+
+
+def test_restore_log_lets_rebuilt_command_undo(
+    tmp_path: Path,
+    backup_options: BackupOptions,
+) -> None:
+    """A command rebuilt from its dict can undo a move done by another instance."""
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("payload\n", encoding="utf-8")
+    original = MoveFile(source=source, destination=destination, backup=backup_options)
+    log = original.execute()
+
+    rebuilt = Command.from_dict(original.to_dict())
+    rebuilt.restore_log(log)
+    rebuilt.undo()
+
+    assert_that(source.read_text(encoding="utf-8")).is_equal_to("payload\n")
+    assert_that(destination.exists()).is_false()
+
+
+def test_restore_log_twice_raises(tmp_path: Path) -> None:
+    """Restoring a log onto a command that already has one is rejected."""
+    command = MoveFile(source=tmp_path / "a", destination=tmp_path / "b")
+    log = OperationLog(operation=FileOperation.MOVE)
+    command.restore_log(log)
+    with pytest.raises(PipelineError, match="already has an operation log"):
+        command.restore_log(log)
