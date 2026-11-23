@@ -503,14 +503,17 @@ _TEST_REUSABLE = "lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@"
 def _macos_check_names(job: dict[str, Any]) -> list[str]:
     """Return the check-run names the macOS leg's reusable call creates.
 
-    A called workflow's checks are named ``<caller job id> / <job name>``,
-    and a matrix leg appends its value in parentheses.
+    A called workflow's checks are named ``<caller job id> / <job name>``.
+    The reusable sets its test job's ``name`` from ``job-name``, so every
+    matrix leg shares that one name, with no version suffix (seen on #476).
     """
     inputs = cast(dict[str, Any], job["with"])
-    versions = [v.strip() for v in str(inputs["python-versions"]).split(",")]
-    legs = [f"{_MACOS_JOB} / {inputs['job-name']} ({v})" for v in versions]
-    coordinators = ("Prepare Python Matrix", "Aggregate Python Results")
-    return legs + [f"{_MACOS_JOB} / {name}" for name in coordinators]
+    jobs = (
+        str(inputs["job-name"]),
+        "Prepare Python Matrix",
+        "Aggregate Python Results",
+    )
+    return [f"{_MACOS_JOB} / {name}" for name in jobs]
 
 
 def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
@@ -551,7 +554,7 @@ def test_a_macos_only_failure_fails_the_gate() -> None:
     _assert_macos_leg_is_gated(workflows)
     job = _workflow_text(workflows[_TEST_CI])["jobs"][_MACOS_JOB]
     assert_that(_macos_check_names(job)).contains(
-        "test-macos / 🍎 macOS (3.11)", "test-macos / 🍎 macOS (3.15)"
+        "test-macos / 🍎 macOS", "test-macos / Aggregate Python Results"
     )
 
 

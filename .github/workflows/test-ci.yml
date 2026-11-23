@@ -56,7 +56,7 @@ jobs:
   # oldest and newest supported Python, so the platform branches in winnow
   # and its tests run somewhere. There is no ruleset entry for it: the
   # all-checks gate fails on any failed check on the head, which includes
-  # `test-macos / 🍎 macOS (3.11)`, `(3.15)` and its Aggregate job.
+  # each `test-macos / 🍎 macOS` matrix leg and its Aggregate job.
   #
   # EGRESS EXCEPTION: egress is NOT enforced on this job. On GitHub-hosted
   # macOS the reusable skips harden-runner (it runs only on Linux and
