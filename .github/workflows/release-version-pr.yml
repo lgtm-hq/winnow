@@ -28,9 +28,9 @@ jobs:
       auto-merge-patch-only: true
       tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
       egress-policy: block
-      # Retained intentionally for when lgtm-ci resolves presets before
-      # harden-runner; currently overridden by the explicit list below.
-      egress-preset: pypi
+      # No egress-preset: with a non-empty list in replace mode the reusable
+      # ignores it, and since lgtm-ci v0.111.0 it accepts only github-minimal
+      # and release-version-pr.
       # Full allowlist (pypi preset + project extras): at v0.69.6
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial
