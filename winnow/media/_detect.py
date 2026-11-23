@@ -5,22 +5,39 @@
 
 1. **User override.** An extension the user registered on the
    :class:`~winnow.media.registry.FormatRegistry` decides.
-2. **ISO-BMFF and QuickTime.** A bounded walk over box headers reads the
-   ``ftyp`` brands, every ``moov/trak/mdia/hdlr`` handler type, and Canon's
-   ``CNCV`` profile. It never reads a media payload such as ``mdat``.
-3. **Matroska and 4. signature table.** Not implemented yet (#393 PR B).
-   Until then a file that starts with one of those signatures is decided by
-   the first ``puremagic`` media match, as before, except that the two-byte
-   ``00 00`` match ``puremagic`` calls ``.sndr`` no longer counts.
-5. **puremagic, advisory.** Its matches are recorded. One decides only when
-   the extension lookup gives the same media type, and never when its
-   matched bytes are shorter than :data:`MIN_PUREMAGIC_MATCH_BYTES`.
+2. **ISO-BMFF and QuickTime.** Claimed on structure only: a first box of
+   type ``ftyp`` always, a first box of type ``moov``, ``mdat``, ``free``,
+   ``skip``, ``wide`` or ``pnot`` only when its declared size is plausible
+   (0; 8 up to the file size; or 1 with a 64-bit size of 16 up to the file
+   size). A bounded walk over box headers then reads the ``ftyp`` brands,
+   every ``moov/trak/mdia/hdlr`` handler type, and Canon's ``CNCV``
+   profile. It never reads a media payload such as ``mdat``. A legacy
+   QuickTime file, one whose ``moov`` comes before any ``ftyp``, is decided
+   as soon as its ``moov`` is read.
+3. to 5. **Matroska, signature table, advisory puremagic.** Not implemented
+   yet (#393 PR B). Until then a file rule 2 does not claim is decided as
+   before #393: by the first ``puremagic`` match with an image, video or
+   audio MIME type. The one change is that a match shorter than
+   :data:`MIN_PUREMAGIC_MATCH_BYTES` with MIME type ``audio/x-sndr`` (the
+   two-byte ``00 00`` match ``puremagic`` calls ``.sndr``) never decides.
 6. **Extension.** The registry's name lookup, used when no rule above
    recognised the content.
+
+Only regular files are read. A FIFO, socket or device is opened
+non-blocking, or not at all, and gets the extension answer with a signal
+saying its content was not read; ``detect`` never blocks on it.
 
 A container that rule 2 recognises but cannot resolve, finds malformed, or
 cannot finish within its budget is unknown (``media_type=None``) with a
 signal that says why. The extension never replaces that answer.
+
+Rule 2 reads at most :data:`MAX_BYTES_READ` bytes, the first bytes it reads
+to decide whether to claim the file included. ``puremagic`` opens and reads
+the file separately and outside that budget: ``puremagic.magic_file`` reads
+the first ``puremagic.main.max_head`` bytes and the last
+``puremagic.main.max_foot`` bytes (36,870 and 516 in puremagic 2.3.0), and
+its deep scanners may reopen the file and read more, the text scanner up to
+1 MB.
 
 Every result lists its evidence in :attr:`DetectionResult.signals`. The
 signal that carries the decision has a ``detail`` starting with
@@ -30,8 +47,9 @@ signal that carries the decision has a ``detail`` starting with
 from __future__ import annotations
 
 import os
+import stat
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Final, Literal
@@ -43,7 +61,7 @@ from winnow.media import registry as _registry
 from winnow.models.media import MediaType
 
 MAX_BYTES_READ: Final[int] = 256 * 1024
-"""Bytes the ISO-BMFF walk may read in total, headers and payloads."""
+"""Bytes rule 2 may read in total: the opening bytes, headers and payloads."""
 
 MAX_BOXES: Final[int] = 4096
 """Box headers the ISO-BMFF walk may visit, at all depths together."""
@@ -58,7 +76,7 @@ CANON_PROFILE_BYTES: Final[int] = 64
 """Bytes read from the start of a Canon ``CNCV`` payload."""
 
 MIN_PUREMAGIC_MATCH_BYTES: Final[int] = 3
-"""Shortest ``puremagic`` byte match that may decide (rule 5)."""
+"""Shortest ``audio/x-sndr`` ``puremagic`` byte match that may decide."""
 
 _BOX_HEADER: Final[int] = 8
 _LARGE_BOX_HEADER: Final[int] = 16
@@ -79,10 +97,13 @@ _HDLR: Final[bytes] = b"hdlr"
 _UUID: Final[bytes] = b"uuid"
 _CNCV: Final[bytes] = b"CNCV"
 
-_TOP_LEVEL_TYPES: Final[frozenset[bytes]] = frozenset(
-    {_FTYP, _MOOV, b"mdat", b"free", b"skip", b"wide", b"pnot"},
+_SIZED_OPENING_TYPES: Final[frozenset[bytes]] = frozenset(
+    {_MOOV, b"mdat", b"free", b"skip", b"wide", b"pnot"},
 )
-"""Box types that may open an ISO-BMFF or legacy QuickTime file."""
+"""Box types that open a claimed file only when their size is plausible."""
+
+_TRACK_HANDLER_PATH: Final[tuple[bytes, ...]] = (_MOOV, TRACK_BOX, _MDIA, _HDLR)
+"""The only box path whose ``hdlr`` names a track's media type."""
 
 _CONTAINER_TYPES: Final[frozenset[bytes]] = frozenset({_MOOV, TRACK_BOX, _MDIA})
 """Boxes whose children the walk visits wherever they occur."""
@@ -128,35 +149,9 @@ _HANDLER_TYPES: Final[dict[str, MediaType]] = {
     _SOUND_HANDLER: MediaType.AUDIO,
 }
 
-_LEGACY_SIGNATURES: Final[tuple[tuple[int, bytes], ...]] = (
-    (0, b"\x1a\x45\xdf\xa3"),
-    (0, b"\xff\xd8\xff"),
-    (0, b"\x89PNG\r\n\x1a\n"),
-    (0, b"GIF87a"),
-    (0, b"GIF89a"),
-    (0, b"BM"),
-    (0, b"II*\x00"),
-    (0, b"MM\x00*"),
-    (0, b"II+\x00"),
-    (0, b"MM\x00+"),
-    (0, b"RIFF"),
-    (0, b"FORM"),
-    (0, b"fLaC"),
-    (0, b"OggS"),
-    (0, b"ID3"),
-    (0, b"\x00\x00\x01\x00"),
-    (0, b"\x47"),
-    (4, b"\x47"),
-)
-"""Leading signatures of rules 3 and 4 (#393), checked by prefix only.
-
-A file starting with one of these keeps the pre-#393 ``puremagic`` answer
-until #393 PR B validates each format. MPEG audio and ADTS frame syncs are
-matched separately by :func:`_has_frame_sync`.
-"""
-
-_SNDR_EXTENSION: Final[str] = ".sndr"
-_HEAD_BYTES: Final[int] = 8
+_SNDR_MIME: Final[str] = "audio/x-sndr"
+_HEAD_BYTES: Final[int] = _LARGE_BOX_HEADER
+_NOT_REGULAR: Final[str] = "unavailable=content not read: not a regular file"
 
 _MIME_PREFIX_TYPES: Final[dict[str, MediaType]] = {
     "audio": MediaType.AUDIO,
@@ -301,10 +296,15 @@ class _Reader:
 
 @dataclass(slots=True)
 class _BmffState:
-    """What the ISO-BMFF walk has found so far."""
+    """What the ISO-BMFF walk has found so far.
+
+    ``saw_ftyp`` is set as soon as a top-level box header names ``ftyp``,
+    before the box is validated; ``has_ftyp`` once its brands are read.
+    """
 
     major_brand: str | None = None
     compatible_brands: tuple[str, ...] = ()
+    saw_ftyp: bool = False
     has_ftyp: bool = False
     has_moov: bool = False
     handlers: list[str] = field(default_factory=list)
@@ -349,8 +349,8 @@ def detect(
     """Detect a file's media type and record the evidence.
 
     Args:
-        path: File to classify. It need not exist; then only the extension
-            can decide.
+        path: File to classify. It need not exist, nor be a regular file;
+            then only the extension can decide.
         registry: Registry supplying overrides and the extension lookup.
             Defaults to the shared default registry.
 
@@ -364,14 +364,47 @@ def detect(
         detail=f"suffix={path.suffix.casefold() or '(none)'}",
         media_type=extension_type,
     )
-    matches = _puremagic_matches(path)
-    advisory = (*_puremagic_signals(matches), extension_signal)
+    try:
+        handle = _open_regular(path)
+    except OSError as exc:
+        unavailable = TypeSignal(
+            source="signature",
+            detail=_unavailable_detail(exc),
+            media_type=None,
+        )
+        outcome = _override(active, path) or _by_extension(extension_type, ())
+        return _result(
+            outcome,
+            advisory=(unavailable, extension_signal),
+            extension_type=extension_type,
+        )
+    with handle:
+        matches = _puremagic_matches(path)
+        advisory = (*_puremagic_signals(matches), extension_signal)
+        outcome = _override(active, path) or _inspect_content(
+            handle=handle,
+            matches=matches,
+            extension_type=extension_type,
+        )
+    return _result(outcome, advisory=advisory, extension_type=extension_type)
 
-    outcome = _override(active, path) or _inspect_content(
-        path=path,
-        matches=matches,
-        extension_type=extension_type,
-    )
+
+def _result(
+    outcome: _Outcome,
+    *,
+    advisory: tuple[TypeSignal, ...],
+    extension_type: MediaType | None,
+) -> DetectionResult:
+    """Build the public result from a rule's outcome.
+
+    Args:
+        outcome: The deciding rule's outcome.
+        advisory: Evidence recorded after the decision.
+        extension_type: Media type the extension gives.
+
+    Returns:
+        The result.
+    """
     media_type = outcome.media_type
     agrees = (
         None
@@ -410,16 +443,63 @@ def _override(active: _registry.FormatRegistry, path: Path) -> _Outcome | None:
     return _Outcome(media_type=override, signals=(signal,))
 
 
+class _NotRegularFileError(OSError):
+    """The path names a FIFO, socket, device or directory, not a file."""
+
+
+def _open_regular(path: Path) -> BinaryIO:
+    """Open ``path`` for reading only if it is a regular file.
+
+    The path is checked before opening, so a socket is never opened, and the
+    descriptor is checked after opening, so a file swapped for a FIFO in
+    between is caught. The open is non-blocking, so a FIFO cannot stall it.
+
+    Args:
+        path: File to open.
+
+    Returns:
+        The open binary file.
+
+    Raises:
+        _NotRegularFileError: If ``path`` is not a regular file.
+    """
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise _NotRegularFileError(path)
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise _NotRegularFileError(path)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return os.fdopen(descriptor, "rb")
+
+
+def _unavailable_detail(exc: OSError) -> str:
+    """Describe why the content could not be read.
+
+    Args:
+        exc: The error from opening or reading the file.
+
+    Returns:
+        The signal detail.
+    """
+    if isinstance(exc, _NotRegularFileError):
+        return _NOT_REGULAR
+    return f"unavailable=content {type(exc).__name__}"
+
+
 def _inspect_content(
     *,
-    path: Path,
+    handle: BinaryIO,
     matches: list[puremagic.PureMagicWithConfidence],
     extension_type: MediaType | None,
 ) -> _Outcome:
     """Apply rules 2 to 6 to the file's content.
 
     Args:
-        path: File being classified.
+        handle: The open regular file.
         matches: ``puremagic`` matches, possibly empty.
         extension_type: Media type the extension gives.
 
@@ -427,26 +507,18 @@ def _inspect_content(
         The deciding rule's outcome.
     """
     try:
-        with path.open("rb") as handle:
-            head = handle.read(_HEAD_BYTES)
-            size = handle.seek(0, os.SEEK_END)
-            bmff = _inspect_bmff(_Reader(handle=handle, size=size), head)
+        size = handle.seek(0, os.SEEK_END)
+        bmff = _inspect_bmff(_Reader(handle=handle, size=size))
     except OSError as exc:
         unavailable = TypeSignal(
             source="signature",
-            detail=f"unavailable=content {type(exc).__name__}",
+            detail=_unavailable_detail(exc),
             media_type=None,
         )
         return _by_extension(extension_type, (unavailable,))
     if bmff is not None:
         return bmff
-    legacy = _legacy_signature(head, matches)
-    if legacy is not None:
-        return legacy
-    return _advisory_puremagic(matches, extension_type) or _by_extension(
-        extension_type,
-        (),
-    )
+    return _first_puremagic_match(matches) or _by_extension(extension_type, ())
 
 
 def _by_extension(
@@ -473,21 +545,23 @@ def _by_extension(
 # --- rule 2: ISO-BMFF and QuickTime -----------------------------------------
 
 
-def _inspect_bmff(reader: _Reader, head: bytes) -> _Outcome | None:
+def _inspect_bmff(reader: _Reader) -> _Outcome | None:
     """Apply rule 2 when the file opens with an ISO-BMFF or QuickTime box.
+
+    The opening bytes are read through ``reader``, so they count against
+    :data:`MAX_BYTES_READ`.
 
     Args:
         reader: Reader over the open file.
-        head: The file's first bytes.
 
     Returns:
-        The rule's outcome, or ``None`` when the file does not open with a
-        box this rule handles.
+        The rule's outcome, or ``None`` when rule 2 does not claim the file.
     """
-    if len(head) < _BOX_HEADER or head[4:8] not in _TOP_LEVEL_TYPES:
-        return None
     state = _BmffState()
     try:
+        head = reader.read_at(0, _HEAD_BYTES)
+        if not _claims(head, reader.size):
+            return None
         _walk_top_level(reader, state)
     except _MalformedError as exc:
         return _bmff_outcome(state, None, f"unknown malformed: {exc}")
@@ -495,6 +569,50 @@ def _inspect_bmff(reader: _Reader, head: bytes) -> _Outcome | None:
         return _bmff_outcome(state, None, f"unknown budget-exceeded: {exc}")
     media_type, reason = _classify_bmff(state)
     return _bmff_outcome(state, media_type, reason)
+
+
+def _claims(head: bytes, size: int) -> bool:
+    """Decide from the first box header whether rule 2 claims the file.
+
+    A first box of type ``ftyp`` is always claimed. A first box of another
+    opening type is claimed only when its declared size is plausible, so
+    text that happens to hold ``free`` at offset 4 is not QuickTime.
+
+    Args:
+        head: The file's first bytes, up to an extended box header.
+        size: File size in bytes.
+
+    Returns:
+        ``True`` when rule 2 handles the file.
+    """
+    if len(head) < _BOX_HEADER:
+        return False
+    kind = head[4:8]
+    if kind == _FTYP:
+        return True
+    if kind not in _SIZED_OPENING_TYPES:
+        return False
+    return _plausible_size(head, size)
+
+
+def _plausible_size(head: bytes, size: int) -> bool:
+    """Check the declared size of the first box against the file size.
+
+    Args:
+        head: The file's first bytes, at least one box header.
+        size: File size in bytes.
+
+    Returns:
+        ``True`` for 0, for 8 up to ``size``, or for 1 with a 64-bit size of
+        16 up to ``size``.
+    """
+    declared: int = struct.unpack(">I", head[:4])[0]
+    if declared == 1:
+        if len(head) < _LARGE_BOX_HEADER:
+            return False
+        large: int = struct.unpack(">Q", head[_BOX_HEADER:_LARGE_BOX_HEADER])[0]
+        return _LARGE_BOX_HEADER <= large <= size
+    return declared == 0 or _BOX_HEADER <= declared <= size
 
 
 def _walk_top_level(reader: _Reader, state: _BmffState) -> None:
@@ -507,7 +625,14 @@ def _walk_top_level(reader: _Reader, state: _BmffState) -> None:
         reader: Reader over the open file.
         state: Walk state to fill in.
     """
-    for box in _iter_boxes(reader, start=0, end=reader.size, depth=0):
+    boxes = _iter_boxes(
+        reader,
+        start=0,
+        end=reader.size,
+        depth=0,
+        on_kind=lambda kind: _note_top_level(state, kind),
+    )
+    for box in boxes:
         if box.kind == _FTYP and not state.has_ftyp:
             _read_ftyp(reader, box, state)
         elif box.kind == _MOOV and not state.has_moov:
@@ -517,6 +642,17 @@ def _walk_top_level(reader: _Reader, state: _BmffState) -> None:
             return
 
 
+def _note_top_level(state: _BmffState, kind: bytes) -> None:
+    """Record a top-level box type as soon as its header names it.
+
+    Args:
+        state: Walk state.
+        kind: Four-byte box type.
+    """
+    if kind == _FTYP:
+        state.saw_ftyp = True
+
+
 def _walk_done(state: _BmffState) -> bool:
     """Report whether the walk has seen enough to decide.
 
@@ -524,10 +660,11 @@ def _walk_done(state: _BmffState) -> bool:
         state: Walk state.
 
     Returns:
-        ``True`` once ``ftyp`` and ``moov`` are both read, or once ``ftyp``
-        alone decides an image.
+        ``True`` once ``moov`` is read, or once ``ftyp`` alone decides an
+        image. A ``moov`` read before any ``ftyp`` is legacy QuickTime: no
+        later ``ftyp`` is looked for, so trailing boxes cannot spoil it.
     """
-    if state.has_ftyp and state.has_moov:
+    if state.has_moov:
         return True
     brands = state.brands
     return (
@@ -558,6 +695,7 @@ def _iter_boxes(
     start: int,
     end: int,
     depth: int,
+    on_kind: Callable[[bytes], None] | None = None,
 ) -> Iterator[_Box]:
     """Yield the boxes between ``start`` and ``end``, reading headers only.
 
@@ -566,6 +704,8 @@ def _iter_boxes(
         start: Offset of the first box.
         end: Offset just past the last box (the parent's end or file end).
         depth: Nesting depth of these boxes.
+        on_kind: Called with each box type as soon as it is read, before
+            the header is validated.
 
     Yields:
         Each box header in order.
@@ -583,18 +723,25 @@ def _iter_boxes(
         if reader.boxes > MAX_BOXES:
             raise _BudgetExceededError("box count")
         # A box is never smaller than its header, so each step moves forward.
-        box = _read_box_header(reader, offset=offset, end=end)
+        box = _read_box_header(reader, offset=offset, end=end, on_kind=on_kind)
         yield box
         offset = box.end
 
 
-def _read_box_header(reader: _Reader, *, offset: int, end: int) -> _Box:
+def _read_box_header(
+    reader: _Reader,
+    *,
+    offset: int,
+    end: int,
+    on_kind: Callable[[bytes], None] | None = None,
+) -> _Box:
     """Parse the box header at ``offset``.
 
     Args:
         reader: Reader over the open file.
         offset: Offset of the box.
         end: Offset the box may not pass.
+        on_kind: Called with the box type before the header is validated.
 
     Returns:
         The parsed header.
@@ -608,6 +755,8 @@ def _read_box_header(reader: _Reader, *, offset: int, end: int) -> _Box:
     raw = reader.read_exact(offset, _BOX_HEADER, "box header")
     (size,) = struct.unpack(">I", raw[:4])
     kind = raw[4:8]
+    if on_kind is not None:
+        on_kind(kind)
     header = _BOX_HEADER
     if size == 1:
         if end - offset < _LARGE_BOX_HEADER:
@@ -688,9 +837,10 @@ def _walk_children(
 ) -> None:
     """Visit the children of a container box.
 
-    Records ``hdlr`` types under ``moov/trak/mdia`` and the Canon ``CNCV``
-    profile under ``moov/uuid``. Descends into ``moov``, the track box and
-    ``mdia`` wherever they occur, so malformed nesting hits the depth cap.
+    Records ``hdlr`` types found at exactly ``moov/trak/mdia/hdlr`` (a
+    nested ``moov`` does not count) and the Canon ``CNCV`` profile under
+    ``moov/uuid``. Descends into ``moov``, the track box and ``mdia``
+    wherever they occur, so malformed nesting hits the depth cap.
 
     Args:
         reader: Reader over the open file.
@@ -703,12 +853,7 @@ def _walk_children(
         child_path = (*path, child.kind)
         if child.kind in _CONTAINER_TYPES:
             _walk_children(reader, child, state, path=child_path)
-        elif child.kind == _HDLR and child_path[-4:] == (
-            _MOOV,
-            TRACK_BOX,
-            _MDIA,
-            _HDLR,
-        ):
+        elif child.kind == _HDLR and child_path == _TRACK_HANDLER_PATH:
             state.handlers.append(_read_handler(reader, child))
         elif child.kind == _UUID and path == (_MOOV,) and child.usertype == CANON_UUID:
             _walk_children(reader, child, state, path=child_path)
@@ -817,6 +962,10 @@ def _bmff_outcome(
     signals: list[TypeSignal] = []
     if state.has_ftyp:
         signals.extend(_brand_signals(state))
+    elif state.saw_ftyp:
+        signals.append(
+            TypeSignal(source="ftyp", detail="ftyp=unread", media_type=None),
+        )
     signals.extend(
         TypeSignal(
             source="track-handler",
@@ -827,10 +976,10 @@ def _bmff_outcome(
     )
     if state.canon_profile is not None:
         signals.append(_canon_signal(state.canon_profile))
-    container = "iso-bmff" if state.has_ftyp else "quicktime"
+    container = "iso-bmff" if state.saw_ftyp else "quicktime"
     signals.append(
         TypeSignal(
-            source="ftyp" if state.has_ftyp else "track-handler",
+            source="ftyp" if state.saw_ftyp else "track-handler",
             detail=f"decision={container} {reason}",
             media_type=media_type,
         ),
@@ -978,83 +1127,52 @@ def _puremagic_signals(
     )
 
 
-def _has_frame_sync(head: bytes) -> bool:
-    """Report whether ``head`` opens with an MPEG audio or ADTS frame sync.
+def _decides(match: puremagic.PureMagicWithConfidence) -> bool:
+    """Report whether a ``puremagic`` match may decide, as before #393.
+
+    The one exclusion is a match shorter than
+    :data:`MIN_PUREMAGIC_MATCH_BYTES` whose MIME type is ``audio/x-sndr``.
 
     Args:
-        head: The file's first bytes.
+        match: One match.
 
     Returns:
-        ``True`` when the first eleven bits are set.
+        ``True`` unless the match is a short ``audio/x-sndr`` match.
     """
-    return len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0
+    return not (
+        match.mime_type == _SNDR_MIME
+        and _match_length(match) < MIN_PUREMAGIC_MATCH_BYTES
+    )
 
 
-def _legacy_signature(
-    head: bytes,
+def _first_puremagic_match(
     matches: list[puremagic.PureMagicWithConfidence],
 ) -> _Outcome | None:
-    """Stand in for rules 3 and 4 until #393 PR B.
+    """Stand in for rules 3 to 5 until #393 PR B.
 
-    A file whose first bytes carry a rule 3 or 4 signature keeps the
-    pre-#393 answer: the first ``puremagic`` match with an image, video or
-    audio MIME type, skipping the two-byte ``.sndr`` match.
+    Takes the first ``puremagic`` match with an image, video or audio MIME
+    type, as ``main`` did before #393, skipping short ``audio/x-sndr``
+    matches.
 
     Args:
-        head: The file's first bytes.
-        matches: ``puremagic`` matches.
+        matches: ``puremagic`` matches in its order.
 
     Returns:
-        The outcome, or ``None`` when no signature or match applies.
+        The outcome, or ``None`` when no match may decide.
     """
-    signed = _has_frame_sync(head) or any(
-        head[offset : offset + len(magic)] == magic
-        for offset, magic in _LEGACY_SIGNATURES
-    )
-    if not signed:
-        return None
     for match in matches:
         media_type = _match_media_type(match)
-        if media_type is None or match.extension == _SNDR_EXTENSION:
+        if media_type is None or not _decides(match):
             continue
         decision = TypeSignal(
-            source="signature",
+            source="puremagic",
             detail=(
-                "decision=signature prefix with puremagic"
-                f" {match.extension} {match.mime_type} (rules 3-4 pending)"
+                f"decision=puremagic first media match {match.extension}"
+                f" {match.mime_type} (rules 3-5 pending, #393 PR B)"
             ),
             media_type=media_type,
         )
         return _Outcome(media_type=media_type, signals=(decision,))
-    return None
-
-
-def _advisory_puremagic(
-    matches: list[puremagic.PureMagicWithConfidence],
-    extension_type: MediaType | None,
-) -> _Outcome | None:
-    """Apply rule 5: a ``puremagic`` match decides only with the extension.
-
-    Args:
-        matches: ``puremagic`` matches.
-        extension_type: Media type the extension gives.
-
-    Returns:
-        The outcome when a long enough match agrees with the extension,
-        otherwise ``None``.
-    """
-    if extension_type is None:
-        return None
-    for match in matches:
-        if _match_length(match) < MIN_PUREMAGIC_MATCH_BYTES:
-            continue
-        if _match_media_type(match) == extension_type:
-            decision = TypeSignal(
-                source="puremagic",
-                detail=f"decision=puremagic {match.extension} agrees with extension",
-                media_type=extension_type,
-            )
-            return _Outcome(media_type=extension_type, signals=(decision,))
     return None
 
 

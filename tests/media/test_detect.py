@@ -7,9 +7,16 @@ written at test time by Pillow, pillow-heif, or ffmpeg (skipped without it).
 
 from __future__ import annotations
 
+import functools
 import itertools
+import os
 import shutil
+import socket
+import stat
 import struct
+import sys
+import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +33,7 @@ from tests.media.bmff_support import (
     ftyp,
     large_box,
     moov,
+    track,
     write_ftyp,
 )
 from winnow.media import _detect
@@ -55,14 +63,46 @@ CR3_PROFILE = b"CanonCR3_001/00.09.00/00.00.00"
 CRM_PROFILE = b"CanonCRM0001/02.09.00/00.00.00"
 
 
+_CODEC_FLAGS = frozenset({"-c", "-c:a", "-c:v", "-codec", "-acodec", "-vcodec"})
+
+
+@functools.cache
+def _ffmpeg_encoders() -> frozenset[str]:
+    """Return the encoders the installed ffmpeg offers.
+
+    Returns:
+        Encoder names; empty without ffmpeg or when it cannot list them.
+    """
+    if FFMPEG is None:
+        return frozenset()
+    completed = run_command(
+        argv=[FFMPEG, "-hide_banner", "-encoders"],
+        timeout=60,
+        operation="list ffmpeg encoders",
+        path=Path(FFMPEG),
+    )
+    names = set()
+    for line in completed.stdout.splitlines():
+        fields = line.split()
+        # Rows look like " V....D libx264  description"; the legend ends at "------".
+        if len(fields) >= 2 and len(fields[0]) == 6 and fields[0][0] in {"V", "A", "S"}:
+            names.add(fields[1])
+    return frozenset(names)
+
+
 def _ffmpeg(*args: str) -> None:
     """Run ffmpeg quietly with a fixed argument vector.
+
+    Skips the test when ffmpeg, or an encoder ``args`` names, is missing.
 
     Args:
         args: Arguments after the binary and the quiet flags.
     """
     if FFMPEG is None:
         pytest.skip("ffmpeg not installed")
+    for flag, value in itertools.pairwise(args):
+        if flag in _CODEC_FLAGS and value not in _ffmpeg_encoders():
+            pytest.skip(f"ffmpeg encoder {value} not available")
     completed = run_command(
         argv=[FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args],
         timeout=60,
@@ -479,15 +519,40 @@ def test_ftyp_after_free(tmp_path: Path) -> None:
     assert_that(detect_media_type(target)).is_equal_to(MediaType.IMAGE)
 
 
-def test_moov_before_ftyp(tmp_path: Path) -> None:
-    """Brands after ``moov`` are still read."""
+def test_moov_before_ftyp_is_decided_at_moov(tmp_path: Path) -> None:
+    """A ``moov`` read before any ``ftyp`` is legacy QuickTime; the walk stops."""
     target = tmp_path / "x.bin"
     target.write_bytes(moov(("vide",)) + ftyp("M4V ", ("M4V ",)))
 
     result = detect(target)
 
     assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
-    assert_that(result.major_brand).is_equal_to("M4V ")
+    assert_that(result.container).is_equal_to("quicktime")
+    assert_that(result.major_brand).is_none()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        struct.pack(">I", 1 << 20) + b"mdat" + b"\x00" * 16,
+        b"\x00\x00\x00",
+        struct.pack(">I", 3) + b"free",
+        ftyp("isom")[:12],
+    ],
+    ids=["mdat-past-eof", "truncated-header", "size-3", "cut-ftyp"],
+)
+def test_legacy_quicktime_stops_once_moov_is_read(tmp_path: Path, tail: bytes) -> None:
+    """Nothing after a legacy ``moov`` can turn the file unknown (finding 8)."""
+    target = tmp_path / "old.mov"
+    target.write_bytes(moov(("vide", "soun")) + tail)
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(result.container).is_equal_to("quicktime")
+    assert_that(_decision(result).detail).is_equal_to(
+        "decision=quicktime track handler vide",
+    )
 
 
 @pytest.mark.parametrize(
@@ -766,13 +831,58 @@ def test_extended_ftyp_below_minimum_is_malformed(tmp_path: Path) -> None:
 
 
 def test_size_zero_box_extends_to_end(tmp_path: Path) -> None:
-    """Size 0 makes the last box run to the end of the file."""
+    """A size-0 ``mdat`` before ``moov`` runs to the end and swallows it."""
     target = tmp_path / "x.mp4"
     target.write_bytes(
-        ftyp("isom", ("isom",)) + moov(("soun",)) + b"\x00\x00\x00\x00mdat" + b"x" * 40,
+        ftyp("isom", ("isom",)) + b"\x00\x00\x00\x00mdat" + b"x" * 40 + moov(("soun",)),
     )
 
-    assert_that(detect_media_type(target)).is_equal_to(MediaType.AUDIO)
+    result = detect(target)
+
+    assert_that(result.media_type).is_none()
+    assert_that(result.container).is_equal_to("iso-bmff")
+    assert_that(_decision(result).detail).is_equal_to(
+        "decision=iso-bmff unknown unresolved: no moov",
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "expected", "reason"),
+    [
+        (
+            box(b"wide") + b"\x00\x00\x00\x00mdat" + b"x" * 24,
+            None,
+            "decision=quicktime unknown unresolved: no moov",
+        ),
+        (
+            box(
+                b"moov",
+                box(b"mvhd", b"\x00" * 16)
+                + track("vide")
+                + b"\x00\x00\x00\x00udta"
+                + b"\x00" * 12,
+            ),
+            MediaType.VIDEO,
+            "decision=quicktime track handler vide",
+        ),
+    ],
+    ids=["top-level-mdat", "last-child-of-moov"],
+)
+def test_legacy_quicktime_steps_past_size_zero_box(
+    tmp_path: Path,
+    data: bytes,
+    expected: MediaType | None,
+    reason: str,
+) -> None:
+    """The walker steps past a size-0 box to its boundary without error."""
+    target = tmp_path / "old.mov"
+    target.write_bytes(data)
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(expected)
+    assert_that(result.container).is_equal_to("quicktime")
+    assert_that(_decision(result).detail).is_equal_to(reason)
 
 
 def test_size_zero_moov_extends_to_end(tmp_path: Path) -> None:
@@ -806,37 +916,96 @@ def test_detect_extension_mismatch_reports_disagreement(tmp_path: Path) -> None:
     assert_that(result.agrees_with_extension).is_false()
 
 
-def test_detect_puremagic_alone_does_not_decide(tmp_path: Path) -> None:
-    """A puremagic match without an agreeing extension is advisory only."""
-    target = tmp_path / "sound.unknown-ext"
+def _sndr_match(byte_match: bytes = b"\x00\x00") -> puremagic.PureMagicWithConfidence:
+    """Build puremagic's ``.sndr`` match.
+
+    Args:
+        byte_match: The bytes the match compared.
+
+    Returns:
+        The match.
+    """
+    return puremagic.main.PureMagicWithConfidence(
+        byte_match=byte_match,
+        offset=0,
+        extension=".sndr",
+        mime_type="audio/x-sndr",
+        name="Macintosh SNDR resource",
+        confidence=0.2,
+    )
+
+
+@pytest.mark.parametrize("name", ["sound.unknown-ext", "sound.bin", "sound"])
+def test_unclaimed_file_takes_first_puremagic_media_match(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    """Outside rule 2, the first puremagic media match decides, as on ``main``.
+
+    The extension plays no part, so the host's MIME table cannot change it.
+    """
+    target = tmp_path / name
     shutil.copyfile(AUDIO_FIXTURES / "tta.tta", target)
 
     result = detect(target)
 
-    assert_that(result.media_type).is_none()
-    advisory = [s for s in result.signals if s.source == "puremagic"]
-    assert_that(advisory).extracting("media_type").contains(MediaType.AUDIO)
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(result.container).is_none()
+    assert_that(_decision(result).source).is_equal_to("puremagic")
+    assert_that(_decision(result).detail).contains(".tta")
 
 
-def test_detect_puremagic_with_agreeing_extension_decides() -> None:
-    """A long puremagic match the extension agrees with decides (rule 5)."""
-    result = detect(AUDIO_FIXTURES / "tta.tta")
-    registry = create_default_format_registry()
-    registry.register_many({"tta": MediaType.AUDIO}, as_override=False)
+@pytest.mark.parametrize("byte_match", [b"", b"\x00", b"\x00\x00"])
+def test_short_sndr_match_never_decides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    byte_match: bytes,
+) -> None:
+    """A ``audio/x-sndr`` match under three bytes is skipped for the next one."""
+    target = tmp_path / "noise.bin"
+    target.write_bytes(b"\x00\x00not really anything")
+    image = puremagic.main.PureMagicWithConfidence(
+        byte_match=b"\x89PNG",
+        offset=0,
+        extension=".png",
+        mime_type="image/png",
+        name="PNG",
+        confidence=0.1,
+    )
+    monkeypatch.setattr(
+        puremagic,
+        "magic_file",
+        lambda _: [_sndr_match(byte_match), image],
+    )
 
-    with_name = detect(AUDIO_FIXTURES / "tta.tta", registry=registry)
+    result = detect(target)
 
-    assert_that(result.extension_media_type).is_none()
-    assert_that(with_name.media_type).is_equal_to(MediaType.AUDIO)
-    assert_that(_decision(with_name).source).is_equal_to("puremagic")
+    assert_that(result.media_type).is_equal_to(MediaType.IMAGE)
+    assert_that(_decision(result).detail).contains(".png image/png")
 
 
-def test_short_puremagic_match_never_decides(
+def test_long_sndr_match_still_decides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A two-byte puremagic match does not decide, even with the extension."""
-    target = tmp_path / "noise.mp3"
+    """Only the short ``audio/x-sndr`` match is excluded."""
+    target = tmp_path / "noise.bin"
+    target.write_bytes(b"\x00\x00\x00not really anything")
+    monkeypatch.setattr(
+        puremagic,
+        "magic_file",
+        lambda _: [_sndr_match(b"\x00\x00\x00")],
+    )
+
+    assert_that(detect_media_type(target)).is_equal_to(MediaType.AUDIO)
+
+
+def test_short_match_of_another_mime_type_decides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A two-byte match that is not ``audio/x-sndr`` decides, as on ``main``."""
+    target = tmp_path / "noise.txt"
     target.write_bytes(b"\x0b\x77not really ac3")
     monkeypatch.setattr(
         puremagic,
@@ -845,10 +1014,10 @@ def test_short_puremagic_match_never_decides(
             puremagic.main.PureMagicWithConfidence(
                 byte_match=b"\x0b\x77",
                 offset=0,
-                extension=".mp3",
-                mime_type="audio/mpeg",
-                name="x",
-                confidence=0.9,
+                extension=".ac3",
+                mime_type="audio/ac3",
+                name="AC-3",
+                confidence=0.2,
             ),
         ],
     )
@@ -856,7 +1025,7 @@ def test_short_puremagic_match_never_decides(
     result = detect(target)
 
     assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
-    assert_that(_decision(result).source).is_equal_to("extension")
+    assert_that(_decision(result).source).is_equal_to("puremagic")
 
 
 def test_puremagic_failure_is_tolerated(
@@ -874,8 +1043,8 @@ def test_puremagic_failure_is_tolerated(
     assert_that(detect_media_type(target)).is_equal_to(MediaType.VIDEO)
 
 
-def test_legacy_signature_without_media_match_falls_through(tmp_path: Path) -> None:
-    """A rule 3-4 prefix that puremagic cannot type defers to the name."""
+def test_text_without_media_match_uses_name(tmp_path: Path) -> None:
+    """A file puremagic cannot type as media defers to its name."""
     target = tmp_path / "notes.txt"
     target.write_bytes(b"Ghost story, plain words")
 
@@ -886,15 +1055,19 @@ def test_legacy_signature_without_media_match_falls_through(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    ("name", "source"),
-    [("sample.jpg", "signature"), ("sample.mp3", "signature")],
+    ("name", "expected"),
+    [("sample.jpg", MediaType.IMAGE), ("sample.mp3", MediaType.AUDIO)],
 )
-def test_legacy_signatures_keep_main_behaviour(name: str, source: str) -> None:
-    """Rule 3-4 formats still detect as before until PR B."""
+def test_signature_formats_keep_main_behaviour(
+    name: str,
+    expected: MediaType,
+) -> None:
+    """Formats outside rule 2 still detect through puremagic until PR B."""
     result = detect(FIXTURES / name)
 
-    assert_that(_decision(result).source).is_equal_to(source)
-    assert_that(_decision(result).detail).contains("rules 3-4 pending")
+    assert_that(result.media_type).is_equal_to(expected)
+    assert_that(_decision(result).source).is_equal_to("puremagic")
+    assert_that(_decision(result).detail).contains("rules 3-5 pending")
 
 
 def test_frame_sync_mp3_keeps_main_behaviour(tmp_path: Path) -> None:
@@ -943,6 +1116,353 @@ def test_detect_media_type_still_importable_from_registry() -> None:
 
     assert_that(registry_level).is_same_as(package_level)
     assert_that(registry_level(FIXTURES / "sample.png")).is_equal_to(MediaType.IMAGE)
+
+
+# --- review of PR 449, round 2 ----------------------------------------------
+
+
+def _detect_with_deadline(target: Path) -> DetectionResult:
+    """Run :func:`detect` in a thread and fail if it blocks.
+
+    Args:
+        target: Path to classify.
+
+    Returns:
+        The result.
+    """
+    results: list[DetectionResult] = []
+    worker = threading.Thread(target=lambda: results.append(detect(target)))
+    worker.daemon = True
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():
+        # Release a reader stuck opening a FIFO, then fail.
+        writer = os.open(target, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer)
+        worker.join(timeout=5)
+        pytest.fail(f"detect blocked on {target}")
+    return results[0]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_detect_does_not_block_on_fifo(tmp_path: Path) -> None:
+    """A FIFO is not read; the extension answers and a signal says why."""
+    target = tmp_path / "pipe.mp4"
+    os.mkfifo(target)
+
+    result = _detect_with_deadline(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(_decision(result).detail).is_equal_to("decision=extension fallback")
+    assert_that(_details(result)).contains(_detect._NOT_REGULAR)
+    assert_that([s.source for s in result.signals]).does_not_contain("puremagic")
+
+
+@pytest.mark.skipif(not Path("/dev/null").exists(), reason="no /dev/null")
+def test_detect_does_not_read_a_device() -> None:
+    """A character device is not read."""
+    result = _detect_with_deadline(Path("/dev/null"))
+
+    assert_that(result.media_type).is_none()
+    assert_that(_details(result)).contains(_detect._NOT_REGULAR)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no Unix sockets")
+def test_detect_does_not_open_a_socket() -> None:
+    """A Unix socket is not opened."""
+    # A short directory: socket paths are limited to about 100 bytes.
+    with tempfile.TemporaryDirectory() as short:
+        target = Path(short) / "s.mp3"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(str(target))
+            result = _detect_with_deadline(target)
+        finally:
+            server.close()
+
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(_details(result)).contains(_detect._NOT_REGULAR)
+
+
+def test_detect_override_on_fifo_still_reports_unread_content(
+    tmp_path: Path,
+) -> None:
+    """A user override decides for a FIFO without reading it."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    registry = create_default_format_registry()
+    registry.register(extension="pipe", media_type=MediaType.AUDIO)
+    target = tmp_path / "x.pipe"
+    os.mkfifo(target)
+
+    result = detect(target, registry=registry)
+
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(_decision(result).source).is_equal_to("override")
+    assert_that(_details(result)).contains(_detect._NOT_REGULAR)
+
+
+def test_detect_catches_file_swapped_for_fifo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path that stops being a regular file after the check is not read."""
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(
+        write_ftyp(tmp_path / "real.mp4", "isom", ("isom",)).read_bytes()
+    )
+    answers = iter([True, False])
+    monkeypatch.setattr(stat, "S_ISREG", lambda _: next(answers))
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(_details(result)).contains(_detect._NOT_REGULAR)
+
+
+def test_read_error_falls_back_to_extension(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An I/O error while reading gives the extension with a signal."""
+    target = write_ftyp(tmp_path / "clip.mp4", "isom", ("isom",))
+
+    def _fail(_: object) -> None:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(_detect, "_inspect_bmff", _fail)
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(_details(result)).contains("unavailable=content OSError")
+
+
+_NON_BMFF_AUDIO = (
+    "ac3.ac3",
+    "ac3_mono.ac3",
+    "eac3.eac3",
+    "tta.tta",
+    "wavpack.wv",
+    "core_audio.bin",
+)
+
+
+@pytest.mark.parametrize("name", _NON_BMFF_AUDIO)
+def test_non_bmff_audio_detects_as_on_main(name: str) -> None:
+    """Audio outside ISO-BMFF is audio again, as on ``main`` (finding 2)."""
+    result = detect(AUDIO_FIXTURES / name)
+
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(result.container).is_none()
+    assert_that(_decision(result).source).is_equal_to("puremagic")
+
+
+@pytest.mark.parametrize("name", _NON_BMFF_AUDIO)
+def test_service_dispatches_non_bmff_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    """The service sends audio outside ISO-BMFF to the audio reader."""
+    dispatched: list[MediaType] = []
+
+    def _recorder(media_type: MediaType) -> Callable[[Path], MediaMetadata]:
+        def record(_: Path) -> MediaMetadata:
+            dispatched.append(media_type)
+            return MediaMetadata()
+
+        return record
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {media_type: _recorder(media_type) for media_type in MediaType},
+    )
+    DefaultMetadataService().extract(AUDIO_FIXTURES / name)
+
+    assert_that(dispatched).is_equal_to([MediaType.AUDIO])
+
+
+@needs_ffprobe
+@pytest.mark.parametrize("name", _NON_BMFF_AUDIO[:-1])
+def test_service_extracts_non_bmff_audio(name: str) -> None:
+    """Audio outside ISO-BMFF gets its duration again, as on ``main``.
+
+    ``core_audio.bin`` is left out: on ``main`` too every fact is unknown.
+    """
+    metadata = DefaultMetadataService().extract(AUDIO_FIXTURES / name)
+
+    assert_that(metadata.duration_seconds).is_not_none()
+    assert_that(metadata.sample_rate).is_not_none()
+
+
+def test_single_byte_ts_sync_no_longer_special(tmp_path: Path) -> None:
+    """A text file opening with ``0b 77 00 00 47`` detects as on ``main``.
+
+    ``main`` takes puremagic's first media match, the two-byte AC-3 sync
+    ``0b 77``; ruling item 1 excludes only short ``audio/x-sndr`` matches.
+    The PR's one-byte ``47`` prefix no longer plays any part.
+    """
+    target = tmp_path / "notes.txt"
+    target.write_bytes(b"\x0b\x77\x00\x00Ghello world")
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(_decision(result).detail).contains(".ac3 audio/ac3")
+    assert_that(_decision(result).detail).does_not_contain("signature prefix")
+
+
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [
+        ("image.ppm", b"P3\n#free\n1 1\n255\n255 0 0\n"),
+        ("image.bin", b"P3\n#free\n1 1\n255\n255 0 0\n"),
+        (
+            "image.svg",
+            b"<!--free--><svg xmlns='http://www.w3.org/2000/svg' width='1'"
+            b" height='1'/>",
+        ),
+        ("notes.txt", b"ab: moov is a word, not a box\n"),
+        ("notes.txt", b"\x00\x00\x00\x07mdat and seven is too small"),
+        ("notes.txt", b"\x00\x00\x00\x01wide\x00\x00\x00\x00\x00\x00\x00\x08x"),
+        ("notes.txt", b"\x00\x00\x00\x01skip\x00\x00\x00"),
+    ],
+    ids=[
+        "ppm",
+        "ppm-bin",
+        "svg",
+        "moov-huge",
+        "mdat-size-7",
+        "wide-large-8",
+        "skip-large-cut",
+    ],
+)
+def test_text_that_looks_like_a_box_is_not_claimed(
+    tmp_path: Path,
+    name: str,
+    data: bytes,
+) -> None:
+    """Only a plausible box size claims a non-``ftyp`` first box (finding 3)."""
+    target = tmp_path / name
+    target.write_bytes(data)
+
+    result = detect(target)
+
+    assert_that(result.container).is_none()
+    sources = {s.source for s in result.signals}
+    assert_that(sources).does_not_contain("ftyp", "track-handler")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\x00\x00\x00\x00free" + b"\x00" * 8,
+        box(b"skip", b"\x00" * 8),
+        large_box(b"pnot", b"\x00" * 8),
+        box(b"moov"),
+    ],
+    ids=["size-0", "size-in-range", "size-1-large", "size-8"],
+)
+def test_plausible_first_box_is_claimed(tmp_path: Path, data: bytes) -> None:
+    """Plausible sizes of each kind claim the file for rule 2."""
+    target = tmp_path / "x.txt"
+    target.write_bytes(data)
+
+    result = detect(target)
+
+    assert_that(result.container).is_equal_to("quicktime")
+    assert_that(result.media_type).is_none()
+
+
+@pytest.mark.parametrize(
+    ("data", "reason"),
+    [
+        (box(b"ftyp"), "malformed: ftyp shorter than its minimum size"),
+        (
+            ftyp("isom", ["isom"] * 1025),
+            "budget-exceeded: ftyp larger than its read budget",
+        ),
+        (
+            struct.pack(">I", 4) + b"ftypisom\x00\x00\x00\x00",
+            "malformed: non-progressing",
+        ),
+    ],
+    ids=["8-byte-ftyp", "1025-brands", "size-4-ftyp"],
+)
+def test_bad_ftyp_is_labelled_iso_bmff(
+    tmp_path: Path,
+    data: bytes,
+    reason: str,
+) -> None:
+    """An ``ftyp`` seen but not read still names the container (finding 4)."""
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(data)
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_none()
+    assert_that(result.container).is_equal_to("iso-bmff")
+    assert_that(_decision(result).source).is_equal_to("ftyp")
+    assert_that(_decision(result).detail).starts_with("decision=iso-bmff unknown")
+    assert_that(_decision(result).detail).contains(reason)
+    assert_that(_details(result)).contains("ftyp=unread")
+
+
+def test_nested_moov_track_is_not_a_track(tmp_path: Path) -> None:
+    """A track box inside a nested ``moov`` is not a track (finding 5)."""
+    nested = box(b"moov", track("vide"))
+    data = ftyp("isom", ("isom",)) + box(
+        b"moov",
+        box(b"mvhd", b"\x00" * 16) + nested + track("soun"),
+    )
+    target = tmp_path / "x.mp4"
+    target.write_bytes(data)
+
+    result = detect(target)
+
+    assert_that(result.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(_details(result)).contains("hdlr=soun").does_not_contain("hdlr=vide")
+
+
+def _tight_file() -> bytes:
+    """Build a file rule 2 must read whole: every byte is a header or brand.
+
+    Returns:
+        ``ftyp`` and a ``moov`` with one sound track and nothing to skip.
+    """
+    handler = box(b"hdlr", b"\x00" * 8 + b"soun")
+    return ftyp("isom") + box(b"moov", box(TRACK_BOX, box(b"mdia", handler)))
+
+
+def test_read_budget_counts_the_first_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opening bytes count against the read budget (finding 6)."""
+    data = _tight_file()
+    target = tmp_path / "x.mp4"
+    target.write_bytes(data)
+    monkeypatch.setattr(_detect, "MAX_BYTES_READ", len(data))
+
+    over = detect(target)
+    monkeypatch.setattr(_detect, "MAX_BYTES_READ", len(data) + _detect._HEAD_BYTES)
+    within = detect(target)
+
+    assert_that(over.media_type).is_none()
+    assert_that(_decision(over).detail).contains("budget-exceeded: read budget")
+    assert_that(within.media_type).is_equal_to(MediaType.AUDIO)
+
+
+def test_ffmpeg_helper_skips_without_encoder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing encoder skips the test instead of failing it (finding 9)."""
+    monkeypatch.setattr(sys.modules[__name__], "_ffmpeg_encoders", lambda: frozenset())
+
+    with pytest.raises(pytest.skip.Exception, match="libvpx"):
+        _ffmpeg(*_VIDEO_IN, "-c:v", "libvpx", str(tmp_path / "x.webm"))
 
 
 # --- every registry format ----------------------------------------------------

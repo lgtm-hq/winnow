@@ -282,11 +282,11 @@ def test_detect_media_type_returns_none_when_all_layers_fail(
     assert_that(detect_media_type(unknown)).is_none()
 
 
-def test_puremagic_match_without_extension_agreement_does_not_decide(
+def test_sniff_skips_matches_without_mime_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A puremagic match the extension does not back up is advisory only."""
+    """puremagic matches lacking a MIME type are skipped, not fatal."""
     target = tmp_path / "sample.bin"
     target.write_bytes(b"\x00\x01")
 
@@ -304,7 +304,7 @@ def test_puremagic_match_without_extension_agreement_does_not_decide(
 
     result = detect_media_type(target)
 
-    assert_that(result).is_none()
+    assert_that(result).is_equal_to(MediaType.IMAGE)
 
 
 def test_content_sniffing_outranks_builtin_raw_default(tmp_path: Path) -> None:
