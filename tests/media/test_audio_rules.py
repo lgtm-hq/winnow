@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from decimal import Decimal
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from assertpy import assert_that
@@ -29,6 +29,7 @@ from winnow.media._audio_rules import (
     StderrContext,
     declared_without_packets,
     has_unrecognized_line,
+    may_be_primed,
     parse_probe_score,
     parse_time_base,
     program_failed,
@@ -862,18 +863,93 @@ def test_interpret_header_records_estimate_line() -> None:
 
 @pytest.mark.parametrize(
     "streams",
-    [[{"index": 0, "codec_type": "video", "codec_name": "h264"}], []],
-    ids=["video-only", "no-streams"],
+    [
+        [{"index": 0, "codec_type": "video", "codec_name": "h264"}],
+        [],
+        [
+            audio_stream(
+                disposition={"default": 0, "attached_pic": 1},
+                codec_type="video",
+            ),
+        ],
+    ],
+    ids=["video-only", "no-streams", "cover-only"],
 )
-def test_interpret_header_without_audio_is_inconsistent(
+def test_interpret_header_without_audio_says_no_audio_stream(
     streams: list[dict[str, object]],
 ) -> None:
-    """A13c: a clean file with no readable audio is unknown and says why.
+    """A13c, A14b: a clean file with no audio stream is unknown and says why.
 
-    An empty M4A or MOV lists no stream at all.
+    An empty M4A or MOV lists no stream at all. A file with no audio stream
+    contradicts nothing, so the flag is ``no_audio_stream``, not
+    ``inconsistent``.
     """
     data = {**probe_json(format_name=MP4_FORMAT_NAME), "streams": streams}
 
+    assert_that(
+        interpret_header(run_result(stdout=json.dumps(data).encode()), benign=BENIGN_9),
+    ).is_equal_to((None, (AudioFlag.NO_AUDIO_STREAM,)))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"streams": [audio_stream()]},
+        {"format": {"format_name": "flac"}},
+        {"format": [], "streams": [audio_stream()]},
+        {"format": {"format_name": "flac"}, "streams": {}},
+        {"format": {"format_name": "flac"}, "streams": [audio_stream(), 3]},
+        probe_json(audio_stream(index="0")),
+        probe_json(audio_stream(index=-1)),
+        probe_json(audio_stream(index=True)),
+    ],
+    ids=[
+        "no-format",
+        "no-streams-key",
+        "format-not-object",
+        "streams-not-list",
+        "stream-not-object",
+        "string-index",
+        "negative-index",
+        "bool-index",
+    ],
+)
+def test_interpret_header_malformed_shape_is_unrecognized(
+    data: dict[str, object],
+) -> None:
+    """A14b: JSON without the shape ffprobe writes is ``unrecognized_output``."""
+    assert_that(
+        interpret_header(run_result(stdout=json.dumps(data).encode()), benign=BENIGN_9),
+    ).is_equal_to((None, (AudioFlag.UNRECOGNIZED_OUTPUT,)))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        probe_json(audio_stream(codec_name=None)),
+        probe_json(audio_stream(codec_name="")),
+        probe_json(audio_stream(sample_rate="0")),
+        probe_json(audio_stream(sample_rate=None)),
+        probe_json(audio_stream(channels=None)),
+        probe_json(format_name="au"),
+    ],
+    ids=[
+        "no-codec",
+        "empty-codec",
+        "zero-rate",
+        "no-rate",
+        "no-channels",
+        "container-off-list",
+    ],
+)
+def test_interpret_header_unreadable_audio_stays_inconsistent(
+    data: dict[str, object],
+) -> None:
+    """A14b: an audio stream without a codec or sample rate stays ``inconsistent``.
+
+    So does a container off the allow-list in a clean header, which the
+    ``-format_whitelist`` the reader passes should never let through.
+    """
     assert_that(
         interpret_header(run_result(stdout=json.dumps(data).encode()), benign=BENIGN_9),
     ).is_equal_to((None, (AudioFlag.INCONSISTENT,)))
@@ -1815,14 +1891,134 @@ def test_mp4_aac_with_trimmed_priming_declares() -> None:
     ).is_equal_to(Decimal("1.000"))
 
 
-@pytest.mark.parametrize("codec", ["alac", "pcm_s16le"])
-def test_other_mp4_codecs_from_zero_still_declare(codec: str) -> None:
-    """A12h's MP4 rule is limited to AAC and MP3 (A13a)."""
+@pytest.mark.parametrize(
+    "codec",
+    ["pcm_s16le", "pcm_f32be", "flac", "alac", "wavpack", "tta", "truehd", "mlp"],
+)
+def test_pcm_and_lossless_mp4_codecs_from_zero_still_declare(codec: str) -> None:
+    """A14a: PCM and lossless codecs carry no priming, so they keep checking."""
     header = _mp4_header(codec=codec, stream_duration=Decimal(2))
 
+    assert_that(may_be_primed(codec)).is_false()
     assert_that(
         declared_duration(header, _walk(*_packets(100)), estimate_warned=False),
     ).is_equal_to(Decimal(2))
+
+
+LOSSY_MP4_CODECS: Final[tuple[str, ...]] = (
+    "aac",
+    "mp3",
+    "mp2",
+    "ac3",
+    "eac3",
+    "opus",
+    "vorbis",
+    "wmav2",
+    "dts",
+)
+"""A sample of codecs A14a treats as primed: everything but PCM and lossless."""
+
+
+@pytest.mark.parametrize("codec", LOSSY_MP4_CODECS)
+def test_mp4_from_zero_declared_equal_to_span_is_estimated(codec: str) -> None:
+    """A14a: from zero, a declared duration about equal to the span declares nothing.
+
+    Fragmented MP4 or ``-use_editlist 0``: the packets hold the priming, so a
+    declared duration equal to their span counts it as audio (Vorbis up to
+    134 ms, Opus 6.5 ms). The span is the estimate.
+    """
+    header = _mp4_header(
+        codec=codec,
+        time_base=Decimal(1) / Decimal(32000),
+        stream_duration=Decimal("1.536"),
+    )
+    walk = _walk(*_packets(48, step="0.032000"))
+
+    assert_that(may_be_primed(codec)).is_true()
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.536000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+@pytest.mark.parametrize("codec", LOSSY_MP4_CODECS)
+def test_mp4_from_zero_cut_stays_truncated(codec: str) -> None:
+    """A14a: a declared duration above the span by more than tolerance stands.
+
+    Three 32 ms packets cut off a 1.536 s file leave a 1.440 s span; the
+    declared 1.536 is kept and the truncation check calls it cut short.
+    """
+    header = _mp4_header(
+        codec=codec,
+        time_base=Decimal(1) / Decimal(32000),
+        stream_duration=Decimal("1.536"),
+    )
+    walk = _walk(*_packets(45, step="0.032000"))
+
+    assert_that(
+        declared_duration(header, walk, estimate_warned=False),
+    ).is_equal_to(Decimal("1.536"))
+    assert_that(_decide(walk, header=header)).is_equal_to((None, True, ()))
+
+
+def test_mp4_from_zero_declared_below_span_is_estimated() -> None:
+    """A14a ruling: a declared duration below the span declares nothing.
+
+    MP3 with ``-use_editlist 0``: the packets run about one packet past the
+    declared duration, which still counts the priming.
+    """
+    header = _mp4_header(
+        codec="mp3",
+        sample_rate=48000,
+        time_base=Decimal(1) / Decimal(48000),
+        stream_duration=Decimal("1.392"),
+    )
+    walk = _walk(*_packets(59, step="0.024000"))
+
+    assert_that(declared_duration(header, walk, estimate_warned=False)).is_none()
+    assert_that(_decide(walk, header=header)).is_equal_to(
+        (Decimal("1.416000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [("1.541", None), ("1.542", Decimal("1.542"))],
+    ids=["within-tolerance", "beyond-tolerance"],
+)
+def test_mp4_from_zero_tolerance_boundary(
+    declared: str,
+    expected: Decimal | None,
+) -> None:
+    """A14a: only a declared duration more than the A5 tolerance above the span stands.
+
+    The span is 1.536 and the tolerance 5 ms at 32 kHz.
+    """
+    header = _mp4_header(
+        codec="aac",
+        time_base=Decimal(1) / Decimal(32000),
+        stream_duration=Decimal(declared),
+    )
+    walk = _walk(*_packets(48, step="0.032000"))
+
+    assert_that(
+        declared_duration(header, walk, estimate_warned=False),
+    ).is_equal_to(expected)
+
+
+def test_from_zero_rule_is_limited_to_mp4() -> None:
+    """A14a: in Matroska a stream from zero whose declared equals the span declares."""
+    header = _matroska_header(
+        codec="vorbis",
+        non_picture_stream_count=1,
+        time_base=Decimal("0.001"),
+        stream_duration=Decimal("1.536"),
+    )
+    walk = _walk(*_packets(48, step="0.032000"))
+
+    assert_that(
+        declared_duration(header, walk, estimate_warned=False),
+    ).is_equal_to(Decimal("1.536"))
 
 
 def test_fragmented_mp4_mp3_is_estimated() -> None:

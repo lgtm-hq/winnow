@@ -250,6 +250,17 @@ PINS: Final[dict[int, Pins]] = {
                 "unrecognized_output",
                 "unrecognized_output",
             ),
+            "aac_frag.mp4": ("unsupported", "unrecognized_output", "estimated"),
+            "vorbis_frag.mp4": (
+                "unsupported",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "opus_frag.mp4": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
         },
     ),
 }
@@ -575,11 +586,13 @@ def test_warned_but_healthy_mp4_is_read(name: str) -> None:
 
 @pytest.mark.parametrize("cut", FRAME_CUTS, ids=lambda cut: cut.name)
 def test_last_frames_removed(cut: FrameCut) -> None:
-    """Removing the last frames: two and three are caught, one is not.
+    """Removing the last frames: each pinned cut is caught or missed as pinned.
 
+    In the faststart files two and three frames are caught and one is not.
     The miss is the documented limit: the encoder's end padding is longer
     than the frame removed, so the audio left still reaches the declared
-    length within max(5 ms, two time-base units) (A5).
+    length within max(5 ms, two time-base units) (A5). In fragmented MP3 and
+    AAC, cuts of one, three and ten packets are all ``truncated`` (A14a).
     """
     source = BY_NAME[cut.source]
 
@@ -820,11 +833,11 @@ def test_empty_files_are_not_damaged(fixture: AudioFixture) -> None:
     ids=lambda fixture: fixture.name,
 )
 def test_empty_mp4_and_mov_say_why(fixture: AudioFixture) -> None:
-    """A13c: an M4A or MOV with no stream is all unknown with ``inconsistent``."""
+    """A13c, A14b: an M4A or MOV with no stream is all unknown, ``no_audio_stream``."""
     metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
 
     assert_that(metadata).is_equal_to(
-        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+        MediaMetadata(audio_flags=(AudioFlag.NO_AUDIO_STREAM,)),
     )
 
 

@@ -51,6 +51,15 @@ CASES: Final[dict[str, tuple[str, float]]] = {
     "wma_mka": ("wma.mka", 1.0),
     "mp3_frag": ("mp3_frag.mp4", 1.0),
     "empty_m4a": ("empty.m4a", 1.0),
+    "aac_frag": ("aac_frag.mp4", 1.0),
+    "vorbis_frag": ("vorbis_frag.mp4", 1.0),
+    "opus_frag": ("opus_frag.mp4", 1.0),
+    "aac_frag_minus1": ("aac_frag_minus1.mp4", 1.0),
+    "aac_frag_minus3": ("aac_frag_minus3.mp4", 1.0),
+    "aac_frag_minus10": ("aac_frag_minus10.mp4", 1.0),
+    "mp3_frag_minus1": ("mp3_frag_minus1.mp4", 1.0),
+    "mp3_frag_minus3": ("mp3_frag_minus3.mp4", 1.0),
+    "mp3_frag_minus10": ("mp3_frag_minus10.mp4", 1.0),
 }
 """Recording name to (fixture, fraction of the file kept)."""
 

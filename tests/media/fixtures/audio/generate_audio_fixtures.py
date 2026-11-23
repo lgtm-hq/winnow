@@ -15,7 +15,7 @@ more than one packet, which is the smallest loss a packet walk can see.
 ffmpeg and ffprobe run through winnow's own runner
 (:func:`winnow.media._ffprobe.run_command`). The only byte handling done
 here is joining two generated Ogg files into a chained Ogg file and cutting
-the last frames off two files at offsets ffprobe reports (:data:`FRAME_CUTS`);
+the last frames off four files at offsets ffprobe reports (:data:`FRAME_CUTS`);
 nothing in this script parses media. Every output is byte for byte the same
 on each run with the same FFmpeg build.
 """
@@ -159,6 +159,8 @@ _TINY_VIDEO: Final[tuple[str, ...]] = (
 )
 _MP3_LOW: Final[tuple[str, ...]] = ("-c:a", "libmp3lame", "-b:a", "8k")
 _FASTSTART: Final[tuple[str, ...]] = ("-movflags", "+faststart")
+
+_FRAGMENTED: Final[tuple[str, ...]] = ("-movflags", "+frag_keyframe+empty_moov")
 
 FIXTURES: Final[tuple[AudioFixture, ...]] = (
     # One healthy file per allow-listed demuxer.
@@ -973,6 +975,45 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=2.0,
         estimated=True,
     ),
+    # A14a: fragmented MP4 starts at zero with no edit list, so the packets
+    # hold the priming of every lossy codec and the stream duration equals
+    # their span. AAC, Vorbis and Opus are measured; a cut stays truncated.
+    AudioFixture(
+        name="aac_frag.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "aac", "-b:a", "8k", *_FRAGMENTED),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="vorbis_frag.mp4",
+        inputs=_silence(rate=48000, seconds=2, channels=2),
+        outputs=("-c:a", "vorbis", "-strict", "-2", *_FRAGMENTED),
+        format_name=MP4_FORMAT,
+        codec="vorbis",
+        sample_rate=48000,
+        channels=2,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="opus_frag.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "libopus", "-b:a", "16k", *_FRAGMENTED),
+        format_name=MP4_FORMAT,
+        codec="opus",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
 )
 """Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
 
@@ -1120,10 +1161,11 @@ EMPTY_CONTAINER_FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=0.0,
     ),
 )
-"""MP4 and MOV files ffmpeg writes with no audio packet (A13c).
+"""MP4 and MOV files ffmpeg writes with no audio packet (A13c, A14b).
 
 ffprobe lists no stream at all for them, so every fact is unknown; the
-reader reports ``inconsistent`` so the result says why, never ``truncated``.
+reader reports ``no_audio_stream`` so the result says why, never
+``truncated``.
 """
 
 
@@ -1188,8 +1230,50 @@ FRAME_CUTS: Final[tuple[FrameCut, ...]] = (
     FrameCut(name="frames_minus1.m4a", source="frames.m4a", frames=1, detected=False),
     FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, detected=True),
     FrameCut(name="frames_minus3.m4a", source="frames.m4a", frames=3, detected=True),
+    FrameCut(
+        name="mp3_frag_minus1.mp4",
+        source="mp3_frag.mp4",
+        frames=1,
+        detected=True,
+    ),
+    FrameCut(
+        name="mp3_frag_minus3.mp4",
+        source="mp3_frag.mp4",
+        frames=3,
+        detected=True,
+    ),
+    FrameCut(
+        name="mp3_frag_minus10.mp4",
+        source="mp3_frag.mp4",
+        frames=10,
+        detected=True,
+    ),
+    FrameCut(
+        name="aac_frag_minus1.mp4",
+        source="aac_frag.mp4",
+        frames=1,
+        detected=True,
+    ),
+    FrameCut(
+        name="aac_frag_minus3.mp4",
+        source="aac_frag.mp4",
+        frames=3,
+        detected=True,
+    ),
+    FrameCut(
+        name="aac_frag_minus10.mp4",
+        source="aac_frag.mp4",
+        frames=10,
+        detected=True,
+    ),
 )
-"""Fixtures with their last one, two, and three frames removed."""
+"""Fixtures with their last frames removed.
+
+The ``frames_minus`` files are cut from files with an edit list. The
+``_frag_minus`` files are cut at packet boundaries from fragmented MP4,
+whose packets hold the priming (A14a): the declared duration stays above
+the shorter span, so each cut is ``truncated``.
+"""
 
 CHAINED_OGG: Final[str] = "chained.ogg"
 """Two one-second Ogg Opus links with different serial numbers, back to back."""

@@ -84,6 +84,9 @@ packets, truncation not checked).
 | `ac3.mka`            | `matroska,webm`           | `ac3`          | 32000 | 1   | -    | 2.0      | estimated |
 | `eac3.mka`           | `matroska,webm`           | `eac3`         | 32000 | 1   | -    | 2.0      | estimated |
 | `mp3_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `mp3`          | 48000 | 1   | -    | 2.0      | estimated |
+| `aac_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `vorbis_frag.mp4`    | `mov,mp4,m4a,3gp,3g2,mj2` | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
+| `opus_frag.mp4`      | `mov,mp4,m4a,3gp,3g2,mj2` | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
 
 Notes:
 
@@ -120,17 +123,24 @@ Notes:
   does the same with its 6.5 ms pre-skip. `mp3_frag.mp4` is MP3 in fragmented MP4: it
   starts at zero with no edit list, so its stream duration counts the LAME priming.
   Before A13a all of them were checked against a duration 8 to 42 ms too long.
+- `aac_frag.mp4`, `vorbis_frag.mp4` and `opus_frag.mp4` are AAC, Vorbis and Opus in
+  fragmented MP4. Like `mp3_frag.mp4` they start at zero with no edit list, so the
+  packets hold the priming and the stream duration equals their span: 21 ms over for AAC
+  and Vorbis, 6.5 ms for Opus. Nothing is declared and the span is measured (amendment
+  A14a). Before A14a, Vorbis and Opus were checked against that duration. A 2 % cut of
+  `aac_frag.mp4` removes only the fragment index at the end, not audio, so it is still
+  `estimated` with the full length.
 
 ## Unsupported and empty fixtures
 
-| File             | ffprobe `format_name`     | Codec       | Rate | Ch  | Bits | Duration | Reported                           |
-| ---------------- | ------------------------- | ----------- | ---- | --- | ---- | -------- | ---------------------------------- |
-| `au.au`          | `au`                      | `pcm_s16be` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`  |
-| `core_audio.bin` | Core Audio Format         | `pcm_s16le` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`  |
-| `empty.flac`     | `flac`                    | `flac`      | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`         |
-| `empty.aiff`     | `aiff`                    | `pcm_s16be` | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`         |
-| `empty.m4a`      | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`       | 8000 | 1   | -    | 0        | every fact unknown, `inconsistent` |
-| `empty.mov`      | `mov,mp4,m4a,3gp,3g2,mj2` | `pcm_s16le` | 8000 | 1   | 16   | 0        | every fact unknown, `inconsistent` |
+| File             | ffprobe `format_name`     | Codec       | Rate | Ch  | Bits | Duration | Reported                              |
+| ---------------- | ------------------------- | ----------- | ---- | --- | ---- | -------- | ------------------------------------- |
+| `au.au`          | `au`                      | `pcm_s16be` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`     |
+| `core_audio.bin` | Core Audio Format         | `pcm_s16le` | 8000 | 1   | 16   | 1.0      | every fact unknown, `unsupported`     |
+| `empty.flac`     | `flac`                    | `flac`      | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`            |
+| `empty.aiff`     | `aiff`                    | `pcm_s16be` | 8000 | 1   | 16   | 0        | facts kept, `inconsistent`            |
+| `empty.m4a`      | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`       | 8000 | 1   | -    | 0        | every fact unknown, `no_audio_stream` |
+| `empty.mov`      | `mov,mp4,m4a,3gp,3g2,mj2` | `pcm_s16le` | 8000 | 1   | 16   | 0        | every fact unknown, `no_audio_stream` |
 
 - `UNSUPPORTED_FIXTURES` are healthy files in formats outside the allow-list. The header
   call exits non-zero, which says winnow does not accept the format, not that the file
@@ -139,8 +149,8 @@ Notes:
   FLAC declares no duration and the AIFF declares zero, so nothing positive is declared
   and an empty walk is not `truncated` (amendment A12d).
 - `EMPTY_CONTAINER_FIXTURES` are an M4A and a MOV written the same way. ffprobe lists no
-  stream at all for them, so every fact is unknown; the reader flags them `inconsistent`
-  so the result says why (amendment A13c).
+  stream at all for them, so every fact is unknown; the reader flags them
+  `no_audio_stream` so the result says why (amendments A13c and A14b).
 
 ## Fixtures without an established duration
 
@@ -177,6 +187,12 @@ evidence does not establish the duration, so it is unknown with `inconsistent`.
   packets; the header still declares 2 s. On FFmpeg 9.0.2 the reader reports
   `truncated=true` for two and three frames and `truncated=false` with 2.0 s for one:
   the encoder's end padding is longer than the frame removed (a known limit).
+- `mp3_frag_minus{1,3,10}.mp4` and `aac_frag_minus{1,3,10}.mp4` are `mp3_frag.mp4` and
+  `aac_frag.mp4` cut the same way, at the packet boundary of the first of the last one,
+  three, or ten packets. The stream duration still declares the full span, which is now
+  more than the A5 tolerance above the shorter span, so the declared duration stands and
+  every cut is `truncated=true` (amendment A14a). Cuts in the middle of a packet cannot
+  show this: ffprobe reports them as warnings.
 
 ## Recorded ffprobe output
 

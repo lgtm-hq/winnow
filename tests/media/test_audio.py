@@ -448,15 +448,71 @@ def test_replay_priming_counted_as_audio_is_estimated(
     assert_that(known_duration(metadata)).is_close_to(2.0, 0.05)
 
 
+@pytest.mark.parametrize(
+    ("name", "codec", "channels"),
+    [("aac_frag", "aac", 1), ("vorbis_frag", "vorbis", 2), ("opus_frag", "opus", 1)],
+)
+def test_replay_fragmented_mp4_from_zero_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    codec: str,
+    channels: int,
+) -> None:
+    """A14a: fragmented MP4 holds the priming of every lossy codec.
+
+    The stream duration equals the packet span, which counts the priming
+    (21 ms for AAC and Vorbis here, 6.5 ms for Opus), so nothing is declared
+    and the 2 s of audio are measured.
+    """
+    metadata = _replay(monkeypatch, tmp_path, name)
+
+    assert_that(metadata.codec).is_equal_to(codec)
+    assert_that(metadata.channels).is_equal_to(channels)
+    assert_that(metadata.sample_rate).is_equal_to(48000)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(known_duration(metadata)).is_close_to(2.0, 0.05)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "aac_frag_minus1",
+        "aac_frag_minus3",
+        "aac_frag_minus10",
+        "mp3_frag_minus1",
+        "mp3_frag_minus3",
+        "mp3_frag_minus10",
+    ],
+)
+def test_replay_fragmented_mp4_frame_cut_is_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+) -> None:
+    """A14a: a cut at a packet boundary of fragmented MP4 stays ``truncated``.
+
+    One, three or ten packets removed shorten the span below the declared
+    duration by more than the A5 tolerance, so the declared duration stands
+    and the check calls the file cut short.
+    """
+    metadata = _replay(monkeypatch, tmp_path, name)
+
+    assert_that(metadata.truncated).is_same_as(True)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.audio_flags).is_equal_to(())
+
+
 def test_replay_empty_m4a_says_why(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A13c: an M4A with no stream is all unknown and flagged ``inconsistent``."""
+    """A13c, A14b: an M4A with no stream is all unknown, ``no_audio_stream``."""
     metadata = _replay(monkeypatch, tmp_path, "empty_m4a")
 
     assert_that(metadata).is_equal_to(
-        MediaMetadata(audio_flags=(AudioFlag.INCONSISTENT,)),
+        MediaMetadata(audio_flags=(AudioFlag.NO_AUDIO_STREAM,)),
     )
 
 

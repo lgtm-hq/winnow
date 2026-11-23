@@ -30,9 +30,9 @@ class AudioFlag(StrEnum):
 
     ``truncated`` is not a flag: it has three states and lives in
     :attr:`MediaMetadata.truncated`. ``truncated=True`` and ``CORRUPT``
-    claim damage; ``INCONSISTENT``, ``ESTIMATED``, ``UNRECOGNIZED_OUTPUT`` and
-    ``UNSUPPORTED`` only say the evidence does not establish a value, and a
-    healthy file may carry them.
+    claim damage; ``INCONSISTENT``, ``ESTIMATED``, ``UNRECOGNIZED_OUTPUT``,
+    ``UNSUPPORTED`` and ``NO_AUDIO_STREAM`` only say the evidence does not
+    establish a value, and a healthy file may carry them.
     """
 
     INCONSISTENT = auto()
@@ -40,8 +40,15 @@ class AudioFlag(StrEnum):
 
     Packet times contradict each other or the declared duration, an MP4
     packet spans a gap, an FLV packet has no time, the file changed while
-    it was read, or an accepted container lists no readable audio stream
-    (an empty M4A or MOV lists none).
+    it was read, or the primary audio stream has no codec, sample rate, or
+    channel count. A non-faststart MP4 or MOV cut at 90 % gets this.
+    """
+
+    NO_AUDIO_STREAM = auto()
+    """The header is clean but lists no audio stream besides cover art.
+
+    A video-only file, or an empty M4A or MOV (ffprobe lists no stream),
+    gets this. It is not a damage claim.
     """
 
     CORRUPT = auto()
@@ -52,8 +59,10 @@ class AudioFlag(StrEnum):
     ``corrupt`` is a claim about the file, never about ffprobe or about a
     format winnow does not accept. On FFmpeg 9.0.2 a packet flagged corrupt
     always comes with a ``Packet corrupt`` stderr line, so that file is
-    ``unrecognized_output`` instead; a cut file is ``truncated``,
-    ``unrecognized_output``, ``unsupported`` or ``estimated``.
+    ``unrecognized_output`` instead. A cut file is ``truncated``,
+    ``unrecognized_output``, ``unsupported``, ``estimated`` or
+    ``inconsistent``; a cut no longer than the A5 tolerance is
+    ``truncated=False``.
     """
 
     UNRECOGNIZED_OUTPUT = auto()
@@ -61,8 +70,9 @@ class AudioFlag(StrEnum):
 
     An unexpected line is not proof of damage, so it is not ``corrupt``; it
     still makes every value it could affect unknown. Header output that is
-    not valid UTF-8 or JSON is also unrecognized: output ffprobe cannot
-    render says nothing about the file.
+    not valid UTF-8 or JSON, or JSON without the shape ffprobe writes, is
+    also unrecognized: output ffprobe cannot render says nothing about the
+    file.
     """
 
     UNSUPPORTED = auto()
