@@ -63,40 +63,24 @@ jobs:
       cosign-sign: true
       tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
+      # The docker preset plus the hosts below: the same 29 hosts as the old
+      # hand-written list (#465).
+      # - pypi.org: uv sync in the image build (called by uv in tag run
+      #   45228316468).
+      # - files.pythonhosted.org: wheel downloads for that uv sync (same run).
+      # - oauth2.sigstore.dev: kept from the old list for keyless cosign-sign
+      #   (not called in runs 45247360714 or 45228316468).
+      # - get.trivy.dev: kept from the old list, Trivy's installer host (not
+      #   called in those runs).
+      # - public.ecr.aws: kept from the old list, a Trivy database mirror (not
+      #   called in those runs; the preset has mirror.gcr.io).
       egress-preset: docker
-      allowed-endpoints-mode: replace
-      # Full list (replace mode): docker preset baseline + pypi/astral for uv
-      # build + sigstore for cosign + trivy hosts (get.trivy.dev installer;
-      # ghcr.io/mirror.gcr.io/public.ecr.aws for vulnerability DB).
+      allowed-endpoints-mode: append
       allowed-endpoints: >
-        github.com:443
-        api.github.com:443
-        codeload.github.com:443
-        objects.githubusercontent.com:443
-        raw.githubusercontent.com:443
-        release-assets.githubusercontent.com:443
-        github-releases.githubusercontent.com:443
-        pipelines.actions.githubusercontent.com:443
-        ghcr.io:443
-        pkg-containers.githubusercontent.com:443
-        docker.io:443
-        registry-1.docker.io:443
-        auth.docker.io:443
-        production.cloudflare.docker.com:443
-        production.cloudfront.docker.com:443
-        docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
         pypi.org:443
         files.pythonhosted.org:443
-        token.actions.githubusercontent.com:443
-        fulcio.sigstore.dev:443
-        fulcio.githubapp.com:443
-        timestamp.githubapp.com:443
-        rekor.sigstore.dev:443
-        tuf-repo-cdn.sigstore.dev:443
-        timestamp.sigstore.dev:443
         oauth2.sigstore.dev:443
         get.trivy.dev:443
-        mirror.gcr.io:443
         public.ecr.aws:443
 
   # Durable failure report for main pushes and scheduled runs (#356): the

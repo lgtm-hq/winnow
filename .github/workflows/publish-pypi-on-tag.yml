@@ -74,32 +74,21 @@ jobs:
       artifact-name: python-dist
       tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
-      # Full allowlist (python-dist preset + project extras): at v0.77.5
-      # harden-runner enforces the caller's allowed-endpoints literally
-      # (its pre hook cannot see resolved preset output), so partial
-      # append lists would block checkout.
+      # python-dist plus the hosts below: the old hand-written list minus
+      # sigstore-tuf-root.storage.googleapis.com, which lgtm-ci v0.112.0
+      # dropped and no tag build from v0.37.15 to v0.37.19 called (#465).
+      # None of the three was called in those builds either; each is kept
+      # from the old list as a fallback path:
+      # - astral.sh: uv installer host (setup-uv uses releases.astral.sh).
+      # - github-releases.githubusercontent.com: older GitHub release
+      #   download host, a setup-uv fallback.
+      # - tuf-repo.github.com: TUF root of GitHub's own Sigstore instance.
+      egress-preset: python-dist
+      allowed-endpoints-mode: append
       allowed-endpoints: >
-        github.com:443
-        api.github.com:443
-        codeload.github.com:443
-        objects.githubusercontent.com:443
-        raw.githubusercontent.com:443
-        pipelines.actions.githubusercontent.com:443
-        pypi.org:443
-        files.pythonhosted.org:443
-        test.pypi.org:443
-        upload.pypi.org:443
         astral.sh:443
-        releases.astral.sh:443
         github-releases.githubusercontent.com:443
-        release-assets.githubusercontent.com:443
-        fulcio.sigstore.dev:443
-        rekor.sigstore.dev:443
-        timestamp.sigstore.dev:443
-        tuf-repo-cdn.sigstore.dev:443
         tuf-repo.github.com:443
-        sigstore-tuf-root.storage.googleapis.com:443
-        oauth2.sigstore.dev:443
 
   pypi-smoke-test:
     name: Smoke test distribution
