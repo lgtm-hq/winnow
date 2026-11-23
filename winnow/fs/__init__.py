@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from winnow.fs.backup import create_backup, restore_backup
 from winnow.fs.backup_options import BackupOptions
-from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
+from winnow.fs.empty_dirs import (
+    EmptyDirScan,
+    RemovalResult,
+    find_empty_directories,
+    remove_directories,
+    remove_empty_tree,
+    scan_empty_directories,
+)
 from winnow.fs.errors import FileSystemOperationError, FileSystemRollbackError
 from winnow.fs.operation_log import OperationLog
 from winnow.fs.operations import FileOperation, OperationStatus
@@ -19,19 +26,23 @@ from winnow.fs.transaction import (
 
 __all__ = [
     "BackupOptions",
+    "EmptyDirScan",
     "FileOperation",
     "FileSystemOperationError",
     "FileSystemRollbackError",
     "FileSystemTransaction",
     "OperationLog",
     "OperationStatus",
+    "RemovalResult",
     "atomic_copy",
     "atomic_delete",
     "atomic_mkdir",
     "atomic_move",
     "create_backup",
     "find_empty_directories",
+    "remove_directories",
     "remove_empty_tree",
     "restore_backup",
+    "scan_empty_directories",
     "transactional_file_ops",
 ]

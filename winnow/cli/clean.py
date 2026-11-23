@@ -2,7 +2,8 @@
 
 Discovery and removal live in :mod:`winnow.fs.empty_dirs`; this module only
 parses options, previews candidates, confirms, and renders the outcome. The
-target root is always preserved.
+target root is always preserved, and only the directories shown before the
+confirmation are removed.
 """
 
 from __future__ import annotations
@@ -13,9 +14,21 @@ import click
 
 from winnow.cli.console import console_from_context
 from winnow.cli.standards import dry_run_option, yes_option
-from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
+from winnow.fs.empty_dirs import remove_directories, scan_empty_directories
 
 __all__ = ["clean"]
+
+
+def _directories(count: int) -> str:
+    """Return ``directory`` or ``directories`` to match ``count``.
+
+    Args:
+        count: Number of directories being described.
+
+    Returns:
+        The singular or plural noun.
+    """
+    return "directory" if count == 1 else "directories"
 
 
 @click.command()
@@ -53,11 +66,20 @@ def clean(
         yes: When set, skip the interactive confirmation prompt.
 
     Raises:
-        FileSystemOperationError: If a candidate directory cannot be removed; the
-            root handler renders it and exits with ``ExitCode.FAILURE``.
+        FileSystemOperationError: If a confirmed directory cannot be removed
+            for a reason other than vanishing or gaining content; the root
+            handler renders it and exits with ``ExitCode.FAILURE``.
     """
     console = console_from_context(ctx)
-    candidates = find_empty_directories(directory, exclude_patterns=exclude_patterns)
+    scan = scan_empty_directories(directory, exclude_patterns=exclude_patterns)
+    candidates = scan.candidates
+
+    if scan.unreadable:
+        unreadable = len(scan.unreadable)
+        console.print(
+            f"{unreadable} {_directories(unreadable)} could not be read and "
+            f"{'was' if unreadable == 1 else 'were'} left alone.",
+        )
 
     if not candidates:
         console.print("No empty directories found.")
@@ -67,23 +89,22 @@ def clean(
         for candidate in candidates:
             console.print(f"Would remove: {candidate}")
         console.print(
-            f"{len(candidates)} empty director"
-            f"{'y' if len(candidates) == 1 else 'ies'} to remove (dry run).",
+            f"{len(candidates)} empty {_directories(len(candidates))} "
+            "to remove (dry run).",
         )
         return
 
     if not yes and not click.confirm(
-        f"Remove {len(candidates)} empty director"
-        f"{'y' if len(candidates) == 1 else 'ies'}?",
+        f"Remove {len(candidates)} empty {_directories(len(candidates))}?",
     ):
         console.print("Aborted.")
         return
 
-    removed = remove_empty_tree(
-        directory,
-        exclude_patterns=exclude_patterns,
-        include_root=False,
-    )
-    console.print(
-        f"Removed {len(removed)} empty director{'y' if len(removed) == 1 else 'ies'}.",
-    )
+    result = remove_directories(candidates)
+    removed = len(result.removed)
+    console.print(f"Removed {removed} empty {_directories(removed)}.")
+    if result.skipped:
+        skipped = len(result.skipped)
+        console.print(f"Skipped {skipped} {_directories(skipped)}.")
+        for path, reason in result.skipped:
+            console.print(f"Skipped: {path} ({reason})")

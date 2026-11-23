@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
+import sys
 from contextlib import closing
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from assertpy import assert_that
 
 from winnow.fs import empty_dirs
-from winnow.fs.empty_dirs import find_empty_directories, remove_empty_tree
+from winnow.fs.empty_dirs import (
+    EmptyDirScan,
+    RemovalResult,
+    find_empty_directories,
+    remove_directories,
+    remove_empty_tree,
+    scan_empty_directories,
+)
 from winnow.fs.errors import FileSystemOperationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator, Sequence
-    from pathlib import Path
+
+_WINDOWS = sys.platform.startswith("win")
 
 
 @pytest.fixture(params=[False, True], ids=["ascending", "descending"])
@@ -310,3 +322,119 @@ def test_remove_empty_tree_wraps_rmdir_failure(
     assert_that(error.context.file_path).is_equal_to(tmp_path / "second")
     assert_that((tmp_path / "first").exists()).is_false()
     assert_that((tmp_path / "second" / "late.txt").is_file()).is_true()
+
+
+def test_remove_directories_removes_exactly_the_given_paths(tmp_path: Path) -> None:
+    """Only listed directories are removed, in the given order."""
+    (tmp_path / "parent" / "child").mkdir(parents=True)
+    (tmp_path / "unlisted").mkdir()
+    planned = [tmp_path / "parent" / "child", tmp_path / "parent"]
+
+    result = remove_directories(planned)
+
+    assert_that(result).is_equal_to(
+        RemovalResult(removed=tuple(planned), skipped=()),
+    )
+    assert_that((tmp_path / "parent").exists()).is_false()
+    assert_that((tmp_path / "unlisted").exists()).is_true()
+
+
+def test_remove_directories_skips_missing_path(tmp_path: Path) -> None:
+    """A path that vanished is skipped and reported instead of raising."""
+    (tmp_path / "present").mkdir()
+    missing = tmp_path / "gone"
+
+    result = remove_directories([missing, tmp_path / "present"])
+
+    assert_that(result.removed).is_equal_to((tmp_path / "present",))
+    assert_that(result.skipped).is_equal_to(((missing, "no longer exists"),))
+
+
+def test_remove_directories_skips_non_empty_path_and_its_parent(
+    tmp_path: Path,
+) -> None:
+    """A directory that gained a file is skipped, so its parent is too."""
+    child = tmp_path / "parent" / "child"
+    child.mkdir(parents=True)
+    (child / "late.txt").write_text("data")
+
+    result = remove_directories([child, tmp_path / "parent"])
+
+    assert_that(result.removed).is_empty()
+    assert_that(result.skipped).is_equal_to(
+        (
+            (child, "no longer empty"),
+            (tmp_path / "parent", "no longer empty"),
+        ),
+    )
+    assert_that((child / "late.txt").exists()).is_true()
+
+
+def test_remove_directories_wraps_other_rmdir_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An rmdir failure other than missing or non-empty is raised."""
+    target = tmp_path / "solo"
+    target.mkdir()
+
+    def denied_rmdir(self: Path) -> None:
+        raise PermissionError(errno.EACCES, "denied", str(self))
+
+    monkeypatch.setattr(Path, "rmdir", denied_rmdir)
+
+    with pytest.raises(FileSystemOperationError) as excinfo:
+        remove_directories([target])
+
+    assert_that(excinfo.value.context.operation).is_equal_to("remove_directories")
+    assert_that(excinfo.value.context.file_path).is_equal_to(target)
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_find_empty_directories_reports_unreadable_subtree(tmp_path: Path) -> None:
+    """An unreadable subtree is reported and keeps itself and its ancestors."""
+    locked = tmp_path / "parent" / "locked"
+    locked.mkdir(parents=True)
+    (tmp_path / "plain").mkdir()
+    locked.chmod(0)
+    try:
+        scan = scan_empty_directories(tmp_path)
+        found = find_empty_directories(tmp_path)
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+    assert_that(scan).is_equal_to(
+        EmptyDirScan(candidates=(tmp_path / "plain",), unreadable=(locked,)),
+    )
+    assert_that(found).is_equal_to([tmp_path / "plain"])
+
+
+def test_scan_empty_directories_reports_unreadable_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listing error without a filename is attributed to the root."""
+
+    def failing_walk(
+        root: Path,
+        *,
+        topdown: bool = True,
+        onerror: Callable[[OSError], None] | None = None,
+        followlinks: bool = False,
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        """Report one filename-less error and yield nothing."""
+        if onerror is not None:
+            onerror(OSError(errno.EIO, "I/O error"))
+        yield from ()
+
+    monkeypatch.setattr(os, "walk", failing_walk)
+
+    scan = scan_empty_directories(tmp_path)
+
+    assert_that(scan).is_equal_to(
+        EmptyDirScan(candidates=(), unreadable=(tmp_path,)),
+    )
