@@ -802,6 +802,7 @@ __all__ = [
     "TESTED_FFPROBE_MAJORS",
     "BoundedRun",
     "BoundedRunError",
+    "TimeoutExpired",
     "clear_info_caches",
     "fd_protocol_supported",
     "ffmpeg_available",
