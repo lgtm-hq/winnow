@@ -16,7 +16,7 @@ import pytest
 from assertpy import assert_that
 
 from tests.media.bmff_support import box, ftyp, moov, track
-from tests.media.detect_support import cpu_seconds
+from tests.media.detect_support import cpu_seconds, detect_with_deadline
 from tests.media.ebml_support import (
     AUDIO as MKV_AUDIO,
 )
@@ -87,13 +87,16 @@ SWEEP_LIMIT_SECONDS = 2.0
 def _timed_detect(target: Path) -> DetectionResult:
     """Detect ``target`` and fail when it uses more CPU time than the sweep limit.
 
+    The call goes through :func:`detect_with_deadline`, so a call that waits
+    without using CPU still fails, at that helper's 5-second deadline.
+
     Args:
         target: File to detect.
 
     Returns:
         The result.
     """
-    result, elapsed = cpu_seconds(lambda: detect(target))
+    result, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
     assert_that(elapsed).described_as(f"detect({target.name})").is_less_than(
         SWEEP_LIMIT_SECONDS,
     )
