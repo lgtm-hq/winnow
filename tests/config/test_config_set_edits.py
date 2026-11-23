@@ -1,9 +1,10 @@
-"""``config set`` changes the edited key's lines and nothing around them (#429).
+"""``config set`` changes the edited key's text and nothing around it (#429).
 
-The fourth review round found edits that passed the round-trip check yet
-deleted or moved the comments and blank lines next to the key, an alias
-used as a mapping key that the anchor check missed, quoted text read as a
-null, capitalised booleans refused, and a blank line written twice.
+Comments and blank lines next to the key stay where they were; a comment
+inside a replaced value is never dropped or carried to another item, so
+such an edit is refused. An alias used as a mapping key counts as sharing
+its anchor; nulls and booleans are written ``null``, ``true`` and
+``false`` whatever the rest of the file uses.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from assertpy import assert_that
 from winnow.config import set_config_value
 from winnow.exceptions import ConfigError
 
-_LAYOUT_ERROR = "without changing its layout"
+_COMMENT_ERROR = "a comment inside its old value"
 
 
 def _edit(tmp_path: Path, original: str, key: str, value: object) -> str:
@@ -113,6 +114,14 @@ def test_comments_and_blank_lines_next_to_the_key_stay_put(
             "cache",
             {"enabled": False, "directory": "/d"},
         ),
+        (
+            "source_dirs:  # none yet\nworkers: 2\n",
+            "source_dirs",
+            ["/a", "/b"],
+        ),
+        ("source_dirs: ~  # none yet\nworkers: 2\n", "source_dirs", ["/a"]),
+        ("source_dirs:\n  - /a  # main\nworkers: 2\n", "source_dirs", "/a"),
+        ("note: |  # header\n  text\nworkers: 2\n", "note", "text"),
     ],
 )
 def test_comment_the_edit_cannot_keep_in_place_is_refused(
@@ -121,25 +130,31 @@ def test_comment_the_edit_cannot_keep_in_place_is_refused(
     key: str,
     value: object,
 ) -> None:
-    """A comment inside the replaced value that would be lost is refused.
+    """A comment inside the replaced text, or after it on its line, is refused.
 
-    So is an edit whose changes would sit on both sides of a kept comment.
+    So is one after a value on the key's line when the new value goes on
+    the lines below.
     """
-    assert_that(_refusal(tmp_path, original, key, value)).contains(_LAYOUT_ERROR)
+    assert_that(_refusal(tmp_path, original, key, value)).contains(_COMMENT_ERROR)
 
 
-def test_list_item_comment_is_kept_on_a_kept_item(tmp_path: Path) -> None:
-    """An item the new list keeps keeps its comment."""
-    after = _edit(
+def test_list_item_comment_is_not_kept_on_a_kept_item(tmp_path: Path) -> None:
+    """A comment is never carried to an item the new list happens to keep."""
+    message = _refusal(
         tmp_path,
         "source_dirs:\n  - /a  # main\n  - /b\nworkers: 2\n",
         "source_dirs",
         ["/a", "/c"],
     )
 
-    assert_that(after).is_equal_to(
-        "source_dirs:\n  - /a  # main\n  - /c\nworkers: 2\n",
-    )
+    assert_that(message).contains(_COMMENT_ERROR)
+
+
+def test_comment_after_a_one_line_value_stays(tmp_path: Path) -> None:
+    """A comment after a value replaced on its own line keeps its place."""
+    after = _edit(tmp_path, "workers: 2  # threads\n", "workers", 8)
+
+    assert_that(after).is_equal_to("workers: 8  # threads\n")
 
 
 def test_alias_used_as_a_mapping_key_is_refused(tmp_path: Path) -> None:
@@ -168,11 +183,13 @@ def test_quoted_null_text_is_not_a_null(tmp_path: Path, original: str) -> None:
     assert_that(after).is_equal_to(original.replace("workers: 2", "workers: 3"))
 
 
-def test_null_is_written_empty_beside_quoted_null_text(tmp_path: Path) -> None:
-    """A file whose only ``~`` is quoted text gets an empty null."""
+def test_null_is_written_as_null(tmp_path: Path) -> None:
+    """A null is written ``null``, whatever the file's other nulls look like."""
     after = _edit(tmp_path, 'note: "[~]"\nworkers: 2\n', "paths.output_dir", None)
 
-    assert_that(after).is_equal_to('note: "[~]"\nworkers: 2\npaths:\n  output_dir:\n')
+    assert_that(after).is_equal_to(
+        'note: "[~]"\nworkers: 2\npaths:\n  output_dir: null\n',
+    )
 
 
 @pytest.mark.parametrize(
@@ -183,28 +200,26 @@ def test_null_is_written_empty_beside_quoted_null_text(tmp_path: Path) -> None:
             "dry_run: True\nworkers: 2\n",
             "dry_run",
             False,
-            "dry_run: False\nworkers: 2\n",
+            "dry_run: false\nworkers: 2\n",
         ),
-        ("dry_run: TRUE\n", "recursive", False, "dry_run: TRUE\nrecursive: FALSE\n"),
-        ("dry_run: true\n", "recursive", True, "dry_run: true\nrecursive: true\n"),
+        ("dry_run: TRUE\n", "recursive", False, "dry_run: TRUE\nrecursive: false\n"),
+        (
+            "dry_run: True\nrecursive: false\n",
+            "workers",
+            3,
+            "dry_run: True\nrecursive: false\nworkers: 3\n",
+        ),
     ],
 )
-def test_booleans_keep_the_file_letter_case(
+def test_booleans_are_written_lowercase_and_others_kept(
     tmp_path: Path,
     original: str,
     key: str,
     value: object,
     after: str,
 ) -> None:
-    """Booleans are written in the letter case the file writes them."""
+    """A boolean set is ``true`` or ``false``; the file's own stay as written."""
     assert_that(_edit(tmp_path, original, key, value)).is_equal_to(after)
-
-
-def test_booleans_in_mixed_letter_case_are_refused(tmp_path: Path) -> None:
-    """A file that mixes ``True`` and ``false`` cannot be written back as it was."""
-    message = _refusal(tmp_path, "dry_run: True\nrecursive: false\n", "workers", 3)
-
-    assert_that(message).contains(_LAYOUT_ERROR)
 
 
 def test_new_key_adds_no_blank_line(tmp_path: Path) -> None:

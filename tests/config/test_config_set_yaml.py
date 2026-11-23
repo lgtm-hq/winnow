@@ -1,7 +1,7 @@
-"""``config set`` keeps a YAML file's structure or refuses it (#429).
+"""``config set`` edits a YAML file's text in place or refuses it (#429).
 
 Anchors, aliases and merge keys, document markers, leading comments,
-indents and the round-trip layout check.
+indents, and layouts the old whole-file dump could not keep.
 """
 
 from __future__ import annotations
@@ -10,17 +10,8 @@ from pathlib import Path
 
 import pytest
 from assertpy import assert_that
-from ruamel.yaml.error import YAMLError
 
-from winnow.config import CONFIG_FILE_NAME, _editor, set_config_value
-from winnow.config._editor import (
-    TextLayout,
-    _holds_shared,
-    keeps_layout,
-    load_document,
-)
-from winnow.config._files import ConfigFormat
-from winnow.config._yaml_style import round_trip_yaml
+from winnow.config import CONFIG_FILE_NAME, set_config_value
 from winnow.exceptions import ConfigError
 
 
@@ -123,7 +114,7 @@ def test_key_overriding_a_merge_key_can_be_set(tmp_path: Path) -> None:
         ("# header\n---\n", "# header\n---\nworkers: 3\n"),
         ("# header\nnull\n", "# header\nworkers: 3\n"),
         ("# header\n---\nnull\n", "# header\n---\nworkers: 3\n"),
-        ("# header\n{}\n", "# header\nworkers: 3\n"),
+        ("# header\n{}\n", "# header\n{workers: 3}\n"),
         ("# header", "# header\nworkers: 3"),
         ("# header\n---", "# header\n---\nworkers: 3"),
         (
@@ -133,7 +124,10 @@ def test_key_overriding_a_merge_key_can_be_set(tmp_path: Path) -> None:
     ],
 )
 def test_leading_comments_are_kept(tmp_path: Path, before: str, after: str) -> None:
-    """Comments above a document start, ``null`` or ``{}`` survive a set."""
+    """Comments above a document start, ``null`` or ``{}`` survive a set.
+
+    A ``null`` document becomes the new key; ``{}`` takes it as a flow entry.
+    """
     config_path = tmp_path / "c.yaml"
     config_path.write_text(before)
 
@@ -143,27 +137,38 @@ def test_leading_comments_are_kept(tmp_path: Path, before: str, after: str) -> N
 
 
 @pytest.mark.parametrize(
-    "original",
+    ("original", "after"),
     [
-        "# h\n%YAML 1.2\n---\nworkers: 2\n",
-        "--- {workers: 2}\n",
-        "workers: 2\n...\n",
-        "workers: 2\n... # end\n# tail\n",
+        ("# h\n%YAML 1.2\n---\nworkers: 2\n", "# h\n%YAML 1.2\n---\nworkers: 3\n"),
+        ("--- {workers: 2}\n", "--- {workers: 3}\n"),
+        ("workers: 2\n...\n", "workers: 3\n...\n"),
+        ("workers: 2\n... # end\n# tail\n", "workers: 3\n... # end\n# tail\n"),
     ],
 )
-def test_yaml_markers_the_round_trip_drops_are_refused(
+def test_yaml_directives_and_document_markers_are_kept(
     tmp_path: Path,
     original: str,
+    after: str,
 ) -> None:
-    """Directives and document markers that cannot be kept leave the file as is."""
+    """Directives and document markers outside the value stay as they are."""
     config_path = tmp_path / "c.yaml"
     config_path.write_text(original)
 
-    with pytest.raises(ConfigError) as error:
-        set_config_value("workers", 3, config_path=config_path)
+    set_config_value("workers", 3, config_path=config_path)
 
-    assert_that(str(error.value)).contains("document markers")
-    assert_that(config_path.read_text()).is_equal_to(original)
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+def test_new_key_goes_before_a_document_end(tmp_path: Path) -> None:
+    """A new key is added inside the document, above its ``...``."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("workers: 2\n...\n")
+
+    set_config_value("dry_run", True, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(
+        "workers: 2\ndry_run: true\n...\n",
+    )
 
 
 @pytest.mark.parametrize(
@@ -206,26 +211,6 @@ def test_sequence_indent_is_read_from_the_file(
 
 
 @pytest.mark.parametrize(
-    "text",
-    [
-        "source_dirs:\n  -\n    /photos\nworkers: 2\n",
-        "paths:\n  output_dir:\nsource_dirs: # my photos\n- /photos\n",
-        "note: |\n  - # just text\nworkers: 2\n",
-    ],
-)
-def test_sequence_indent_guess_is_always_usable(text: str) -> None:
-    """The guessed sequence indent and offset are ones ruamel can dump with."""
-    yaml = round_trip_yaml(text)
-
-    assert_that(yaml.sequence_indent).is_instance_of(int)
-    assert_that(yaml.sequence_dash_offset).is_instance_of(int)
-    assert_that(yaml.sequence_dash_offset).is_greater_than_or_equal_to(0)
-    assert_that(yaml.sequence_indent).is_greater_than_or_equal_to(
-        yaml.sequence_dash_offset + 2,
-    )
-
-
-@pytest.mark.parametrize(
     "original",
     [
         "source_dirs:\n  -\n    /photos\nworkers: 2\n",
@@ -235,28 +220,30 @@ def test_sequence_indent_guess_is_always_usable(text: str) -> None:
         "paths:\n  output_dir: &n\n  quarantine_dir: *n\nworkers: 2\n",
     ],
 )
-def test_layout_the_round_trip_would_change_is_refused(
+def test_layout_the_old_dump_changed_is_now_edited(
     tmp_path: Path,
     original: str,
 ) -> None:
-    """A file ruamel would rewrite beyond the key is refused and left as is.
+    """Bare dashes, chomping, block indents, aligned values and anchored nulls.
 
-    Bare dashes, ``+`` chomping, a block scalar indented apart from the
-    mappings, aligned values and an anchored null all come back changed.
+    The old whole-file dump rewrote these lines, so they were refused; the
+    splice never touches them.
     """
     config_path = tmp_path / "c.yaml"
     config_path.write_text(original)
 
-    with pytest.raises(ConfigError) as error:
-        set_config_value("workers", 3, config_path=config_path)
+    set_config_value("workers", 3, config_path=config_path)
 
-    assert_that(str(error.value)).contains("without changing its layout")
-    assert_that(str(error.value)).contains("by hand")
-    assert_that(config_path.read_text()).is_equal_to(original)
+    assert_that(config_path.read_text()).is_equal_to(
+        original.replace("workers: 2", "workers: 3").replace(
+            "workers:    2",
+            "workers:    3",
+        ),
+    )
 
 
-def test_specific_refusal_wins_over_the_layout_one(tmp_path: Path) -> None:
-    """An anchor refusal keeps its own message in a file the guard also refuses."""
+def test_shared_value_is_refused_beside_a_bare_dash(tmp_path: Path) -> None:
+    """A value an alias shares is refused with the anchor message."""
     config_path = tmp_path / "c.yaml"
     original = "workers: &w 2\nother: *w\nlist:\n  -\n    a\n"
     config_path.write_text(original)
@@ -309,33 +296,45 @@ def test_comments_after_the_document_start_are_kept(
 
 
 @pytest.mark.parametrize(
-    "original",
+    ("original", "after"),
     [
-        "null\n# footer\n",
-        "{}\n# footer\n",
-        "~\n# footer\n",
-        "null # inline\n",
-        "{} # inline\n",
-        "# header\n---\nnull # inline\n",
+        ("null\n# footer\n", "workers: 3\n# footer\n"),
+        ("{}\n# footer\n", "{workers: 3}\n# footer\n"),
+        ("~\n# footer\n", "workers: 3\n# footer\n"),
+        ("null # inline\n", "workers: 3 # inline\n"),
+        ("{} # inline\n", "{workers: 3} # inline\n"),
+        ("# header\n---\nnull # inline\n", "# header\n---\nworkers: 3 # inline\n"),
+        ("--- ~\n", "---\nworkers: 3\n"),
     ],
 )
-def test_empty_document_with_a_comment_is_refused(
+def test_empty_document_with_a_comment_takes_the_key(
     tmp_path: Path,
     original: str,
+    after: str,
 ) -> None:
-    """A ``null`` or ``{}`` document that holds a comment is left as it is."""
+    """A ``null`` or ``{}`` document keeps the comments around it."""
     config_path = tmp_path / "c.yaml"
     config_path.write_text(original)
 
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+def test_null_document_with_a_comment_refuses_a_block(tmp_path: Path) -> None:
+    """A mapping on several lines would move a comment after a ``null`` document."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("null # inline\n")
+
     with pytest.raises(ConfigError) as error:
-        set_config_value("workers", 3, config_path=config_path)
+        set_config_value("cache.enabled", False, config_path=config_path)
 
-    assert_that(str(error.value)).contains("comment")
-    assert_that(config_path.read_text()).is_equal_to(original)
+    assert_that(str(error.value)).contains("a comment inside its old value")
+    assert_that(config_path.read_text()).is_equal_to("null # inline\n")
 
 
-def test_second_document_start_after_comments_is_refused(tmp_path: Path) -> None:
-    """Only one ``---`` is set aside; a second one still refuses the file."""
+def test_second_document_is_refused(tmp_path: Path) -> None:
+    """A file holding two documents is left as it is."""
     config_path = tmp_path / "c.yaml"
     original = "---\n# c\n---\nworkers: 2\n"
     config_path.write_text(original)
@@ -343,7 +342,7 @@ def test_second_document_start_after_comments_is_refused(tmp_path: Path) -> None
     with pytest.raises(ConfigError) as error:
         set_config_value("workers", 3, config_path=config_path)
 
-    assert_that(str(error.value)).contains("document markers")
+    assert_that(str(error.value)).contains("found another document")
     assert_that(config_path.read_text()).is_equal_to(original)
 
 
@@ -381,33 +380,3 @@ def test_anchor_nothing_refers_to_does_not_block(tmp_path: Path) -> None:
     set_config_value("workers", 3, config_path=config_path)
 
     assert_that(config_path.read_text()).is_equal_to("workers: 3\ndry_run: false\n")
-
-
-def test_layout_check_fails_closed_when_the_dump_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dump error in the round-trip check counts as a changed layout."""
-    text = "workers: 2\n"
-    document = load_document(text, ConfigFormat.YAML, path=Path("c.yaml"))
-
-    def fail(*_args: object, **_kwargs: object) -> str:
-        raise YAMLError("cannot dump")
-
-    monkeypatch.setattr(_editor, "dump_document", fail)
-
-    assert_that(
-        keeps_layout(
-            document,
-            ConfigFormat.YAML,
-            original=text,
-            layout=TextLayout(),
-        ),
-    ).is_false()
-
-
-def test_shared_value_inside_a_plain_mapping_is_found() -> None:
-    """A plain mapping that holds a shared value holds something shared."""
-    shared_value = [1]
-
-    assert_that(_holds_shared({"a": shared_value}, {id(shared_value)})).is_true()
-    assert_that(_holds_shared({"a": [2]}, {id(shared_value)})).is_false()

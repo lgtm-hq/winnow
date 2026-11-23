@@ -1,7 +1,9 @@
-"""``config set`` on hand-written configs changes exactly one line (#429).
+"""``config set`` on hand-written configs changes exactly the expected lines (#429).
 
-Each file is written in a style people use for YAML config files. The
-round-trip guard must not refuse any of them: an ordinary ``config set``
+Each file is written in a style people use for YAML config files, including
+the layouts the old whole-file dump refused: Prettier's spaced flow
+collections, wrapped scalars, bare ``-`` items, mixed null spellings,
+``True``, aligned values and trailing spaces. An ordinary ``config set``
 changes the one line that holds the key and nothing else.
 """
 
@@ -14,7 +16,6 @@ from assertpy import assert_that
 
 from winnow.config import set_config_value
 from winnow.config.schema import render_config_yaml
-from winnow.exceptions import ConfigError
 from winnow.models.config import WinnowConfig
 
 _CORPUS: dict[str, tuple[str, str, object]] = {
@@ -167,6 +168,65 @@ _CORPUS: dict[str, tuple[str, str, object]] = {
     ),
     "strip chomping": ("notes: |-\n  text\nworkers: 2\n", "workers", 3),
     "booleans spelled out": ("dry_run: true\nrecursive: false\n", "recursive", True),
+    "prettier flow spacing": (
+        "source_dirs: [ /photos, /videos ]\npaths: { output_dir: /out }\nworkers: 2\n",
+        "paths.output_dir",
+        "/new",
+    ),
+    "prettier flow list set": (
+        "source_dirs: [ /photos ]\ndry_run: true\n",
+        "dry_run",
+        False,
+    ),
+    "wrapped plain scalar": (
+        "routing:\n  review: needs a second\n    look later\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "wrapped quoted scalar": (
+        'note: "a long\n  sentence"\nworkers: 2\n',
+        "workers",
+        3,
+    ),
+    "bare dash items": (
+        "source_dirs:\n  -\n    /photos\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "bare dash null item": ("extra:\n  -\n  - 1\nworkers: 2\n", "workers", 3),
+    "mixed null spellings": (
+        "paths:\n  output_dir: null\n  quarantine_dir: ~\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "empty and spelled nulls": (
+        "paths:\n  output_dir: null\n  quarantine_dir:\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "capitalised true": ("dry_run: True\nworkers: 2\n", "workers", 3),
+    "mixed boolean case": ("dry_run: True\nrecursive: false\n", "dry_run", False),
+    "aligned values": ("workers:    2\ndry_run:    true\n", "workers", 3),
+    "trailing spaces": ("workers: 2   \ndry_run: true\n", "workers", 3),
+    "empty null in a flow map": (
+        "paths: {output_dir: }\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "keep chomping": ("notes: |+\n  text\n\nworkers: 2\n", "workers", 3),
+    "indented block scalar": (
+        "cache:\n    enabled: true\nnote: |\n  text\nworkers: 2\n",
+        "cache.enabled",
+        False,
+    ),
+    "yaml directive": ("%YAML 1.2\n---\nworkers: 2\n", "workers", 3),
+    "document end": ("workers: 2\n...\n", "workers", 3),
+    "anchored null": (
+        "paths:\n  output_dir: &n\n  quarantine_dir: *n\nworkers: 2\n",
+        "workers",
+        3,
+    ),
+    "anchored date": ("since: &d 2024-01-02\nworkers: 2\n", "workers", 3),
 }
 """Name to file content, key and value, for files with ``\\n`` line ends."""
 
@@ -229,16 +289,46 @@ _EDIT_CORPUS: dict[str, tuple[str, str, object, str]] = {
         "cache:\n  enabled: true\nworkers: 3\n\n",
     ),
     "replace a list": (
-        "source_dirs:\n  - /photos  # main\n  - /videos\nworkers: 2\n",
+        "source_dirs:  # main\n  - /photos\n  - /videos\nworkers: 2\n",
         "source_dirs",
         ["/photos", "/music"],
-        "source_dirs:\n  - /photos  # main\n  - /music\nworkers: 2\n",
+        "source_dirs:  # main\n  - /photos\n  - /music\nworkers: 2\n",
     ),
     "replace a mapping": (
-        "cache:\n  enabled: true  # on\n  directory: /c\n\nworkers: 2\n",
+        "cache:\n  enabled: true\n  directory: /c\n\nworkers: 2\n",
         "cache",
         {"enabled": False},
-        "cache:\n  enabled: false # on\n\nworkers: 2\n",
+        "cache:\n  enabled: false\n\nworkers: 2\n",
+    ),
+    "replace a list in Prettier flow style": (
+        "source_dirs: [ /a, /b ]  # dirs\nworkers: 2\n",
+        "source_dirs",
+        [],
+        "source_dirs: []  # dirs\nworkers: 2\n",
+    ),
+    "set a scalar in a flow map": (
+        "paths: { output_dir: /out, quarantine_dir: /q }\n",
+        "paths.quarantine_dir",
+        "/r",
+        "paths: { output_dir: /out, quarantine_dir: /r }\n",
+    ),
+    "replace a wrapped scalar": (
+        "routing:\n  review: needs a second\n    look later\nworkers: 2\n",
+        "routing.review",
+        "Later",
+        "routing:\n  review: Later\nworkers: 2\n",
+    ),
+    "replace a keep-chomped block scalar": (
+        "routing:\n  review: |+\n    text\n\nworkers: 2\n",
+        "routing.review",
+        "Later",
+        "routing:\n  review: Later\n\nworkers: 2\n",
+    ),
+    "replace a bare dash list": (
+        "source_dirs:\n  -\n    /photos\nworkers: 2\n",
+        "source_dirs",
+        ["/a"],
+        "source_dirs:\n  - /a\nworkers: 2\n",
     ),
     "set a nested scalar": (
         "cache:\n  enabled: true\n\n# threads\nworkers: 2\n",
@@ -262,13 +352,13 @@ _EDIT_CORPUS: dict[str, tuple[str, str, object, str]] = {
         "paths:\n  output_dir: /out  # here\n  quarantine_dir: ~\n",
         "paths.output_dir",
         None,
-        "paths:\n  output_dir: ~     # here\n  quarantine_dir: ~\n",
+        "paths:\n  output_dir: null  # here\n  quarantine_dir: ~\n",
     ),
     "replace null with a list": (
-        "source_dirs:  # none yet\nworkers: 2\n",
+        "source_dirs:\n# none yet\nworkers: 2\n",
         "source_dirs",
         ["/a", "/b"],
-        "source_dirs:  # none yet\n  - /a\n  - /b\nworkers: 2\n",
+        "source_dirs:\n  - /a\n  - /b\n# none yet\nworkers: 2\n",
     ),
     "replace null with a mapping": (
         "workers: 2\ncache: ~\n\n# end\n",
@@ -280,7 +370,7 @@ _EDIT_CORPUS: dict[str, tuple[str, str, object, str]] = {
         "dry_run: True\nrecursive: False\n",
         "recursive",
         True,
-        "dry_run: True\nrecursive: True\n",
+        "dry_run: True\nrecursive: true\n",
     ),
 }
 """Name to file content, key, value and the content the edit gives.
@@ -358,51 +448,21 @@ def test_default_generated_config_changes_one_line(
 
 
 @pytest.mark.parametrize(
-    "original",
-    [
-        "paths:\n  output_dir: null\n  quarantine_dir:\nworkers: 2\n",
-        "paths:\n  output_dir: null\n  quarantine_dir: ~\nworkers: 2\n",
-        "paths: {output_dir: }\nworkers: 2\n",
-        "extra:\n  -\n  - 1\nworkers: 2\n",
-        "workers:    2\ndry_run:    true\n",
-        "workers: 2   \ndry_run: true\n",
-    ],
-)
-def test_layout_the_round_trip_changes_is_refused(
-    tmp_path: Path,
-    original: str,
-) -> None:
-    """Layouts the round trip cannot keep are refused and left as they are.
-
-    Mixed null spellings, an empty null in a flow map or as a bare ``-``
-    item, aligned values and trailing spaces.
-    """
-    config_path = tmp_path / "c.yaml"
-    config_path.write_text(original, encoding="utf-8")
-
-    with pytest.raises(ConfigError) as error:
-        set_config_value("workers", 3, config_path=config_path)
-
-    assert_that(str(error.value)).contains("without changing its layout")
-    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(original)
-
-
-@pytest.mark.parametrize(
     ("original", "after"),
     [
-        ("workers: 2\n", "workers: 2\npaths:\n  output_dir:\n"),
+        ("workers: 2\n", "workers: 2\npaths:\n  output_dir: null\n"),
         (
             "workers: 2\nextra: ~\n",
-            "workers: 2\nextra: ~\npaths:\n  output_dir: ~\n",
+            "workers: 2\nextra: ~\npaths:\n  output_dir: null\n",
         ),
     ],
 )
-def test_null_set_by_config_set_uses_the_file_spelling(
+def test_null_set_by_config_set_is_written_null(
     tmp_path: Path,
     original: str,
     after: str,
 ) -> None:
-    """A null is written empty, or as the file already spells nulls."""
+    """A null is written ``null``; the file's own nulls stay as they are."""
     config_path = tmp_path / "c.yaml"
     config_path.write_text(original, encoding="utf-8")
 

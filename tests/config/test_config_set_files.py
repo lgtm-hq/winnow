@@ -149,7 +149,7 @@ def test_empty_json_file_is_a_load_error(tmp_path: Path) -> None:
 
 
 def test_yaml_parse_error_names_the_file(tmp_path: Path) -> None:
-    """A parse error from the editing round trip names the config file."""
+    """A YAML parse error names the config file."""
     config_path = tmp_path / CONFIG_FILE_NAME
     config_path.write_text("workers: 2\nworkers: 3\n")
 

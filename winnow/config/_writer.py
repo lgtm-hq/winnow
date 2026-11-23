@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Final
@@ -11,13 +11,11 @@ from typing import Final
 from pydantic import TypeAdapter, ValidationError
 from ruamel.yaml.error import YAMLError
 
-from winnow.config._comments import edit_stays_in_place
 from winnow.config._editor import (
     TextLayout,
     check_finite,
     dump_document,
-    keeps_layout,
-    load_document,
+    load_json,
     set_in_document,
     split_layout,
     writable_format,
@@ -39,6 +37,7 @@ from winnow.config._reader import (
     _KNOWN_TOP_LEVEL_KEYS,
     validate_config_data,
 )
+from winnow.config._yaml_splice import plan_edit
 from winnow.config.defaults import cwd_config_path
 from winnow.config.schema import _yaml_safe, render_config_yaml
 from winnow.exceptions import ConfigError
@@ -96,19 +95,22 @@ def set_config_value(
 ) -> WinnowConfig:
     """Set a dotted configuration key in the config file and nothing else.
 
-    The file is read as written, the one key is changed where the file sets
-    it, and the file is written back in its own format. Values from the
+    The file is read as written and the one key is changed where the file
+    sets it. In a YAML file only the text of the key's value is replaced, or
+    the new key's lines inserted, and the rest of the file is never
+    rewritten. A JSON file is written back as JSON. Values from the
     ``.local`` companion file or the environment, cast results and defaults
-    never reach it, and the rest of the file is kept as far as the round trip
-    allows, line ends and the final newline included. Setting
-    ``follow_symlinks`` or ``symlink_policy`` also sets the other only when
-    the file would otherwise contradict itself. When the file already sets
-    the key to the value as written, nothing is written. A symlinked file
-    is written through its link, and the file keeps its permission bits but
-    not setuid, setgid or sticky bits. TOML files, files the user cannot
-    write, symlink loops, mixed line ends, non-finite numbers, values the
-    format cannot hold, keys an alias or merge key shares and keys a cast
-    string holds are refused, and the file is left untouched.
+    never reach the file. Setting ``follow_symlinks`` or ``symlink_policy``
+    also sets the other only when the file would otherwise contradict
+    itself. When the file already sets the key to the value as written,
+    nothing is written. A symlinked file is written through its link, and
+    the file keeps its permission bits but not setuid, setgid or sticky
+    bits. Edits that cannot be made that way are refused and the file is
+    left untouched: TOML files, files the user cannot write, symlink loops,
+    mixed line ends, non-finite numbers, values the format cannot hold,
+    several YAML documents, keys an alias or merge key shares, values that
+    hold an anchor used elsewhere, comments a replaced value would drop or
+    move, and keys a cast string or a flat key holds.
 
     Args:
         key: Dotted config key, such as ``cache.enabled``.
@@ -147,7 +149,7 @@ def set_config_value(
     )
     as_read = None if original is None else layout.apply(original)
     try:
-        document = load_document(original, file_format, path=target_path)
+        document = load_json(original) if file_format is ConfigFormat.JSON else {}
         current = {} if as_read is None else read_config_text(as_read, target_path)
         as_written = (
             {}
@@ -163,42 +165,132 @@ def set_config_value(
         for update_key, update_value in updates.items()
     ):
         return _validate_new_text(raw, target_path=target_path, updates=updates)
-    faithful = keeps_layout(document, file_format, original=original, layout=layout)
-    for update_key, update_value in updates.items():
-        set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
-    try:
-        edited = dump_document(document, file_format, original=original)
-    except (ValueError, TypeError, YAMLError) as exc:
-        raise ConfigError(
-            f"config set cannot write this value in a {file_format.upper()} file",
-            operation="set_config",
-            file_path=target_path,
-            details={"key": key, "error": str(exc)},
-        ) from exc
-
+    edited = _edited_text(
+        original,
+        document,
+        file_format,
+        updates,
+        target_path=target_path,
+    )
     new_text = layout.apply(edited)
     updated_config = _validate_new_text(
         new_text,
         target_path=target_path,
         updates=updates,
     )
-    in_place = (
-        file_format is not ConfigFormat.YAML
-        or original is None
-        or edit_stays_in_place(original, edited, blocks=len(updates))
-    )
-    if not (faithful and in_place):
-        raise ConfigError(
-            "config set cannot rewrite this file without changing its layout "
-            "outside the key, such as a bare '-' item, a block scalar's indent "
-            "or chomping, extra spaces, or a comment or blank line next to "
-            "the key; edit the file by hand",
-            operation="set_config",
-            file_path=target_path,
-            details={"key": key},
-        )
+    if as_read is not None:
+        _refuse_other_changes(as_read, new_text, target_path, updates)
     _write_text(new_text, config_path=write_path, mode=mode, newline="")
     return updated_config
+
+
+def _edited_text(
+    original: str | None,
+    document: MutableMapping[str, object],
+    file_format: ConfigFormat,
+    updates: Mapping[str, object],
+    *,
+    target_path: Path,
+) -> str:
+    """Return a config file's content with the updates made.
+
+    A YAML file is spliced, one key after the other: only each key's value
+    text changes. A JSON or new file is rendered from ``document``.
+
+    Args:
+        original: The file's content, ``\\n`` line ends and no BOM, or
+            ``None`` for a new file.
+        document: A JSON file's parsed content, or an empty mapping.
+        file_format: The file's format.
+        updates: The keys to set, with their values.
+        target_path: The file, for errors.
+
+    Raises:
+        ConfigError: If a key cannot be set, or the format cannot hold a
+            value.
+    """
+    try:
+        if file_format is ConfigFormat.YAML and original is not None:
+            edited = original
+            for update_key, update_value in updates.items():
+                splice = plan_edit(
+                    edited,
+                    _key_parts(update_key),
+                    _yaml_safe(update_value),
+                )
+                edited = splice.apply(edited)
+            return edited
+        for update_key, update_value in updates.items():
+            set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
+        return dump_document(document, file_format, original=original)
+    except (ValueError, TypeError, YAMLError) as exc:
+        raise ConfigError(
+            f"config set cannot write this value in a {file_format.upper()} file",
+            operation="set_config",
+            file_path=target_path,
+            details={"key": next(iter(updates)), "error": str(exc)},
+        ) from exc
+
+
+def _refuse_other_changes(
+    old_text: str,
+    new_text: str,
+    target_path: Path,
+    updates: Mapping[str, object],
+) -> None:
+    """Refuse new content that changes any key other than the ones set.
+
+    Read alone, with and without casts, and with the companion file, every
+    setting outside the updated keys must read back as it did before.
+
+    Raises:
+        ConfigError: If another setting changed or the content cannot be read.
+    """
+    try:
+        readings = [
+            (
+                read_config_text(old_text, target_path, cast=cast),
+                read_config_text(new_text, target_path, cast=cast),
+            )
+            for cast in (False, True)
+        ]
+        readings.append(
+            (
+                read_config_layers(target_path, main_text=old_text),
+                read_config_layers(target_path, main_text=new_text),
+            ),
+        )
+    except _CONFIG_LOAD_ERRORS as exc:
+        raise _load_error(target_path, exc) from exc
+    for before, after in readings:
+        for update_key in updates:
+            _drop_setting(before, _key_parts(update_key.lower()))
+            _drop_setting(after, _key_parts(update_key.lower()))
+        if not _same(before, after):
+            raise ConfigError(
+                "config set would change other settings of this file; the file "
+                "is unchanged, edit it by hand",
+                operation="set_config",
+                file_path=target_path,
+                details={"keys": list(updates)},
+            )
+
+
+def _drop_setting(settings: dict[str, object], parts: list[str]) -> None:
+    """Remove a dotted setting from read settings, and parents it empties.
+
+    A parent that is not a mapping is removed too: setting a key below it
+    replaces it.
+    """
+    head, rest = parts[0], parts[1:]
+    if head not in settings:
+        return
+    child = settings[head]
+    if rest and isinstance(child, dict):
+        _drop_setting(child, rest)
+        if child:
+            return
+    del settings[head]
 
 
 def _refuse_unresolvable_link(path: Path) -> None:

@@ -18,7 +18,8 @@ from click.testing import CliRunner
 from winnow.cli import main
 from winnow.cli.errors import ExitCode
 from winnow.config import CONFIG_FILE_NAME, load_config, set_config_value
-from winnow.config._editor import set_in_document
+from winnow.config._editor import load_json, set_in_document
+from winnow.config._writer import _refuse_other_changes
 from winnow.exceptions import ConfigError
 from winnow.models.enums import SymlinkPolicy
 
@@ -410,3 +411,66 @@ def test_unindented_json_lines_fall_back_to_one_line(tmp_path: Path) -> None:
     set_config_value("workers", 3, config_path=config_path)
 
     assert_that(config_path.read_text()).is_equal_to('{"workers": 3}\n')
+
+
+def test_json_null_file_takes_the_key(tmp_path: Path) -> None:
+    """A JSON file holding ``null`` reads as empty and gets the key."""
+    config_path = tmp_path / "c.json"
+    config_path.write_text("null\n")
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to('{"workers": 3}\n')
+
+
+@pytest.mark.parametrize(
+    ("original", "key", "message"),
+    [
+        ('{"routing": "@json {}"}', "routing.review", "cast string"),
+        ('{"workers": 2}', "workers.x", "non-object"),
+    ],
+)
+def test_json_key_below_a_non_mapping_is_refused(
+    tmp_path: Path,
+    original: str,
+    key: str,
+    message: str,
+) -> None:
+    """A JSON key below a cast string or a scalar is refused, file untouched."""
+    config_path = tmp_path / "c.json"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value(key, "X", config_path=config_path)
+
+    assert_that(str(error.value)).contains(message)
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_json_top_level_must_be_an_object() -> None:
+    """A JSON array cannot take a key."""
+    with pytest.raises(ValueError, match="top level"):
+        load_json("[1]")
+
+
+def test_change_to_another_setting_is_refused(tmp_path: Path) -> None:
+    """The structural check refuses content that changes any other key."""
+    config_path = tmp_path / "c.yaml"
+
+    with pytest.raises(ConfigError) as error:
+        _refuse_other_changes(
+            "workers: 2\ndry_run: true\n",
+            "workers: 3\ndry_run: false\n",
+            config_path,
+            {"workers": 3},
+        )
+
+    assert_that(str(error.value)).contains("other settings")
+
+
+def test_unreadable_new_content_is_a_load_error(tmp_path: Path) -> None:
+    """The structural check fails closed on content it cannot read."""
+    with pytest.raises(ConfigError) as error:
+        _refuse_other_changes("workers: 2\n", "workers: [\n", tmp_path / "c.yaml", {})
+
+    assert_that(error.value.context.operation).is_equal_to("load_config")
