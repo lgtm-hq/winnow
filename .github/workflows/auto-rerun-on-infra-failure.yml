@@ -28,7 +28,6 @@ name: Maintenance - Auto Rerun on Infra Failure
 #     belongs to #352.
 #   - AI Review, PR - File Breakdown, PR - Auto Assign, PR - Auto Label:
 #     they write comments, labels or assignees on pull requests.
-#   - Publish - TestPyPI Staging: manual dispatch only.
 # Every name below must match a workflow's `name:` exactly
 # (tests/test_auto_rerun_on_infra_failure_workflow.py checks it).
 

@@ -429,7 +429,7 @@ def test_main_push_gate_ignores_only_the_tag_publish_run() -> None:
         (
             "all-checks-gate.yml",
             "'^Publish - PyPI Production$'",
-            "'^Publish - TestPyPI Staging$'",
+            "'^Release - Auto Tag$'",
         ),
         ("all-checks-gate.yml", "github.event_name == 'push'", "true"),
         (
