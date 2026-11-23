@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
+from tests.media.bmff_support import box, ftyp, moov
 from winnow.media import (
     DEFAULT_FORMAT_REGISTRY,
     DEFAULT_FORMATS,
@@ -23,7 +24,7 @@ from winnow.models.media import MediaType
 JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00" + b"\x00" * 20
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 20
 GIF_BYTES = b"GIF89a" + b"\x00" * 20
-MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 16
+MP4_BYTES = ftyp("mp42", ["mp42", "isom"]) + moov(["vide"]) + box(b"mdat", b"\x00" * 16)
 MP3_BYTES = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 20
 WAV_BYTES = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 20
 
@@ -281,26 +282,29 @@ def test_detect_media_type_returns_none_when_all_layers_fail(
     assert_that(detect_media_type(unknown)).is_none()
 
 
-def test_sniff_skips_matches_without_mime_type(
+def test_puremagic_match_without_extension_agreement_does_not_decide(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """puremagic matches lacking a MIME type are skipped, not fatal."""
+    """A puremagic match the extension does not back up is advisory only."""
     target = tmp_path / "sample.bin"
     target.write_bytes(b"\x00\x01")
 
     class _Match:
         def __init__(self, mime_type: str | None) -> None:
             self.mime_type = mime_type
+            self.extension = ".png"
+            self.confidence = 0.9
+            self.byte_match = b"\x89PNG"
 
     monkeypatch.setattr(
-        "winnow.media.registry.puremagic.magic_file",
+        "winnow.media._detect.puremagic.magic_file",
         lambda _: [_Match(None), _Match(""), _Match("image/png")],
     )
 
     result = detect_media_type(target)
 
-    assert_that(result).is_equal_to(MediaType.IMAGE)
+    assert_that(result).is_none()
 
 
 def test_content_sniffing_outranks_builtin_raw_default(tmp_path: Path) -> None:
