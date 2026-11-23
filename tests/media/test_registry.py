@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import mimetypes
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,7 @@ from winnow.media import (
     media_type_for_extension,
     normalize_extension,
 )
+from winnow.media import registry as registry_module
 from winnow.media.registry import EXTENSION_ONLY_FORMATS
 from winnow.models.media import MediaType
 
@@ -101,10 +101,11 @@ def test_default_formats_shrunk_to_raw_supplement() -> None:
     )
 
 
-def test_raw_supplement_is_seeded_into_mimetypes() -> None:
-    """Importing the registry seeds RAW extensions into ``mimetypes``."""
+def test_raw_supplement_is_seeded_into_private_host_table() -> None:
+    """The opt-in host MIME table knows every RAW extension (#464)."""
+    host_table = registry_module._host_mime_types()
     for extension, expected_mime_type in RAW_IMAGE_MIME_TYPES.items():
-        mime_type, _ = mimetypes.guess_type(f"photo.{extension}")
+        mime_type, _ = host_table.guess_type(f"photo.{extension}")
 
         assert_that(mime_type).described_as(extension).is_equal_to(
             expected_mime_type,
@@ -176,7 +177,7 @@ def test_unknown_extensions_return_none() -> None:
 
 def test_mime_fallback_can_infer_unregistered_media_extension() -> None:
     """MIME fallback can classify unregistered image, video, or audio suffixes."""
-    fallback_registry = FormatRegistry(include_defaults=False)
+    fallback_registry = FormatRegistry(include_defaults=False, use_mime_fallback=True)
     strict_registry = FormatRegistry(
         include_defaults=False,
         use_mime_fallback=False,
@@ -188,7 +189,7 @@ def test_mime_fallback_can_infer_unregistered_media_extension() -> None:
 
 def test_lookup_override_ignores_mime_fallback() -> None:
     """Override lookup only answers from explicit registrations."""
-    registry = FormatRegistry(include_defaults=False)
+    registry = FormatRegistry(include_defaults=False, use_mime_fallback=True)
 
     assert_that(registry.lookup_override("svg")).is_none()
     assert_that(registry.lookup("svg")).is_equal_to(MediaType.IMAGE)

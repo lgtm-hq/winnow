@@ -20,7 +20,15 @@
    and its byte pattern is at least :data:`MIN_PUREMAGIC_MATCH_BYTES` long.
 6. **Extension.** The registry's name lookup, used when no rule above
    recognised the content. Content recognised as non-media (a signature in
-   the table, or plain text) is not overridden by the extension.
+   the table, or plain text) is not overridden by the extension. The
+   lookup answers from the registry's own formats, then winnow's versioned
+   extension table (:mod:`winnow.media._extension_table`), so with the
+   default registry the answer is the same on every host and Python
+   version. The host's ``mimetypes`` table is asked only by a registry
+   built with ``use_mime_fallback=True`` (#464). The extension signal
+   names the table that answered: ``suffix=.mkv table=winnow/1``,
+   ``table=registry``, ``table=host-mime``, or ``table=none`` when no table
+   knows the extension (its media type is then ``None``).
 
 Two checks come before rule 5, for content rules 2 to 4 did not
 recognise:
@@ -38,7 +46,8 @@ Playlists (``.m3u``, ``.pls``, ``.asx`` and the others in
 :data:`~winnow.media._format_checks.PLAYLIST_EXTENSIONS`) are not media
 under any name: a playlist's content is non-media in rule 4, and a
 playlist extension is non-media wherever rules 5 and 6 would otherwise use
-the extension, even where the host's MIME table calls it audio or video.
+the extension, even where an opted-in host MIME table calls it audio or
+video.
 
 Only regular files are read. A FIFO, socket or device is opened
 non-blocking, or not at all, and gets the extension answer with a signal
@@ -138,10 +147,11 @@ def detect(
         The decision with its signals.
     """
     active = registry if registry is not None else _registry.DEFAULT_FORMAT_REGISTRY
-    extension_type = active.lookup(path.suffix)
+    named = active.lookup_with_table(path.suffix)
+    extension_type = named.media_type
     extension_signal = TypeSignal(
         source="extension",
-        detail=f"suffix={path.suffix.casefold() or '(none)'}",
+        detail=_extension_detail(path.suffix, named.table),
         media_type=extension_type,
     )
     try:
@@ -168,6 +178,22 @@ def detect(
             suffix=path.suffix,
         )
     return _result(outcome, advisory=advisory, extension_type=extension_type)
+
+
+def _extension_detail(suffix: str, table: str) -> str:
+    """Describe the extension and the table that typed it.
+
+    Args:
+        suffix: The file's extension, dot included; empty without one.
+        table: The table that answered the lookup.
+
+    Returns:
+        ``suffix=<.ext> table=<table>``, or ``suffix=(none)`` without an
+        extension.
+    """
+    if not suffix:
+        return "suffix=(none)"
+    return f"suffix={suffix.casefold()} table={table}"
 
 
 def _result(
