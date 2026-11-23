@@ -231,6 +231,7 @@ def test_clean_rejects_missing_directory(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_not_equal_to(0)
 
 
+@pytest.mark.skipif(_WINDOWS, reason="Windows cannot open a directory descriptor")
 def test_clean_reports_failed_candidates_and_exits_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -613,6 +613,35 @@ def test_remove_directories_rejects_candidate_outside_root(
     assert_that((tmp_path / "elsewhere").is_dir()).is_true()
 
 
+@pytest.mark.skipif(_WINDOWS, reason="Windows cannot open a directory descriptor")
+def test_remove_directories_with_root_reports_leaf_gone_after_rmdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leaf that vanishes after a failed rmdir is skipped; removal goes on."""
+    (tmp_path / "later").mkdir()
+    real_rmdir = os.rmdir
+
+    def vanishing_rmdir(path: str, *, dir_fd: int | None = None) -> None:
+        if path == "gone":
+            raise NotADirectoryError(errno.ENOTDIR, "not a directory", path)
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "rmdir", vanishing_rmdir)
+    monkeypatch.setattr(os, "supports_dir_fd", {vanishing_rmdir, os.open})
+
+    result = remove_directories(
+        [tmp_path / "gone", tmp_path / "later"],
+        root=tmp_path,
+    )
+
+    assert_that(result.removed).is_equal_to((tmp_path / "later",))
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "gone", "no longer exists"),),
+    )
+
+
+@pytest.mark.skipif(_WINDOWS, reason="Windows cannot open a directory descriptor")
 def test_remove_directories_with_root_reports_permission_denied(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

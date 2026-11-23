@@ -284,7 +284,11 @@ def _rmdir_below_descriptor(root_fd: int, parts: tuple[str, ...]) -> str | None:
             os.rmdir(leaf, dir_fd=parent_fd)
         except NotADirectoryError as exc:
             # rmdir never follows a final symlink; name that case precisely.
-            mode = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False).st_mode
+            try:
+                mode = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False).st_mode
+            except OSError as stat_exc:
+                # The leaf changed again between the two calls.
+                return _skip_reason(stat_exc)
             return SKIP_REASON_PATH_CHANGED if stat.S_ISLNK(mode) else _skip_reason(exc)
         except OSError as exc:
             return _skip_reason(exc)
