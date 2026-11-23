@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from winnow.media._detect import detect
+from winnow.media._detect_base import DetectionResult, TypeSignal
 from winnow.media._ffprobe import (
     TESTED_FFPROBE_MAJORS,
     ffprobe_version,
@@ -59,13 +61,16 @@ __all__ = [
     "RAW_IMAGE_MIME_TYPES",
     "TESTED_FFPROBE_MAJORS",
     "DefaultMetadataService",
+    "DetectionResult",
     "DirectoryStats",
     "FileInfo",
     "FormatRegistry",
     "MetadataService",
+    "TypeSignal",
     "create_default_format_registry",
     "collect_directory_stats",
     "create_metadata_service",
+    "detect",
     "detect_media_type",
     "extract_audio_metadata",
     "extract_frame",
