@@ -148,12 +148,8 @@ The surrogate escape makes ffmpeg's argv carry the raw byte 0xFC, which
 never occurs in UTF-8.
 """
 
-CORE_AUDIO_FORMAT: Final[str] = "\x63af"
-"""ffmpeg's muxer and ffprobe's ``format_name`` for Core Audio Format.
-
-Written with an escape: the typos linter reads the plain three letters as a
-misspelling.
-"""
+CORE_AUDIO_FORMAT: Final[str] = "caf"
+"""ffmpeg's muxer and ffprobe's ``format_name`` for Core Audio Format."""
 
 _LATIN1_TAG: Final[tuple[str, ...]] = ("-metadata", f"title={LATIN1_TITLE}")
 

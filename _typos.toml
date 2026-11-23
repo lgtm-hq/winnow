@@ -11,3 +11,5 @@ mis = "mis"
 unparseable = "unparseable"
 # Python package name (dependency); appears in changelog and lock entries.
 certifi = "certifi"
+# Core Audio Format: the container's short name and ffmpeg's muxer name.
+caf = "caf"
