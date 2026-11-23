@@ -63,8 +63,9 @@ class AudioFlag(StrEnum):
     ``unrecognized_output`` instead. A cut file is ``truncated``,
     ``unrecognized_output``, ``unsupported``, ``estimated`` or
     ``inconsistent``; a cut no longer than the A5 tolerance is
-    ``truncated=False``, except in fragmented MP4, where it is
-    ``estimated`` (A15a).
+    ``truncated=False``, except in fragmented MP4 (A15a) and in MP4 whose
+    ``nb_frames`` counts packets when the cut removed one (A15f-1), where
+    it is ``estimated``.
     """
 
     UNRECOGNIZED_OUTPUT = auto()
