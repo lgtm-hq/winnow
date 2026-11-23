@@ -28,6 +28,7 @@ from winnow.media._ffprobe import (
     ADDRESS_SPACE_LIMIT_BYTES,
     DEVNULL,
     BoundedRunError,
+    TimeoutExpired,
     clear_info_caches,
     fd_protocol_supported,
     ffprobe_available,
@@ -783,9 +784,6 @@ def test_run_bounded_unreaped_child_is_timed_out(
     """A12c: a child not reaped in time after the kill is a time-out, no raise."""
     real_spawn = _ffprobe._spawn
     reaps: list[float | None] = []
-    # The runner's own subprocess module: importing subprocess here would need
-    # a new bandit suppression, and _ffprobe does not export the name for mypy.
-    timeout_expired = vars(_ffprobe)["subprocess"].TimeoutExpired
 
     def spawn(argv: list[str], **kwargs: Any) -> object:
         process = real_spawn(argv, **kwargs)
@@ -794,7 +792,7 @@ def test_run_bounded_unreaped_child_is_timed_out(
         def wait(timeout: float | None = None) -> int:
             if timeout == _ffprobe._REAP_TIMEOUT_SECONDS and not reaps:
                 reaps.append(timeout)
-                raise timeout_expired(argv, timeout)
+                raise TimeoutExpired(argv, timeout)
             return real_wait(timeout=timeout)
 
         monkeypatch.setattr(process, "wait", wait)
