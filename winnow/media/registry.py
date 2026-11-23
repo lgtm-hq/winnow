@@ -62,7 +62,6 @@ EXTENSION_ONLY_FORMATS: Mapping[str, MediaType] = MappingProxyType(
         "pct": MediaType.IMAGE,
         "pic": MediaType.IMAGE,
         "tga": MediaType.IMAGE,
-        "vst": MediaType.IMAGE,
         "dib": MediaType.IMAGE,
         "fpx": MediaType.IMAGE,
         "jxl": MediaType.IMAGE,
@@ -76,18 +75,19 @@ EXTENSION_ONLY_FORMATS: Mapping[str, MediaType] = MappingProxyType(
         "sk": MediaType.IMAGE,
         "sk1": MediaType.IMAGE,
         "ag": MediaType.IMAGE,
-        "mdi": MediaType.IMAGE,
-        "ora": MediaType.IMAGE,
     },
 )
-"""Formats typed by extension only (#393, ruling item 2).
+"""Extension-only formats (#393, ruling item 2) and the type ``main`` gave each.
 
-They have no magic detection can rely on (FLIC, PICT, 669, TGA without a
-footer, a bare JPEG XL codestream, a raw DIB, FlashPix's shared OLE
-container) or are drawings and documents (DWG, DXF, xfig, Skencil, Applix
-Graphics, EPS and AI without ``EPSF``). Listing them here makes "typed by
-extension" hold on every host, not only where the MIME table knows the
-extension; each has the type ``main`` gave it.
+They have no magic detection can rely on alone (FLIC, PICT, 669, TGA
+without a footer, a bare JPEG XL codestream, a raw DIB, FlashPix's shared
+OLE container) or are drawings and documents (DWG, DXF, xfig, Skencil,
+Applix Graphics, EPS and AI without ``EPSF``). Detection types such a file
+only when its extension and the format's marker agree
+(:mod:`winnow.media._extension_only`); a name lookup here gives the type
+from the extension alone, so ``winnow info`` and ``winnow stats``, which
+count by name, count these extensions as media whatever the content
+(#366).
 """
 
 DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(

@@ -93,29 +93,45 @@ def flv_streams(content: Content) -> StreamList:
 def _tag_header(content: Content, offset: int) -> bytes | None:
     """Return the 11-byte FLV tag header at ``offset``.
 
-    Past the opening bytes the header is read with a positioned read of the
-    open descriptor (``os.pread``), which reads exactly 11 bytes and leaves
-    the shared handle's position alone; where ``pread`` does not exist, the
-    shared reader is used within its budget.
-
     Args:
         content: File content.
         offset: File offset of the tag.
 
     Returns:
-        The header, or ``None`` when it cannot be read.
+        The header, or ``None`` when it cannot be read whole.
     """
-    if offset + _FLV_TAG_HEADER <= len(content.head):
-        return content.head[offset : offset + _FLV_TAG_HEADER]
+    header = bytes_at(content, offset, _FLV_TAG_HEADER)
+    return header if header is not None and len(header) == _FLV_TAG_HEADER else None
+
+
+def bytes_at(content: Content, offset: int, length: int) -> bytes | None:
+    """Return up to ``length`` bytes at ``offset``, reading only those.
+
+    Within the opening bytes they come from the head. Past it they are read
+    with a positioned read of the open descriptor (``os.pread``), which
+    reads exactly these bytes and leaves the shared handle's position
+    alone; where ``pread`` does not exist, the shared reader is used within
+    its budget.
+
+    Args:
+        content: File content.
+        offset: File offset.
+        length: Bytes wanted; fewer come back at the end of the file.
+
+    Returns:
+        The bytes, or ``None`` when the read budget is spent.
+    """
+    head = content.head
+    if offset + length <= len(head) or len(head) == content.size:
+        return head[offset : offset + length]
     pread = getattr(os, "pread", None)
     try:
         if pread is not None and content.descriptor >= 0:
-            header: bytes = pread(content.descriptor, _FLV_TAG_HEADER, offset)
-        else:
-            header = content.reader.read_at(offset, _FLV_TAG_HEADER)
+            data: bytes = pread(content.descriptor, length, offset)
+            return data
+        return content.reader.read_at(offset, length)
     except BudgetExceededError:
         return None
-    return header if len(header) == _FLV_TAG_HEADER else None
 
 
 # --- MPEG program stream (ISO/IEC 13818-1, 2.5; ISO/IEC 11172-1) -------------
@@ -130,6 +146,14 @@ _MPEG1_PACK: Final[int] = 12
 _PES_HEADER: Final[int] = 6
 
 
+MAX_PROGRAM_STREAM_PACKETS: Final[int] = 46_000
+"""Pack and PES headers the program stream walk may read."""
+
+_PACKET_WINDOW: Final[int] = 24
+"""Bytes read per header past the head: a pack header with stuffing, or a
+PES header up to its ``PES_header_data_length``."""
+
+
 def program_stream_streams(content: Content) -> StreamList:
     """Read the stream IDs of the PES packets in an MPEG program stream.
 
@@ -141,8 +165,13 @@ def program_stream_streams(content: Content) -> StreamList:
     A program stream has no stream list: packets interleave. The list counts
     as complete only when a system header (2.5.3.5) gives ``video_bound``
     0, so no video stream can follow, and the walk read every packet: it
-    reached the ``program_end_code`` or the exact end of the file. A cut,
-    corrupt bytes or the chunk cap leave it incomplete, keeping what was
+    reached the ``program_end_code`` or the exact end of the file. Past the
+    opening bytes only the pack and PES headers are read (24 bytes each,
+    with positioned reads), seeking past each payload, up to
+    :data:`MAX_PROGRAM_STREAM_PACKETS` headers. In 2,048-byte packs (a
+    pack and a PES header each) that is about 47 MB: 32 minutes of
+    audio-only MPEG-1 Layer II at 192 kbit/s, 16 minutes at 384. A cut,
+    corrupt bytes or the cap leave the list incomplete, keeping what was
     found.
 
     Args:
@@ -151,37 +180,62 @@ def program_stream_streams(content: Content) -> StreamList:
     Returns:
         The stream kinds of the packets read.
     """
-    head = content.head
     streams = StreamList()
-    budget = WalkBudget()
     no_video = False
     whole = False
     offset = 0
-    while budget.visit():
-        if offset == len(head):
-            whole = offset == content.size
+    headers = 0
+    while True:
+        if offset == content.size:
+            whole = True
             break
-        if offset + 4 > len(head) or head[offset : offset + 3] != b"\x00\x00\x01":
+        headers += 1
+        if headers > MAX_PROGRAM_STREAM_PACKETS:
             break
-        stream_id = head[offset + 3]
+        window = bytes_at(content, offset, _PACKET_WINDOW)
+        if window is None or len(window) < 4 or window[:3] != b"\x00\x00\x01":
+            break
+        stream_id = window[3]
         if stream_id == _PROGRAM_END:
             whole = True
             break
-        if stream_id == _PACK_START:
-            length = _pack_header_length(head, offset)
-            if length is None:
-                break
-            offset += length
-            continue
-        if offset + _PES_HEADER > len(head):
+        length = _packet_length(content, offset, window, streams)
+        if length is None:
             break
-        if stream_id == _SYSTEM_HEADER and offset + 11 <= len(head):
-            no_video = head[offset + 10] & 0x1F == 0
-        packet_length: int = struct.unpack_from(">H", head, offset + 4)[0]
-        streams.kinds.append(_pes_kind(head, offset, stream_id))
-        offset += _PES_HEADER + packet_length
+        if stream_id == _SYSTEM_HEADER and len(window) >= 11:
+            no_video = window[10] & 0x1F == 0
+        offset += length
     streams.complete = no_video and whole
     return streams
+
+
+def _packet_length(
+    content: Content, offset: int, window: bytes, streams: StreamList
+) -> int | None:
+    """Return the length of the pack or PES packet at ``offset``.
+
+    A PES packet's stream kind is added to ``streams``; for
+    ``private_stream_1`` the header is read up to its first payload byte.
+
+    Args:
+        content: File content.
+        offset: File offset of the start code.
+        window: The bytes read at ``offset``.
+        streams: Stream list being built.
+
+    Returns:
+        The length, or ``None`` for a header cut by the end of the file.
+    """
+    stream_id = window[3]
+    if stream_id == _PACK_START:
+        return _pack_header_length(window, 0)
+    if len(window) < _PES_HEADER:
+        return None
+    if stream_id == _PRIVATE_STREAM_1 and len(window) >= 9:
+        window = bytes_at(content, offset, 10 + window[8]) or window
+    streams.kinds.append(_pes_kind(window, 0, stream_id))
+    packet_length: int = struct.unpack_from(">H", window, 4)[0]
+    return _PES_HEADER + packet_length
 
 
 def _pack_header_length(head: bytes, offset: int) -> int | None:
@@ -340,7 +394,9 @@ def ogg_streams(content: Content) -> StreamList:
 
 __all__ = [
     "MAX_FLV_TAGS",
+    "MAX_PROGRAM_STREAM_PACKETS",
     "OGG_CODECS",
+    "bytes_at",
     "flv_streams",
     "mpeg_video_sequence",
     "ogg_streams",

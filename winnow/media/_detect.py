@@ -22,6 +22,18 @@
    recognised the content. Content recognised as non-media (a signature in
    the table, or plain text) is not overridden by the extension.
 
+Two checks come before rule 5, for content rules 2 to 4 did not
+recognise:
+
+* An extension-only format (ruling item 2: EPS, xfig, FLIC, PICT and the
+  others in :mod:`winnow.media._extension_only`) is typed only when the
+  file carries that format's marker or passes its structural check;
+  otherwise it is unknown, whatever puremagic or the extension says.
+* A plain-text file is non-media unless its own extension's marker is
+  present (:data:`~winnow.media._text_formats.TEXT_MEDIA_MARKERS`): an
+  ``.svg`` holding prose is not an image, and a puremagic pattern found
+  in text (``#define``, ``%!``) does not make it one.
+
 Playlists (``.m3u``, ``.pls``, ``.asx`` and the others in
 :data:`~winnow.media._format_checks.PLAYLIST_EXTENSIONS`) are not media
 under any name: a playlist's content is non-media in rule 4, and a
@@ -87,12 +99,13 @@ from winnow.media._detect_bmff import (
     TRACK_BOX,
     inspect_bmff,
 )
+from winnow.media._extension_only import ExtensionOnly, extension_only
 from winnow.media._format_checks import PLAYLIST_EXTENSIONS
 from winnow.media._header_checks import is_text
 from winnow.media._matroska import inspect_matroska
 from winnow.media._signatures import HEAD_BYTES, TAIL_BYTES, match_signature
 from winnow.media._signatures import MAX_BYTES_READ as SIGNATURE_BYTES_READ
-from winnow.media._text_formats import TEXT_MEDIA_EXTENSIONS
+from winnow.media._text_formats import text_media_marker
 from winnow.models.media import MediaType
 
 MIN_PUREMAGIC_MATCH_BYTES: Final[int] = 3
@@ -297,7 +310,8 @@ def _unrecognised_content(
     extension_type: MediaType | None,
     suffix: str,
 ) -> Outcome:
-    """Apply the playlist rule, rule 5, the text check and rule 6.
+    """Apply the playlist rule, the extension-only gate, the text check,
+    rule 5 and rule 6.
 
     Args:
         content: The bytes rules 3 and 4 read and found nothing in.
@@ -311,13 +325,51 @@ def _unrecognised_content(
     hints = tuple(content.hints)
     if _is_playlist_extension(suffix):
         return _playlist(hints)
+    named = extension_only(suffix)
+    if named is not None:
+        return _extension_only(named, content, hints)
+    if is_text(content.head, size=content.size):
+        marked = text_media_marker(suffix, content)
+        if marked is not None:
+            reason = "plain text with its extension's marker"
+            return decide(marked, MediaType.IMAGE, reason, evidence=hints)
+        return decide("text", None, "non-media plain text", evidence=hints)
     agreeing = _agreeing_puremagic_match(matches, extension_type, hints)
     if agreeing is not None:
         return agreeing
-    text_media = suffix.lstrip(".").casefold() in TEXT_MEDIA_EXTENSIONS
-    if not text_media and is_text(content.head, size=content.size):
-        return decide("text", None, "non-media plain text", evidence=hints)
     return _by_extension(extension_type, hints, suffix=suffix)
+
+
+def _extension_only(
+    named: ExtensionOnly,
+    content: Content,
+    hints: tuple[TypeSignal, ...],
+) -> Outcome:
+    """Type an extension-only format only when its marker is present.
+
+    Args:
+        named: The format the extension names.
+        content: File content.
+        hints: Evidence gathered before.
+
+    Returns:
+        The format's type with its marker; otherwise unknown (non-media
+        for plain text).
+    """
+    if named.matches(content):
+        reason = "extension and the format's marker agree"
+        return decide(named.name, named.media_type, reason, evidence=hints)
+    if is_text(content.head, size=content.size):
+        return decide("text", None, "non-media plain text", evidence=hints)
+    decision = TypeSignal(
+        source="extension",
+        detail=(
+            f"{DECISION_PREFIX}unknown unresolved:"
+            f" {named.name} extension without the format's marker"
+        ),
+        media_type=None,
+    )
+    return Outcome(media_type=None, signals=(*hints, decision))
 
 
 def _is_playlist_extension(suffix: str) -> bool:

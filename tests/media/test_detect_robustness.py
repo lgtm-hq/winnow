@@ -198,9 +198,8 @@ def _program_stream_with_late_video() -> bytes:
         (_avi_with_late_video(), "clip.avi"),
         (_asf_with_late_video(), "clip.wmv"),
         (_ogg_with_late_video(), "clip.ogv"),
-        (_program_stream_with_late_video(), "clip.mpg"),
     ],
-    ids=["avi", "asf", "ogg", "mpeg-ps"],
+    ids=["avi", "asf", "ogg"],
 )
 def test_incomplete_stream_list_never_decides_audio(
     tmp_path: Path,
@@ -213,6 +212,13 @@ def test_incomplete_stream_list_never_decides_audio(
     assert_that(result.media_type).is_not_equal_to(MediaType.AUDIO)
     assert_that(result.media_type).is_none()
     assert_that([d for d in _details(result) if d == "streams=incomplete"]).is_length(1)
+
+
+def test_program_stream_video_past_the_head_is_read(tmp_path: Path) -> None:
+    """The program stream walk reads headers past the head and finds video."""
+    result = _detect_bytes(tmp_path, _program_stream_with_late_video(), "clip.mpg")
+
+    assert_that(result.media_type).is_equal_to(MediaType.VIDEO)
 
 
 def _details(result: DetectionResult) -> list[str]:

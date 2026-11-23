@@ -389,7 +389,8 @@ LIBRARY_SAMPLES: list[tuple[str, str, bytes, str, MediaType]] = [
     ("mo3", "mo3", b"MO3\x05" + struct.pack("<I", 16) + b"\x00" * 16, "tracker", AUDIO),
     ("sid", "sid", _sid(), "sid", AUDIO),
     ("psf", "psf", b"PSF\x01" + struct.pack("<III", 0, 0, 0), "psf", AUDIO),
-    ("xmf", "xmf", b"XMF_2.00" + b"\x00" * 24, "xmf", AUDIO),
+    # RP-043 header: type and revision IDs, then the file length (32).
+    ("xmf", "xmf", b"XMF_2.00" + b"\x00" * 8 + b"\x20" + b"\x00" * 15, "xmf", AUDIO),
     ("bink", "bik", b"BIKi" + struct.pack("<I", 44) + b"\x00" * 36, "bink", VIDEO),
     (
         "smacker",

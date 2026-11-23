@@ -19,11 +19,7 @@ from tests.media.signature_support import ogg_page, program_stream
 from winnow.media import _stream_probe
 from winnow.media._detect import DetectionResult, detect
 from winnow.media._ffprobe import BoundedRun
-from winnow.media.registry import (
-    EXTENSION_ONLY_FORMATS,
-    FormatRegistry,
-    create_default_format_registry,
-)
+from winnow.media.registry import FormatRegistry
 from winnow.models.media import MediaType
 
 _AUDIO_ONLY = b'{"streams": [{"index": 0, "codec_type": "audio"}]}'
@@ -267,11 +263,13 @@ def test_plain_text_with_a_printable_magic_is_not_media(
 
 
 def test_mod_requires_sample_headers_in_range(tmp_path: Path) -> None:
-    """A binary file with a MOD tag but impossible sample headers is not MOD."""
+    """A MOD tag over sample headers past OpenMPT's 40 points is not MOD."""
     data = bytearray(1084 + 1024)
     data[950] = 1
     data[1080:1084] = b"M.K."
-    data[20 + 24] = 0x40
+    for sample in range(21):
+        data[20 + sample * 30 + 24] = 0x40
+        data[20 + sample * 30 + 25] = 0x41
     assert_that(_detect_bytes(tmp_path, bytes(data)).media_type).is_none()
 
 
@@ -421,22 +419,6 @@ def test_declared_containers_keep_ffprobe_audio(
     assert_that(_detect_bytes(tmp_path, data, "x.ogg").media_type).is_equal_to(
         MediaType.AUDIO
     )
-
-
-# --- blocker 6: item 2 formats under their own extension on any host ---------
-
-
-@pytest.mark.parametrize("extension", sorted(EXTENSION_ONLY_FORMATS))
-def test_extension_only_formats_without_a_mime_table(
-    tmp_path: Path, extension: str
-) -> None:
-    """Each ruling item 2 format keeps its type with no host MIME table."""
-    registry = create_default_format_registry(use_mime_fallback=False)
-    data = b"\x01\x02\x03 bytes no signature recognises\x00\xfe"
-
-    result = _detect_bytes(tmp_path, data, f"x.{extension}", registry=registry)
-
-    assert_that(result.media_type).is_equal_to(EXTENSION_ONLY_FORMATS[extension])
 
 
 # --- smaller findings ---------------------------------------------------------

@@ -305,8 +305,7 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("video-cd", _form(b"RIFF", b"CDXA"), MediaType.VIDEO),
     # Video.
     Signature("mpeg-video", checks.mpeg_video, MediaType.VIDEO),
-    # YUV4MPEG2 stream header "YUV4MPEG2 " (mjpegtools yuv4mpeg(5)).
-    Signature("yuv4mpeg", _starts(b"YUV4MPEG2 "), MediaType.VIDEO),
+    Signature("yuv4mpeg", text.yuv4mpeg, MediaType.VIDEO),
     Signature("dv", checks.dv, MediaType.VIDEO),
     # MNG 1.0: a multiple-image (animation) format, typed video as MIME does.
     Signature("mng", more.mng, MediaType.VIDEO),

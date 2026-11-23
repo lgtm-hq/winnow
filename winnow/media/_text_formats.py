@@ -1,13 +1,17 @@
 """Text-based media formats for detection rule 4 (#393).
 
-SVG, XBM, XPM, Netpbm's plain formats, EPS and FITS headers are text. The
+SVG, XBM, XPM, Netpbm's plain formats, EPS and FITS headers are text, and
+so can the first 8 KiB of a YUV4MPEG2 video or an AMR file be. The
 plain-text rule (:func:`winnow.media._header_checks.is_text`) must neither
-hide them nor let a text file pass for a binary format. Two lists here
+hide them nor let a text file pass for a binary format. Two tables here
 keep the rules consistent:
 
-* :data:`TEXT_MEDIA_EXTENSIONS`: extensions of text-based media formats.
-  When a text file has one of them and no signature recognised it, the
-  extension decides, not the plain-text rule.
+* :data:`TEXT_MEDIA_MARKERS`: for a plain-text file that no signature
+  recognised, the marker its own extension needs. A text file named
+  ``.svg`` is an image only when it opens as XML; ``notes.svg`` holding
+  prose is not. Extensions without an entry here (XBM, Netpbm) need their
+  full signature; the extension-only formats (EPS, DXF, xfig) need their
+  marker (:mod:`winnow.media._extension_only`).
 * :data:`TEXT_BASED_CONTAINERS`: signature containers that may match
   text. Any other signature is skipped for a file that is plain text, so
   ``NSVs are great`` or ``MAC & PC notes`` is never media.
@@ -18,6 +22,7 @@ so its time is linear in the bytes read.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final
 
 from winnow.media._detect_base import Content
@@ -28,36 +33,30 @@ from winnow.media._markup import (
     skip_xml_prolog,
 )
 
-TEXT_MEDIA_EXTENSIONS: Final[frozenset[str]] = frozenset(
+TEXT_BASED_CONTAINERS: Final[frozenset[str]] = frozenset(
     {
         "svg",
         "xbm",
         "xpm",
-        "pbm",
-        "pgm",
-        "ppm",
-        "pnm",
-        "pam",
+        "netpbm",
         "eps",
-        "epsf",
-        "epsi",
-        "ai",
-        "dxf",
-        "fig",
-        "sk",
-        "sk1",
-        "ag",
         "fits",
-        "fit",
-        "fts",
+        "yuv4mpeg",
+        "amr",
+        "xmf",
+        "kodak-kdc",
     },
 )
-"""Extensions of text-based media: the plain-text rule never overrides them."""
+"""Signature containers whose files may be plain text.
 
-TEXT_BASED_CONTAINERS: Final[frozenset[str]] = frozenset(
-    {"svg", "xbm", "xpm", "netpbm", "eps", "fits"},
-)
-"""Signature containers whose files may be plain text."""
+A healthy file of each can open with 8 KiB of printable bytes: a text
+header (SVG, XBM, XPM, Netpbm, EPS, FITS), a text header then raw samples
+in the printable range (YUV4MPEG2), frames whose headers and speech bits
+are all printable (AMR), variable-length fields that can be printable
+(XMF), or a layout not documented beyond the maker string (Kodak KDC).
+Each one's check is strict enough for text: a frame walk, a file length
+that must equal the file size, or a magic of 21 bytes at a fixed offset.
+"""
 
 _BOM: Final[bytes] = b"\xef\xbb\xbf"
 _SVG_NAMESPACE: Final[bytes] = b"http://www.w3.org/2000/svg"
@@ -254,6 +253,45 @@ def xbm(content: Content) -> bool:
     return b"char" in declaration or b"short" in declaration
 
 
+# --- YUV4MPEG2 ----------------------------------------------------------------
+
+_Y4M_MAGIC: Final[bytes] = b"YUV4MPEG2 "
+_Y4M_FRAME: Final[bytes] = b"FRAME"
+_Y4M_HEADER_LIMIT: Final[int] = 4096
+"""Longest stream header line read."""
+
+
+def yuv4mpeg(content: Content) -> bool:
+    """YUV4MPEG2 stream (mjpegtools ``yuv4mpeg(5)``).
+
+    The stream header line: the magic, then space-separated parameters
+    among which ``W<width>`` and ``H<height>`` are required; then the first
+    frame header, ``FRAME`` and a space or the end of its line.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is a YUV4MPEG2 stream with at least one frame.
+    """
+    head = content.head
+    if not head.startswith(_Y4M_MAGIC):
+        return False
+    line_end = head.find(b"\n", 0, _Y4M_HEADER_LIMIT)
+    if line_end < 0:
+        return False
+    parameters = head[len(_Y4M_MAGIC) : line_end].split(b" ")
+    width = any(p[:1] == b"W" and p[1:].isdigit() for p in parameters)
+    height = any(p[:1] == b"H" and p[1:].isdigit() for p in parameters)
+    frame = line_end + 1 + len(_Y4M_FRAME)
+    return (
+        width
+        and height
+        and head.startswith(_Y4M_FRAME, line_end + 1)
+        and head[frame : frame + 1] in {b" ", b"\n"}
+    )
+
+
 # --- SVG, XPM, EPS ------------------------------------------------------------
 
 
@@ -318,6 +356,74 @@ def xpm(content: Content) -> bool:
     return head.startswith((b"/* XPM */", b"! XPM2"), position)
 
 
+def _xml_start(content: Content) -> bool:
+    """Report whether a text file opens as XML: a declaration or a comment.
+
+    The marker a plain-text ``.svg`` needs when its root element lies past
+    the bytes read (a long prolog).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether ``<?xml`` or ``<!--`` comes first, after a BOM and space.
+    """
+    head = content.head
+    position = skip_space(head, len(_BOM) if head.startswith(_BOM) else 0)
+    return head.startswith((b"<?xml", b"<!--", b"<!DOCTYPE svg"), position)
+
+
+def _xpm1(content: Content) -> bool:
+    """XPM version 1: ``#define <name>_format 1`` first (XPM manual, 1.2).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file opens as XPM 1.
+    """
+    head = content.head
+    line_end = head.find(b"\n", 0, 256)
+    first_line = head[: line_end if line_end >= 0 else 256].split()
+    return (
+        len(first_line) == 3
+        and first_line[0] == b"#define"
+        and first_line[1].endswith(b"_format")
+        and first_line[2] == b"1"
+    )
+
+
+TEXT_MEDIA_MARKERS: Final[dict[str, tuple[str, Callable[[Content], bool]]]] = {
+    "svg": ("svg", _xml_start),
+    "xpm": ("xpm", _xpm1),
+}
+"""The marker a plain-text file needs under these extensions to be an image.
+
+Checked only when no signature recognised the file: an SVG whose root lies
+past the bytes read, or XPM 1. Every other text-based image needs its
+signature (FITS, XBM, Netpbm) or, for the extension-only formats, its
+marker.
+"""
+
+
+def text_media_marker(suffix: str, content: Content) -> str | None:
+    """Return the format a plain-text file's extension and marker agree on.
+
+    Args:
+        suffix: The file's extension, dot included.
+        content: File content.
+
+    Returns:
+        The format name when the extension has a marker and the file opens
+        with it, otherwise ``None``.
+    """
+    entry = TEXT_MEDIA_MARKERS.get(suffix.lstrip(".").casefold())
+    if entry is None:
+        return None
+    name, marker = entry
+    return name if marker(content) else None
+
+
 def eps(content: Content) -> bool:
     """Encapsulated PostScript (Adobe Technical Note 5002, EPSF 3.0).
 
@@ -340,10 +446,12 @@ def eps(content: Content) -> bool:
 
 __all__ = [
     "TEXT_BASED_CONTAINERS",
-    "TEXT_MEDIA_EXTENSIONS",
+    "TEXT_MEDIA_MARKERS",
     "eps",
     "netpbm",
     "svg",
+    "text_media_marker",
     "xbm",
     "xpm",
+    "yuv4mpeg",
 ]

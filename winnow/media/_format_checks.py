@@ -333,12 +333,29 @@ _AMR_FRAME_TYPES: Final[dict[bytes, frozenset[int]]] = {
 """Frame types each storage format allows (RFC 4867, 5.3; 3GPP TS 26.101)."""
 
 
+_AMR_FRAME_BYTES: Final[dict[bytes, tuple[int, ...]]] = {
+    b"#!AMR\n": (12, 13, 15, 17, 19, 20, 26, 31, 5, 0, 0, 0, 0, 0, 0, 0),
+    b"#!AMR-WB\n": (17, 23, 32, 36, 40, 46, 50, 58, 60, 5, 0, 0, 0, 0, 0, 0),
+}
+"""Speech bytes after each frame header, by frame type.
+
+RFC 4867, 5.3; 3GPP TS 26.101 and TS 26.201; ``NO_DATA`` has none.
+"""
+
+AMR_FRAMES_CHECKED: Final[int] = 32
+"""Consecutive frame headers an AMR file must open with (or all it has)."""
+
+
 def amr(content: Content) -> bool:
     """AMR or AMR-WB storage format (RFC 4867, section 5).
 
     The magic, then (for the multichannel forms) a channel description with
-    28 reserved zero bits and 1 to 15 channels, then a frame header whose
-    padding bits are zero and whose frame type is defined (5.3).
+    28 reserved zero bits and 1 to 15 channels, then frames: each frame
+    header has zero padding bits and a defined frame type (5.3), and its
+    speech bytes lead to the next header. The first
+    :data:`AMR_FRAMES_CHECKED` frames are checked, or every frame of a
+    shorter file. A file of printable frames is AMR; prose that starts
+    with the magic does not walk that far.
 
     Args:
         content: File content.
@@ -359,10 +376,33 @@ def amr(content: Content) -> bool:
         if channels >> 4 or not channels & 0x0F:
             return False
         position += 4
-    frame = head[position : position + 1]
-    if not frame or frame[0] & 0x83:
-        return False
-    return (frame[0] >> 3) & 0x0F in _AMR_FRAME_TYPES[magic]
+    return _amr_frames_follow(content, position, magic)
+
+
+def _amr_frames_follow(content: Content, position: int, magic: bytes) -> bool:
+    """Walk the first AMR frames from ``position`` by their frame types.
+
+    Args:
+        content: File content.
+        position: Offset of the first frame header.
+        magic: The file's storage format magic.
+
+    Returns:
+        Whether :data:`AMR_FRAMES_CHECKED` frames, or every frame up to the
+        end of the file or of the bytes read, have valid headers.
+    """
+    head = content.head
+    sizes = _AMR_FRAME_BYTES[magic.replace(b"_MC1.0", b"")]
+    allowed = _AMR_FRAME_TYPES[magic]
+    for frame in range(AMR_FRAMES_CHECKED):
+        if position >= min(content.size, len(head)):
+            return frame > 0
+        header = head[position]
+        frame_type = (header >> 3) & 0x0F
+        if header & 0x83 or frame_type not in allowed:
+            return False
+        position += 1 + sizes[frame_type]
+    return True
 
 
 _MOD_TAGS: Final[frozenset[bytes]] = frozenset(
@@ -372,14 +412,22 @@ _MOD_CHANNELS: Final[re.Pattern[bytes]] = re.compile(rb"[1-9]CHN|[1-3][0-9]CH|TD
 _MOD_TAG_AT: Final[int] = 1080
 
 
+MOD_INVALID_BYTE_THRESHOLD: Final[int] = 40
+"""OpenMPT ``MODSampleHeader::INVALID_BYTE_THRESHOLD``."""
+
+
 def mod(content: Content) -> bool:
     """ProTracker-family module: the format tag at offset 1080.
 
     ProTracker module format (as documented with ModPlug and libxmp): a
     four-byte tag after the 31 sample headers and the order table; a song
     length of 1 to 128 patterns at offset 950; every order entry (952 to
-    1079) a pattern number below 128; and in each 30-byte sample header a
-    finetune of at most 15 and a volume of at most 64.
+    1079) a pattern number below 128. Sample headers are scored as
+    OpenMPT's loader does (``MODSampleHeader::GetInvalidByteScore``): a
+    point each for a volume above 64, a finetune above 15 and a loop start
+    past twice the length. Real modules carry a volume of 65 or a finetune
+    high nibble from some trackers (OpenMPT clamps the volume and masks the
+    finetune); like OpenMPT, a module is rejected only past 40 points.
 
     Args:
         content: File content.
@@ -395,11 +443,15 @@ def mod(content: Content) -> bool:
         return False
     if max(head[952:1080]) >= 128:
         return False
+    invalid = 0
     for sample in range(31):
         header = 20 + sample * 30
-        if head[header + 24] > 15 or head[header + 25] > 64:
-            return False
-    return True
+        length = _u16be(head, header + 22)
+        loop_start = _u16be(head, header + 26)
+        invalid += head[header + 24] > 15
+        invalid += head[header + 25] > 64
+        invalid += loop_start > length * 2
+    return invalid <= MOD_INVALID_BYTE_THRESHOLD
 
 
 def scream_tracker_3(content: Content) -> bool:
@@ -517,10 +569,17 @@ def psf(content: Content) -> bool:
     return 16 + _u32le(head, 4) + _u32le(head, 8) <= content.size
 
 
-def xmf(content: Content) -> bool:
-    """Extensible Music Format: ``XMF_`` and version ``1.00`` or ``2.00``.
+_XMF_LENGTH_AT: Final[dict[bytes, int]] = {b"XMF_1.00": 8, b"XMF_2.00": 16}
+"""Offset of the file length: version 2.00 adds a type and revision ID."""
 
-    MIDI Manufacturers Association RP-030 and RP-043, file header.
+
+def xmf(content: Content) -> bool:
+    """Extensible Music Format: ``XMF_``, version ``1.00`` or ``2.00``.
+
+    MIDI Manufacturers Association RP-030 (and RP-043 for 2.00), file
+    header: after the ID and version (and, in 2.00, the file type and its
+    revision), ``FileLength`` as a variable-length quantity, which must
+    equal the file size.
 
     Args:
         content: File content.
@@ -528,7 +587,16 @@ def xmf(content: Content) -> bool:
     Returns:
         Whether the file is XMF.
     """
-    return content.head[:8] in {b"XMF_1.00", b"XMF_2.00"}
+    head = content.head
+    position = _XMF_LENGTH_AT.get(head[:8])
+    if position is None:
+        return False
+    length = 0
+    for byte in head[position : position + 4]:
+        length = (length << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            return length == content.size
+    return False
 
 
 # --- video --------------------------------------------------------------------

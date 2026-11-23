@@ -56,13 +56,49 @@ def test_default_registry_maps_representative_formats(
     assert_that(registry.lookup(extension)).is_equal_to(expected_media_type)
 
 
+_RAW_EXTENSIONS = (
+    "3fr ari arw cr2 cr3 dcr dng erf k25 kdc mrw nef nrw orf pef raf raw rw2"
+    " rwl sr2 srf srw x3f"
+).split()
+
+_EXTENSION_ONLY_TYPES = {
+    "669": MediaType.AUDIO,
+    "koz": MediaType.AUDIO,
+    "fli": MediaType.VIDEO,
+    "flc": MediaType.VIDEO,
+    "pict": MediaType.IMAGE,
+    "pct": MediaType.IMAGE,
+    "pic": MediaType.IMAGE,
+    "tga": MediaType.IMAGE,
+    "dib": MediaType.IMAGE,
+    "fpx": MediaType.IMAGE,
+    "jxl": MediaType.IMAGE,
+    "eps": MediaType.IMAGE,
+    "epsf": MediaType.IMAGE,
+    "epsi": MediaType.IMAGE,
+    "ai": MediaType.IMAGE,
+    "dxf": MediaType.IMAGE,
+    "dwg": MediaType.IMAGE,
+    "fig": MediaType.IMAGE,
+    "sk": MediaType.IMAGE,
+    "sk1": MediaType.IMAGE,
+    "ag": MediaType.IMAGE,
+}
+"""The registry's extension-only entries, written out (ruling item 2)."""
+
+
 def test_default_formats_shrunk_to_raw_supplement() -> None:
-    """DEFAULT_FORMATS carries the RAW and extension-only supplements."""
-    expected = set(RAW_IMAGE_MIME_TYPES) | set(EXTENSION_ONLY_FORMATS)
-    assert_that(set(DEFAULT_FORMATS)).is_equal_to(expected)
-    for extension in RAW_IMAGE_MIME_TYPES:
-        assert_that(DEFAULT_FORMATS[extension]).is_equal_to(MediaType.IMAGE)
-    assert_that(DEFAULT_FORMATS).does_not_contain_key("jpg", "mp4", "mp3")
+    """DEFAULT_FORMATS is exactly the RAW and extension-only supplements."""
+    expected = {
+        **dict.fromkeys(_RAW_EXTENSIONS, MediaType.IMAGE),
+        **_EXTENSION_ONLY_TYPES,
+    }
+
+    assert_that(dict(DEFAULT_FORMATS)).is_equal_to(expected)
+    assert_that(dict(EXTENSION_ONLY_FORMATS)).is_equal_to(_EXTENSION_ONLY_TYPES)
+    assert_that(DEFAULT_FORMATS).does_not_contain_key(
+        "jpg", "mp4", "mp3", "vst", "ora", "mdi"
+    )
 
 
 def test_raw_supplement_is_seeded_into_mimetypes() -> None:

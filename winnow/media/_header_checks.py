@@ -416,9 +416,11 @@ def midi(content: Content) -> bool:
 
 
 def fits(content: Content) -> bool:
-    """FITS: the ``SIMPLE`` keyword with value ``T`` in column 30.
+    """FITS: the ``SIMPLE`` keyword with a logical value in column 30.
 
     FITS Standard 4.0, section 4.4.1.1: the primary header's first card.
+    ``T`` marks a conforming file; ``F`` a file that does not conform to
+    the standard, which is still a FITS file.
 
     Args:
         content: File content.
@@ -427,7 +429,7 @@ def fits(content: Content) -> bool:
         Whether the file is FITS.
     """
     head = content.head
-    return head[:10] == b"SIMPLE  = " and head[29:30] == b"T"
+    return head[:10] == b"SIMPLE  = " and head[29:30] in {b"T", b"F"}
 
 
 def djvu(content: Content) -> bool:

@@ -37,7 +37,7 @@ from tests.media.signature_support import (
     riff_chunk,
 )
 from tests.media.test_detect_walks import _AUDIO, _VIDEO, _asf, _extension, _properties
-from winnow.media import _containers, _stream_probe
+from winnow.media import _containers, _packet_streams, _stream_probe
 from winnow.media._detect import DetectionResult, detect
 from winnow.media._ffprobe import BoundedRun
 from winnow.media._signatures import HEAD_BYTES
@@ -368,7 +368,7 @@ def test_program_stream_without_video_bound_needs_a_whole_walk(
 ) -> None:
     """``video_bound`` 0 then corrupt bytes or the cap is not complete."""
     if not tail:
-        monkeypatch.setattr(_containers, "MAX_CHUNKS", 3)
+        monkeypatch.setattr(_packet_streams, "MAX_PROGRAM_STREAM_PACKETS", 3)
     packets = [(0xC0, b"\x00" * 8)] * 4
     data = program_stream(*packets, video_bound=0)[:-4] + tail
 
