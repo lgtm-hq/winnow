@@ -303,18 +303,6 @@ def _ids(evidence: EvidenceSet, *, reader: str) -> list[str]:
     return [o.id for o in evidence.observations if o.reader == reader]
 
 
-def _ids_by_raw(evidence: EvidenceSet) -> dict[str | None, str]:
-    """Map each type observation's raw value to its ID.
-
-    Args:
-        evidence: The evidence set.
-
-    Returns:
-        Raw value to ID, for ``media_type`` observations.
-    """
-    return {o.raw: o.id for o in evidence.observations if o.claim is Claim.MEDIA_TYPE}
-
-
 def _assert_unreadable(evidence: EvidenceSet, *, contains: str) -> None:
     """Assert a set is one unreadable issue and nothing else.
 
@@ -367,7 +355,9 @@ def test_collect_evidence_keeps_every_signal_in_order(media_file: Path) -> None:
     deciding = [o for o in type_observations if (o.raw or "").startswith("decision=")]
     assert_that(deciding).is_length(1)
     assert_that(deciding[0].source).is_equal_to(SourceKind.FTYP)
-    assert_that(deciding[0].locator).is_equal_to("detect:ftyp:decision#0")
+    assert_that(deciding[0].locator).is_equal_to(
+        "detect:ftyp:decision=iso-bmff image brand#0",
+    )
     empty = [o for o in type_observations if o.status is ParseStatus.EMPTY]
     assert_that([o.value for o in empty]).is_not_empty().contains_only(None)
     assert_that({o.reader for o in evidence.observations}).is_equal_to({COLLECTOR})
@@ -382,16 +372,16 @@ def test_collect_evidence_keeps_every_signal_in_order(media_file: Path) -> None:
     assert_that(brands).is_equal_to(list(detection.compatible_brands))
 
 
-def test_collect_evidence_counts_repeated_fields(tmp_path: Path) -> None:
-    """Repeats of one signal field get counters scoped to that field."""
+def test_collect_evidence_counts_only_identical_signals(tmp_path: Path) -> None:
+    """Distinct signals get distinct keys; only identical repeats are counted."""
     path = tmp_path / "x.heic"
     path.write_bytes(b"")
     detection = detect(path).model_copy(
         update={
             "signals": (
-                TypeSignal(source="puremagic", detail=".mp4 a", media_type=None),
-                TypeSignal(source="puremagic", detail=".mov b", media_type=None),
-                TypeSignal(source="puremagic", detail=".mp4 c", media_type=None),
+                TypeSignal(source="puremagic", detail=".jpe a 0.3", media_type=None),
+                TypeSignal(source="puremagic", detail=".jpe a 0.2", media_type=None),
+                TypeSignal(source="puremagic", detail=".jpe a 0.3", media_type=None),
                 TypeSignal(source="extension", detail="decision=x", media_type=None),
             ),
         },
@@ -401,37 +391,82 @@ def test_collect_evidence_counts_repeated_fields(tmp_path: Path) -> None:
 
     assert_that([o.locator for o in evidence.observations]).is_equal_to(
         [
-            "detect:puremagic:.mp4#0",
-            "detect:puremagic:.mov#0",
-            "detect:puremagic:.mp4#1",
-            "detect:extension:decision#0",
+            "detect:puremagic:.jpe a 0.3#0",
+            "detect:puremagic:.jpe a 0.2#0",
+            "detect:puremagic:.jpe a 0.3#1",
+            "detect:extension:decision=x#0",
         ],
     )
 
 
-def test_collect_evidence_ids_survive_unrelated_signals(media_file: Path) -> None:
-    """Removing advisory signals or reordering others keeps every other ID."""
-    detection = detect(media_file)
-    without_puremagic = detection.model_copy(
-        update={
-            "signals": tuple(s for s in detection.signals if s.source != "puremagic"),
-        },
+def _ids_by_locator(evidence: EvidenceSet) -> dict[str, str]:
+    """Map each type observation's locator to its ID.
+
+    Args:
+        evidence: The evidence set.
+
+    Returns:
+        Locator to ID, for ``media_type`` observations.
+    """
+    return {
+        o.locator: o.id for o in evidence.observations if o.claim is Claim.MEDIA_TYPE
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("dated.heic", id="heic"),
+        pytest.param("sample.jpg", id="jpeg"),
+        pytest.param("sample.mp4", id="mp4"),
+        pytest.param("sample.ogg", id="ogg"),
+    ],
+)
+def test_collect_evidence_ids_survive_unrelated_signals(
+    tmp_path: Path,
+    fixtures_dir: Path,
+    name: str,
+) -> None:
+    """Removing one match or reversing the signals keeps every other ID."""
+    path = tmp_path / name
+    shutil.copyfile(fixtures_dir / name, path)
+    detection = detect(path)
+    signals = detection.signals
+    dropped = next(s for s in signals if s.source == "puremagic")
+    without_one = detection.model_copy(
+        update={"signals": tuple(s for s in signals if s is not dropped)},
     )
     reversed_signals = detection.model_copy(
-        update={"signals": tuple(reversed(detection.signals))},
+        update={"signals": tuple(reversed(signals))},
     )
 
-    full = _ids_by_raw(collect_evidence(media_file, readers=(), detection=detection))
-    fewer = _ids_by_raw(
-        collect_evidence(media_file, readers=(), detection=without_puremagic),
+    full = _ids_by_locator(collect_evidence(path, readers=(), detection=detection))
+    fewer = _ids_by_locator(
+        collect_evidence(path, readers=(), detection=without_one),
     )
-    backward = _ids_by_raw(
-        collect_evidence(media_file, readers=(), detection=reversed_signals),
+    backward = _ids_by_locator(
+        collect_evidence(path, readers=(), detection=reversed_signals),
     )
 
-    assert_that(fewer["suffix=.heic"]).is_equal_to(full["suffix=.heic"])
-    assert_that(full).contains_entry(*({raw: i} for raw, i in fewer.items()))
+    assert_that(full).is_length(len(signals))
+    assert_that(fewer).is_length(len(signals) - 1)
+    assert_that(full).contains_entry(*({key: i} for key, i in fewer.items()))
     assert_that(backward).is_equal_to(full)
+
+
+def test_collect_evidence_jpeg_matches_have_distinct_locators(
+    jpeg_file: Path,
+) -> None:
+    """The two ``.jpe`` matches on the shipped JPEG keep separate identities."""
+    evidence = collect_evidence(jpeg_file, readers=())
+
+    jpe = [
+        o.locator
+        for o in evidence.observations
+        if o.source is SourceKind.PUREMAGIC and (o.raw or "").startswith(".jpe ")
+    ]
+    assert_that(jpe).is_length(2).does_not_contain_duplicates()
+    assert_that(jpe).contains("detect:puremagic:.jpe image/jpeg 0.3 bytes=3#0")
 
 
 def test_collect_evidence_reuses_given_detection(
@@ -504,14 +539,42 @@ def test_collect_evidence_flags_change_before_detection(
     media_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detection reading a newer file state than the snapshot is reported."""
+    """A detection of a newer file state stores nothing under the old one."""
     monkeypatch.setattr(evidence_module, "detect", DetectSpy(before=_append))
+    reader = FakeReader(name="any", values=("x",))
 
-    evidence = collect_evidence(media_file, readers=())
+    evidence = collect_evidence(media_file, readers=[reader])
 
-    messages = [i.message for i in evidence.issues if i.status == "file-changed"]
-    assert_that(messages).is_not_empty()
-    assert_that(messages[0]).contains("before detection", "size")
+    assert_that(reader.calls).is_empty()
+    assert_that(evidence.observations).is_empty()
+    assert_that([i.status for i in evidence.issues]).is_equal_to(["file-changed"])
+    assert_that(evidence.issues[0].message).contains("before detection", "size")
+
+
+def test_collect_evidence_overwritten_after_preflight(
+    media_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A HEIC overwritten with text after preflight yields no evidence."""
+    check = evidence_module._check_readable
+
+    def check_then_overwrite(path: Path) -> None:
+        check(path)
+        path.write_text("plain text now, not a HEIC\n")
+
+    monkeypatch.setattr(evidence_module, "_check_readable", check_then_overwrite)
+    reader = FakeReader(name="any", values=("x",))
+
+    evidence = collect_evidence(media_file, readers=[reader])
+
+    assert_that(reader.calls).is_empty()
+    assert_that(evidence.observations).is_empty()
+    snapshot = evidence.snapshot
+    if snapshot is None:
+        pytest.fail("expected the pre-read snapshot")
+    assert_that(snapshot.size).is_equal_to(616)
+    assert_that([i.status for i in evidence.issues]).is_equal_to(["file-changed"])
+    assert_that(evidence.issues[0].message).contains("before detection", "size")
 
 
 def test_collect_evidence_passes_detection_to_readers(media_file: Path) -> None:

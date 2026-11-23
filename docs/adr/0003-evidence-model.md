@@ -131,7 +131,11 @@ observation IDs with the stored evidence, never a bare index.
 1. Stats the file.
 2. Obtains a `DetectionResult`.
 3. Records each `TypeSignal` as a `MEDIA_TYPE` observation, at locator
-   `detect:<source>:<field>#<n>`.
+   `detect:<source>:<detail>#<n>`. Detection gives a signal no identity more precise
+   than its full detail, so the detail is the key, and `<n>` counts only true repeats of
+   an identical signal, in emitted order. Removing, adding or reordering a distinct
+   signal (two PureMagic matches for `.jpe`, for example) never changes another signal's
+   locator or ID.
 4. Records the container, the major brand and each compatible brand as `CONTAINER`
    observations.
 5. Runs each reader in order.
@@ -150,11 +154,14 @@ The following rules apply:
   read, and is `None` when the content was not read. A given result is used only when
   its snapshot matches the file's on path, size, `mtime_ns`, `ctime_ns`, device and
   inode. Otherwise the file is detected afresh. A matching result is never detected
-  again.
-- **Changed.** The file gets a `file-changed` issue in each of these cases:
-  - detection read a different state than the snapshot;
-  - the stat differs after reading;
-  - the file vanished.
+  again. A given result whose content read failed has no snapshot, so the file is read
+  again, and a successful second read is accepted: a successful read establishes the
+  evidence.
+- **Changed.** If detection read a different state than the snapshot, the set holds only
+  a `file-changed` issue. It has no observations and no reader runs, because evidence
+  would otherwise be stored under a snapshot already known to be wrong. The caller
+  decides when to collect again. The collected evidence gets a `file-changed` issue when
+  the stat differs after reading or the file vanished.
 
   Equal stats are a freshness hint, never proof of unchanged content. A consumer that
   needs exact identity reads the file again.

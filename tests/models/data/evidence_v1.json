@@ -100,10 +100,10 @@
       "reader_version": "12.0.0"
     },
     {
-      "id": "sha256:31fbf458fa73c3a967af7203e8dd529de1fa045faee31c832f34494e0b41c545",
+      "id": "sha256:0a42b98e6292c427ecde441318117dfb1048555303efd49df9f6014e582a6b14",
       "claim": "media_type",
       "source": "ftyp",
-      "locator": "detect:ftyp:decision#0",
+      "locator": "detect:ftyp:decision=iso-bmff image brand#0",
       "origin": "/photos/2019/IMG_0001.HEIC",
       "raw": "decision=iso-bmff image brand",
       "value": "image",

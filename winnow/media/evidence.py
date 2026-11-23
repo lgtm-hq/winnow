@@ -22,11 +22,15 @@ Rules:
   :data:`~winnow.models.evidence.FRESHNESS_FIELDS` field (path, size,
   ``mtime_ns``, ``ctime_ns``, device, inode). Otherwise, including when it
   has no snapshot, the file is detected afresh. A matching result is never
-  detected again.
-- **Changed.** A detection read of a different file state than the snapshot,
-  a different stat after reading, or a file that vanished, gives a
-  ``file-changed`` issue. Equal stats are a freshness hint, never proof the
-  content is unchanged.
+  detected again. A given result whose content read failed has no snapshot,
+  so the file is read again, and a successful second read is accepted: a
+  successful read establishes the evidence.
+- **Changed.** When detection read a different file state than the
+  snapshot, the set holds only a ``file-changed`` issue: no observations,
+  no readers run; the caller decides when to collect again. A different
+  stat after reading, or a file that vanished, adds a ``file-changed``
+  issue to the collected evidence. Equal stats are a freshness hint, never
+  proof the content is unchanged.
 - **Foreign origins.** An observation whose ``origin`` is not the collected
   path is not stored; its reader gets a ``failed`` issue. Sidecar evidence
   arrives with #402.
@@ -35,7 +39,6 @@ Rules:
 from __future__ import annotations
 
 import os
-import re
 import stat
 from collections.abc import Sequence
 from pathlib import Path
@@ -65,9 +68,6 @@ COLLECTOR: Final[str] = "winnow"
 """Reader name of the type observations and of the collector's own issues."""
 
 _DECISION_PREFIX: Final[str] = "decision="
-
-_SIGNAL_FIELD: Final[re.Pattern[str]] = re.compile(r"[= ]")
-"""Ends the field name at the start of a signal detail."""
 
 _SIGNAL_SOURCES: Final[dict[str, SourceKind]] = {
     "override": SourceKind.OVERRIDE,
@@ -128,7 +128,10 @@ def collect_evidence(
     """Collect every observation about one file.
 
     See the module docstring for the unreadable, reuse, change and origin
-    rules.
+    rules. A given ``detection`` whose content read failed has no snapshot,
+    so the file is read again and a successful second read is accepted.
+    When detection read a newer file state than the snapshot, the set holds
+    only a ``file-changed`` issue and the caller decides when to collect again.
 
     Args:
         path: The file.
@@ -156,16 +159,16 @@ def collect_evidence(
     if detection.snapshot is None:
         return _unreadable(snapshot=before, detail=_content_failure(detection))
 
-    issues: list[ReadIssue] = []
     stale = detection.snapshot.differences(before)
     if stale:
-        issues.append(
-            ReadIssue(
-                reader=COLLECTOR,
-                status="file-changed",
-                message=f"changed before detection read it: {', '.join(stale)}",
-            ),
+        issue = ReadIssue(
+            reader=COLLECTOR,
+            status="file-changed",
+            message=f"changed before detection read it: {', '.join(stale)}",
         )
+        return EvidenceSet(snapshot=before, observations=(), issues=(issue,))
+
+    issues: list[ReadIssue] = []
     observations = _type_observations(path, detection)
     for reader in readers:
         found, problems = _run_reader(reader, path, detection)
@@ -370,11 +373,12 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
 
     Each signal becomes one ``media_type`` observation whose raw value is
     the signal's detail, ``decision=`` prefix included for the deciding
-    signal. Its locator is ``detect:<source>:<field>#<n>``: the field is the
-    detail's leading name (``major_brand``, ``decision``, ``suffix``, or a
-    puremagic match's extension) and ``n`` counts earlier signals with the
-    same source and field, so a signal appearing or disappearing elsewhere
-    does not move it. The container, the ``ftyp`` major brand and each
+    signal. Its locator is ``detect:<source>:<detail>#<n>``: the detail
+    (stored form) is the signal's own identity, since detection supplies no
+    more precise one, and ``n`` counts earlier signals with the same source
+    and detail, so it moves only between true repeats of an identical
+    signal. A distinct signal appearing, disappearing or moving elsewhere
+    never changes another's locator. The container, the ``ftyp`` major brand and each
     compatible brand (indexed by its position in the ``ftyp`` box) become
     ``container`` observations when detection found them; a container with
     no deciding signal to attribute it to is not recorded.
@@ -389,11 +393,11 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
     seen: dict[tuple[str, str], int] = {}
     observations: list[Observation] = []
     for signal in detection.signals:
-        field = _SIGNAL_FIELD.split(signal.detail, maxsplit=1)[0]
-        key = (signal.source, field)
+        detail = _stored_detail(signal.detail)
+        key = (signal.source, detail)
         occurrence = seen.get(key, 0)
         seen[key] = occurrence + 1
-        locator = f"detect:{signal.source}:{field}#{occurrence}"
+        locator = f"detect:{signal.source}:{detail}#{occurrence}"
         observations.append(_signal_observation(path, locator=locator, signal=signal))
     deciding = _deciding_source(detection)
     if detection.container is not None and deciding is not None:

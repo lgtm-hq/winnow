@@ -41,6 +41,12 @@ KNOWN_CAPTURE_ID = (
 )
 """ID of the golden set's first observation; changes only with a bump."""
 
+KNOWN_TYPE_ID = (
+    "sha256:0a42b98e6292c427ecde441318117dfb1048555303efd49df9f6014e582a6b14"
+)
+"""ID of the golden set's type observation, whose locator names the signal's
+full detail (``detect:<source>:<detail>#<n>``)."""
+
 UNDECODABLE = Path(os.fsdecode(b"/photos/caf\xe9.jpg"))
 """A Latin-1 file name, valid on Linux, that is not UTF-8."""
 
@@ -198,7 +204,7 @@ def _golden_set() -> EvidenceSet:
             claim=Claim.MEDIA_TYPE,
             source=SourceKind.FTYP,
             family="ftyp",
-            locator="detect:ftyp:decision#0",
+            locator="detect:ftyp:decision=iso-bmff image brand#0",
             raw="decision=iso-bmff image brand",
             value="image",
             reader="winnow",
@@ -758,7 +764,9 @@ def test_evidence_set_matches_stored_v1_bytes() -> None:
 
 def test_observation_id_is_pinned() -> None:
     """One known ID pins the identity rule and its canonical form."""
-    assert_that(_golden_set().observations[0].id).is_equal_to(KNOWN_CAPTURE_ID)
+    observations = _golden_set().observations
+    assert_that(observations[0].id).is_equal_to(KNOWN_CAPTURE_ID)
+    assert_that(observations[5].id).is_equal_to(KNOWN_TYPE_ID)
 
 
 @pytest.mark.parametrize(
