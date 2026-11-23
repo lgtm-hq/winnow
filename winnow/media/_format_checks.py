@@ -610,7 +610,29 @@ def _xml_playlist(head: bytes) -> bool:
         return False
     tag_end = head.find(b">", position)
     tag = head[position : tag_end if tag_end >= 0 else len(head)]
-    return b"xspf.org" in tag
+    return _has_attribute_value(tag, _XSPF_NAMESPACE)
+
+
+_XSPF_NAMESPACE: Final = b"http://xspf.org/ns/0/"
+"""The XSPF namespace name (XSPF version 1, section 4.1.1)."""
+
+
+def _has_attribute_value(tag: bytes, value: bytes) -> bool:
+    """Report whether a start tag holds an attribute with exactly ``value``.
+
+    The tag is split at each quote character, so every second piece is a
+    quoted attribute value. A value is compared whole, never searched for.
+
+    Args:
+        tag: The start tag's bytes, without the closing ``>``.
+        value: The attribute value to look for.
+
+    Returns:
+        Whether a double- or single-quoted attribute value equals ``value``.
+    """
+    return any(
+        quoted == value for quote in (b'"', b"'") for quoted in tag.split(quote)[1::2]
+    )
 
 
 __all__ = [

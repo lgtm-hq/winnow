@@ -194,6 +194,29 @@ def test_media_named_as_a_playlist_is_still_media(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("root", "container"),
+    [
+        (b'<playlist version="1" xmlns="http://xspf.org/ns/0/">', "playlist"),
+        (b"<playlist xmlns='http://xspf.org/ns/0/' version='1'>", "playlist"),
+        (b'<playlist xmlns:x="http://xspf.org/ns/0/">', "playlist"),
+        (b'<playlist note="see xspf.org for the format">', "text"),
+        (b'<playlist xmlns="http://xspf.org.example/ns/0/">', "text"),
+    ],
+    ids=["double-quoted", "single-quoted", "prefixed", "mention", "other-host"],
+)
+def test_xspf_needs_the_exact_namespace(
+    tmp_path: Path, root: bytes, container: str
+) -> None:
+    """A ``<playlist`` root is XSPF only with the XSPF namespace as a value."""
+    data = b'<?xml version="1.0"?>\n' + root + b"\n</playlist>\n"
+
+    result = _detect_bytes(tmp_path, data, "list.bin")
+
+    assert_that(result.media_type).is_none()
+    assert_that(result.container).is_equal_to(container)
+
+
 def test_playlist_fifo_is_non_media(tmp_path: Path) -> None:
     """A playlist extension on a path that is not read is still non-media."""
     result = detect(tmp_path / "gone.m3u")
