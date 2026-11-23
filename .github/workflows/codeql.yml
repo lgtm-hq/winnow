@@ -42,26 +42,11 @@ jobs:
       category: '/language:all'
       tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
+      # The preset alone: at lgtm-ci v0.116.3 github-tooling holds exactly
+      # the eight hosts of the old hand-written list, including
+      # release-assets.githubusercontent.com, where CodeQL bundle downloads
+      # redirect (#465).
       egress-preset: github-tooling
-      # CodeQL bundle downloads redirect to
-      # release-assets.githubusercontent.com, which the github-tooling preset
-      # lacks. On pull_request the action prefers the runner toolcache and
-      # rarely downloads, but merge_group/push runs pull the linked default
-      # CLI version and hard-fail on the egress block when it misses the
-      # toolcache (e.g. v2.26.0 rollout, 2026-07-11). The reusable's setup
-      # job hardens with this raw input before the allowlist resolver is
-      # checked out, so the full endpoint list must be passed (the reusable
-      # input default plus the release-assets host) rather than an
-      # append-mode single host.
-      allowed-endpoints: >
-        github.com:443
-        api.github.com:443
-        codeload.github.com:443
-        objects.githubusercontent.com:443
-        raw.githubusercontent.com:443
-        uploads.github.com:443
-        pipelines.actions.githubusercontent.com:443
-        release-assets.githubusercontent.com:443
     permissions:
       # read: the nested SARIF-uploading job requests actions: read
       # (upload-sarif looks up the workflow run via the Actions API;

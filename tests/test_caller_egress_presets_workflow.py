@@ -235,6 +235,33 @@ def test_both_python_callers_run_with_the_default_pypi_preset(
     assert_that(_effective_preset(caller)).is_equal_to("pypi")
 
 
+@pytest.mark.parametrize(
+    ("key", "preset"),
+    [
+        (("docker-build-publish.yml", "docker"), "docker"),
+        (("publish-pypi-on-tag.yml", "pypi-build"), "python-dist"),
+        (("release-version-pr.yml", "version-pr"), "github-minimal"),
+        (("scorecards.yml", "scorecards"), "scorecard"),
+        (("codeql.yml", "codeql"), "github-tooling"),
+    ],
+    ids=["docker", "pypi-build", "version-pr", "scorecards", "codeql"],
+)
+def test_migrated_callers_run_an_accepted_preset(
+    key: tuple[str, str],
+    preset: str,
+) -> None:
+    """Name the preset each call moved to in #465, now that the reusable checks it.
+
+    These calls used to pass a full replacement list, which skips the
+    reusable's preset check. Each now runs its preset, so a preset the pinned
+    reusable does not accept would fail the job.
+    """
+    caller = _callers(_workflows())[key]
+    assert_that(_selection(caller.inputs)).is_equal_to(_Selection.PRESET)
+    assert_that(_effective_preset(caller)).is_equal_to(preset)
+    assert_that(_TABLE[caller.reusable].accepted).contains(preset)
+
+
 def test_every_table_default_is_accepted() -> None:
     """Keep the table consistent: a reusable accepts its own default."""
     for reusable, presets in _TABLE.items():

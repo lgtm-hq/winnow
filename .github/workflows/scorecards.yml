@@ -22,21 +22,27 @@ jobs:
     uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-scorecards.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     with:
       egress-policy: block
-      # Full list: allowed-endpoints is fed verbatim to harden-runner (no
-      # preset resolution in the scorecard job); no lgtm-ci composites run
-      # here so scorecard-action publish verification passes (lgtm-ci #535).
+      # The scorecard preset plus the hosts below: the same 20 hosts as the
+      # old hand-written list (#465). At lgtm-ci v0.116.3 the reusable
+      # composes the list in a separate job in either mode, so the scorecard
+      # job runs the same steps as before (lgtm-ci #535, #1173).
+      # "Called" means by scorecard-action in scheduled run 45224542146.
+      # - api.deps.dev: dependency data for the checks (called).
+      # - agent.api.stepsecurity.io: kept from the old list, harden-runner's
+      #   own API.
+      # - fulcio.sigstore.dev: signing the published results (called).
+      # - rekor.sigstore.dev: transparency log for that signature (called).
+      # - sigstore.dev: kept from the old list (not called).
+      # - tuf-repo-cdn.sigstore.dev: Sigstore trust root (called).
+      # - release-assets.githubusercontent.com: kept from the old list,
+      #   GitHub release downloads (not called).
+      # - oss-fuzz-build-logs.storage.googleapis.com: Fuzzing check (called).
+      # - ossf.github.io: kept from the old list (not called).
+      # - www.bestpractices.dev: CII-Best-Practices check (called).
+      egress-preset: scorecard
+      allowed-endpoints-mode: append
       allowed-endpoints: >
-        github.com:443
-        api.github.com:443
-        codeload.github.com:443
-        objects.githubusercontent.com:443
-        raw.githubusercontent.com:443
-        pipelines.actions.githubusercontent.com:443
-        gcr.io:443
-        api.osv.dev:443
         api.deps.dev:443
-        api.scorecard.dev:443
-        api.securityscorecards.dev:443
         agent.api.stepsecurity.io:443
         fulcio.sigstore.dev:443
         rekor.sigstore.dev:443

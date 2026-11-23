@@ -28,21 +28,21 @@ jobs:
       auto-merge-patch-only: true
       tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
-      # No egress-preset: with a non-empty list in replace mode the reusable
-      # ignores it, and since lgtm-ci v0.111.0 it accepts only github-minimal
-      # and release-version-pr.
-      # Full allowlist (pypi preset + project extras): at v0.69.6
-      # harden-runner enforces the caller's allowed-endpoints literally
-      # (its pre hook cannot see resolved preset output), so partial
-      # append lists would block checkout.
+      # github-minimal plus the hosts below: the same nine hosts as the old
+      # hand-written list (#465). The default release-version-pr preset would
+      # add release-assets.githubusercontent.com and four Rust hosts.
+      # - raw.githubusercontent.com: kept from the old list (not called in
+      #   main runs 45247358964 or 45228243674).
+      # - uploads.github.com: kept from the old list (GitHub upload API; not
+      #   called in those runs).
+      # - pypi.org: the Python version updater installs a package (called by
+      #   python3.14 in run 45247358964).
+      # - files.pythonhosted.org: that package's download (same run).
+      egress-preset: github-minimal
+      allowed-endpoints-mode: append
       allowed-endpoints: >
-        github.com:443
-        api.github.com:443
-        codeload.github.com:443
-        objects.githubusercontent.com:443
         raw.githubusercontent.com:443
         uploads.github.com:443
-        pipelines.actions.githubusercontent.com:443
         pypi.org:443
         files.pythonhosted.org:443
     secrets:
