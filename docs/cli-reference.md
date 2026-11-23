@@ -180,7 +180,8 @@ streams. Flags explain gaps:
   packet flagged corrupt always comes with a `Packet corrupt` warning, so such a file is
   `unrecognized_output` instead. A cut file is `truncated`, `unrecognized_output`,
   `unsupported`, `estimated`, or `inconsistent` (some cuts of fragmented MP4), or
-  `truncated=false` when the cut is no longer than the tolerance below.
+  `truncated=false` when the cut is no longer than the tolerance below, except in
+  fragmented MP4, where it is `estimated`.
 - `unsupported`: no accepted format recognised the file (the header call failed), as for
   AU, Core Audio Format, garbage, or a playlist. It is not a claim of damage.
 - `unrecognized_output`: `ffprobe` wrote a warning that is not known to be harmless for
@@ -222,7 +223,7 @@ Known limits:
   files: one removed frame is never detected; with two removed, 52 MP3 and 14 M4A still
   report `truncated=false` with the full duration; with three, 5 MP3 and no M4A.
   Wherever the duration is checked, a cut no longer than the tolerance reports
-  `truncated=false`.
+  `truncated=false`; in fragmented MP4 it is `estimated`.
 - An MP3 is `estimated` only when `ffprobe` says it estimated the duration (no Xing/Info
   or VBRI header). With such a header the duration is declared and checked.
 - A cut exactly on a page or frame boundary of Ogg, MPEG-TS, ADTS, or AC-3 leaves no
@@ -251,11 +252,14 @@ Known limits:
   edit list (fragmented MP4, or `-use_editlist 0`) the packets hold the priming, so
   every codec except PCM and lossless ones is `estimated` unless the declared duration
   is more than the tolerance above the packet span; a cut shortens the span, so it is
-  still reported `truncated`. Measured with FFmpeg 9.0.2: AAC 1024 samples (128 ms at 8
-  kHz, 93 ms at 11.025 kHz, 21 ms at 48 kHz), MP3 1105 samples (138 ms at 8 kHz, 100 ms
-  at 11.025 kHz, 23 ms at 48 kHz; 32 to 104 ms in MP4), Vorbis in MP4 17 to 134 ms, Opus
-  in MP4 6.5 ms, MP2 in MP4 8 to 70 ms, AC-3 and E-AC-3 with `-use_editlist 0` 6 to 44
-  ms, and AAC from `aac_at` 47 to 324 ms. The measured length still includes it.
+  still reported `truncated`, unless it is on a fragment boundary of a fragmented MP4
+  without a fragment index: that shortens the declared duration too, and the result is
+  `estimated`. Measured with FFmpeg 9.0.2: AAC 1024 samples (128 ms at 8 kHz, 93 ms at
+  11.025 kHz, 21 ms at 48 kHz), MP3 1105 samples (138 ms at 8 kHz, 100 ms at 11.025 kHz,
+  23 ms at 48 kHz; 32 to 104 ms in MP4), Vorbis in MP4 17 to 134 ms, Opus in MP4 6.5 ms,
+  MP2 in MP4 8 to 70 ms, AC-3 and E-AC-3 with `-use_editlist 0` 6 to 44 ms, AAC from
+  `aac_at` 47 to 324 ms, and DTS with no excess (`estimated` at its exact length). The
+  measured length still includes it.
 - MP3 with `-use_editlist 0` at 24 to 48 kHz runs about one packet past its declared
   duration, so a cut of exactly one packet looks healthy and is `estimated` (8 of 2,257
   packet-boundary cuts).
@@ -264,14 +268,32 @@ Known limits:
   FFmpeg 9.0.2: fragmented AAC with `delay_moov` (as AAC above), Vorbis (21 to 134 ms),
   WMA (6 to 60 ms), MP2 (8 to 30 ms), AC-3 and E-AC-3 below 48 kHz (6 to 8 ms), and Opus
   (8 ms), all in Matroska. A cut never looks like priming: it shortens the span but not
-  the declared duration.
+  the declared duration. The exception is a cut on a fragment boundary of a fragmented
+  MP4 without a fragment index, which shortens both and is `estimated`.
 - A checked duration is exact to one codec frame: the packets can run past the true
-  length. On 2,224 healthy generated files every checked duration was within one median
+  length. On 2,915 healthy generated files every checked duration was within one median
   packet of the true length, plus 1 ms in Matroska, whose timestamps are whole
-  milliseconds. Above the 5 ms tolerance were WMA in ASF (up to 60 ms), AAC from
-  `aac_at` in faststart MP4 or MOV (6 to 80.7 ms, up to one frame), FLAC and WavPack in
-  Matroska at 44.1 kHz (23 ms), DTS in Matroska at 44.1 kHz (12 ms against an 11 ms
-  packet), and AC-3 and E-AC-3 in fragmented MP4 with `delay_moov` (5 to 8 ms).
+  milliseconds. Above the 5 ms tolerance were WMA in ASF (up to 60 ms), AAC LC from
+  `aac_at` in faststart MP4 or MOV (6 to 108 ms, under one frame), AC-3 at 44.1 kHz
+  stream-copied into faststart MP4 (27.8 ms, under one frame), FLAC and WavPack in
+  Matroska at 44.1 kHz (23 ms), and DTS in Matroska at 44.1 kHz (12 ms against an 11 ms
+  packet).
+- A fragmented MP4 is never `truncated=false`. Without a fragment index (`sidx` or
+  `mfra`) its declared duration is the sum of the fragments present, so a cut on a
+  fragment boundary shortens it along with the packets. `ffprobe` shows nothing that
+  tells an indexed file apart, so every fragmented MP4 is treated as unindexed: it is
+  `truncated` when the declared duration is longer than the packets, and otherwise
+  `estimated`, healthy files included. A file counts as fragmented when its packets
+  outnumber the samples its `moov` box indexes. A file that keeps its first fragment in
+  `moov` and is cut at its first `moof` has lost every fragment, looks unfragmented, and
+  reports `truncated=false`.
+- HE-AAC in MP4 is `estimated`: its declared duration is 108 to 312 ms past the audio,
+  more than a codec frame, and the measured length is further over (145 ms at 48 kHz up
+  to 444 ms at 16 kHz).
+- In MP4, a first packet longer than the median packet by more than the tolerance makes
+  the duration `estimated`. Without an edit list, B-frame video stretches the first
+  audio packet by its delay (40 ms at 25 fps with one B-frame). A two-packet file whose
+  first packet is the longer one is `estimated` too.
 - Chained Ogg reports no duration and `inconsistent`.
 - A WAV or AIFF written to a pipe makes no damage claim. The AIFF is `unsupported`. A
   short piped WAV is all unknown and a long one keeps its stream facts, both

@@ -41,7 +41,8 @@ class AudioFlag(StrEnum):
     Packet times contradict each other or the declared duration, an MP4
     packet spans a gap, an FLV packet has no time, the file changed while
     it was read, or the primary audio stream has no codec, sample rate, or
-    channel count. A non-faststart MP4 or MOV cut at 90 % gets this.
+    channel count. Some cuts of fragmented MP4 get this (in the fixtures,
+    AAC cut to 35 or 40 %, Opus to 20 %, Vorbis to 55 %).
     """
 
     NO_AUDIO_STREAM = auto()
@@ -62,7 +63,8 @@ class AudioFlag(StrEnum):
     ``unrecognized_output`` instead. A cut file is ``truncated``,
     ``unrecognized_output``, ``unsupported``, ``estimated`` or
     ``inconsistent``; a cut no longer than the A5 tolerance is
-    ``truncated=False``.
+    ``truncated=False``, except in fragmented MP4, where it is
+    ``estimated`` (A15a).
     """
 
     UNRECOGNIZED_OUTPUT = auto()
