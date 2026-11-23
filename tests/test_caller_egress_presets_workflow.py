@@ -96,8 +96,14 @@ _TABLE = {
     "reusable-validate-action-pinning.yml": _presets("github-tooling"),
     "reusable-validate-lintro-version.yml": _presets("quality"),
 }
-# The two Python test calls, which used to pass the quality preset.
-_PYTHON_CALLERS = (("test-ci.yml", "test"), ("test-ci.yml", "test-coverage"))
+# The Python test calls: the two Linux ones, which used to pass the quality
+# preset, and the macOS leg (#375), where the preset is passed but not
+# enforced because the reusable skips harden-runner on macOS.
+_PYTHON_CALLERS = (
+    ("test-ci.yml", "test"),
+    ("test-ci.yml", "test-coverage"),
+    ("test-ci.yml", "test-macos"),
+)
 
 
 class _Selection(StrEnum):
@@ -224,8 +230,10 @@ def test_the_collector_finds_callers_on_every_trigger() -> None:
     )
 
 
-@pytest.mark.parametrize("key", _PYTHON_CALLERS, ids=["test", "test-coverage"])
-def test_both_python_callers_run_with_the_default_pypi_preset(
+@pytest.mark.parametrize(
+    "key", _PYTHON_CALLERS, ids=["test", "test-coverage", "test-macos"]
+)
+def test_every_python_caller_runs_with_the_default_pypi_preset(
     key: tuple[str, str],
 ) -> None:
     """Name the preset the Python matrix and coverage jobs now run with."""

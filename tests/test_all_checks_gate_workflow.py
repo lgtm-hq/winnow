@@ -488,3 +488,128 @@ def test_main_push_ignore_hides_no_other_job() -> None:
     )
     with pytest.raises(AssertionError):
         _assert_main_push_ignore(workflows)
+
+
+# The macOS test leg (#375) is required only through this gate: the reusable
+# polls every check on the head and fails on anything but success, skipped or
+# neutral, so its checks need no ruleset entry. They stop counting if the
+# ignore pattern hides them, or if the leg can be skipped (a skipped check
+# passes): a job ``if``, ``pipeline-skip``, or a path filter on the workflow.
+_TEST_CI = "test-ci.yml"
+_MACOS_JOB = "test-macos"
+_TEST_REUSABLE = "lgtm-hq/lgtm-ci/.github/workflows/reusable-test-python.yml@"
+
+
+def _macos_check_names(job: dict[str, Any]) -> list[str]:
+    """Return the check-run names the macOS leg's reusable call creates.
+
+    A called workflow's checks are named ``<caller job id> / <job name>``,
+    and a matrix leg appends its value in parentheses.
+    """
+    inputs = cast(dict[str, Any], job["with"])
+    versions = [v.strip() for v in str(inputs["python-versions"]).split(",")]
+    legs = [f"{_MACOS_JOB} / {inputs['job-name']} ({v})" for v in versions]
+    coordinators = ("Prepare Python Matrix", "Aggregate Python Results")
+    return legs + [f"{_MACOS_JOB} / {name}" for name in coordinators]
+
+
+def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
+    """Require a failed macOS leg to fail the gate on every gated event."""
+    tests = _workflow_text(workflows[_TEST_CI])
+    assert_that(tests["jobs"]).contains_key(_MACOS_JOB)
+    job = cast(dict[str, Any], tests["jobs"][_MACOS_JOB])
+    assert_that(str(job["uses"]).strip().lower()).starts_with(_TEST_REUSABLE)
+    assert_that(str(job["with"]["runner-image"])).starts_with("macos-")
+    for key in ("if", "continue-on-error", "strategy"):
+        assert_that(job).described_as(f"{_MACOS_JOB} {key}").does_not_contain_key(key)
+    assert_that(job["with"].get("pipeline-skip", False)).is_false()
+
+    # It runs wherever the gate runs: pull requests, main pushes and the
+    # merge queue, with no filter that leaves it out of a run.
+    events = tests["on"]
+    assert_that(events).contains_key("pull_request", "push", "merge_group")
+    for event in ("pull_request", "push"):
+        filters = {"paths", "paths-ignore", "branches-ignore", "tags"}
+        assert_that(filters & set(events[event] or {})).described_as(
+            f"{_TEST_CI} {event}"
+        ).is_empty()
+    assert_that(events["push"]["branches"]).contains("main")
+
+    # Neither the main-push pattern nor the empty one hides its checks.
+    gate = _workflow_text(workflows[_GATE.name])
+    match = _IGNORE_EXPRESSION.match(gate["jobs"]["gate"]["with"]["ignore-checks"])
+    assert_that(match).is_not_none()
+    pattern = cast(re.Match[str], match).group("pattern")
+    names = [str(tests["name"]), *_macos_check_names(job)]
+    for name in names:
+        assert_that(re.search(pattern, name)).described_as(name).is_none()
+
+
+def test_a_macos_only_failure_fails_the_gate() -> None:
+    """Keep every check of the macOS leg visible to the required gate."""
+    workflows = _workflow_texts()
+    _assert_macos_leg_is_gated(workflows)
+    job = _workflow_text(workflows[_TEST_CI])["jobs"][_MACOS_JOB]
+    assert_that(_macos_check_names(job)).contains(
+        "test-macos / 🍎 macOS (3.11)", "test-macos / 🍎 macOS (3.15)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow", "old", "new"),
+    [
+        (
+            "all-checks-gate.yml",
+            "'^Publish - PyPI Production$'",
+            "'^Publish - PyPI Production$|macOS'",
+        ),
+        (
+            "all-checks-gate.yml",
+            "'^Publish - PyPI Production$'",
+            "'^Publish - PyPI Production$|^CI - Tests$'",
+        ),
+        (
+            "all-checks-gate.yml",
+            "'^Publish - PyPI Production$'",
+            "'^Publish - PyPI Production$|^test-macos / '",
+        ),
+        (
+            "test-ci.yml",
+            "  test-macos:\n",
+            "  test-macos:\n    if: github.event_name != 'pull_request'\n",
+        ),
+        (
+            "test-ci.yml",
+            "      runner-image: macos-26\n",
+            "      runner-image: macos-26\n      pipeline-skip: true\n",
+        ),
+        ("test-ci.yml", "      runner-image: macos-26\n", "      runner-image: x\n"),
+        (
+            "test-ci.yml",
+            "  pull_request:\n    branches: [main]\n",
+            "  pull_request:\n    branches: [main]\n    paths-ignore: ['**.md']\n",
+        ),
+        ("test-ci.yml", "  merge_group:\n", ""),
+        ("test-ci.yml", "  test-macos:\n", "  test-darwin:\n"),
+    ],
+    ids=[
+        "ignored-by-name",
+        "ignored-workflow",
+        "ignored-job",
+        "skipped-on-prs",
+        "pipeline-skip",
+        "not-macos",
+        "path-filtered",
+        "not-in-merge-queue",
+        "missing",
+    ],
+)
+def test_a_macos_leg_the_gate_cannot_see_fails(
+    workflow: str, old: str, new: str
+) -> None:
+    """Hiding, skipping or dropping the macOS leg fails the check."""
+    workflows = _workflow_texts()
+    assert_that(workflows[workflow]).contains(old)
+    workflows[workflow] = workflows[workflow].replace(old, new, 1)
+    with pytest.raises(AssertionError):
+        _assert_macos_leg_is_gated(workflows)
