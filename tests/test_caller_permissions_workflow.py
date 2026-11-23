@@ -23,7 +23,7 @@ _REUSABLE = re.compile(
     r"^lgtm-hq/lgtm-ci/\.github/workflows/(?P<name>[^@]+)@", re.IGNORECASE
 )
 # Reusable workflows winnow calls whose own jobs, or nested reusable jobs,
-# request the ``actions`` scope in lgtm-ci v0.99.0. Read from the released
+# request the ``actions`` scope in lgtm-ci v0.116.3. Read from the released
 # workflow files, not from a caller, so a caller that drops the scope is
 # caught. The list is fixed: when winnow starts calling another reusable, or
 # an lgtm-ci release adds the scope to one, it has to be extended.

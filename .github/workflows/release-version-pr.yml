@@ -17,7 +17,7 @@ concurrency:
 jobs:
   version-pr:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-version-pr.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-version-pr.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     with:
       ecosystems: python
       auto-merge: true
@@ -26,11 +26,11 @@ jobs:
       max-bump: major
       # Patch releases auto-merge; minor/major need explicit review.
       auto-merge-patch-only: true
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
-      # Retained intentionally for when lgtm-ci resolves presets before
-      # harden-runner; currently overridden by the explicit list below.
-      egress-preset: pypi
+      # No egress-preset: with a non-empty list in replace mode the reusable
+      # ignores it, and since lgtm-ci v0.111.0 it accepts only github-minimal
+      # and release-version-pr.
       # Full allowlist (pypi preset + project extras): at v0.69.6
       # harden-runner enforces the caller's allowed-endpoints literally
       # (its pre hook cannot see resolved preset output), so partial

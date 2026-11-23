@@ -22,13 +22,13 @@ concurrency:
 jobs:
   security-audit:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     with:
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       # Org ruleset (checks-winnow): security-audit / 🔐 Security Audit
       job-name: '🔐 Security Audit'
       # yamllint disable-line rule:line-length
-      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:20c7c6666d0a8ccd53c304958bdb070883d96bbdaf31ceba6436d0e6a49bb57b
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:a841c59f0804b0c11401321515ab21da0f6970314b8c5611fe97b08cc1a9e1ed # 0.183.3
       runner-image: ubuntu-26.04
       upload-comment-artifact: ${{ github.event_name == 'pull_request' }}
       egress-policy: block
@@ -46,14 +46,13 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     with:
       # Keep up to three earlier runs under "Previous runs" (lgtm-ci #1346).
       comment-history: true
       comment-history-limit: 3
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
-      egress-preset: github-tooling
     permissions:
       # read: checkout repository for comment generation
       contents: read
@@ -74,7 +73,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: list the run's jobs and steps for the issue body
       actions: read

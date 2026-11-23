@@ -24,14 +24,14 @@ jobs:
     name: Generate and verify SBOM
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     with:
       target: .
       target-type: dir
       sbom-format: cyclonedx-json
       scan-vulnerabilities: true
       create-attestation: true
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
       egress-preset: sbom
     permissions:
@@ -58,7 +58,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -72,7 +72,7 @@ jobs:
       verify-tag-version: true
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
       # Full allowlist (python-dist preset + project extras): at v0.77.5
       # harden-runner enforces the caller's allowed-endpoints literally
@@ -117,7 +117,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           # lgtm-ci workflow-contract.md § PyPI build + smoke install
@@ -144,11 +144,11 @@ jobs:
       - name: Prepare distribution
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+          tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
           validate: 'false'
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
@@ -177,7 +177,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           # lgtm-ci workflow-contract.md § PyPI upload (OIDC)
@@ -205,11 +205,11 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+          tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
           signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
@@ -231,7 +231,7 @@ jobs:
     needs: [pypi-upload]
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
       # reusable-github-release @ v0.77.5
@@ -241,7 +241,7 @@ jobs:
     with:
       artifact-name: python-dist
       generate-release-notes: true
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
       egress-preset: github-tooling
 
@@ -257,7 +257,7 @@ jobs:
     steps:
       - name: Harden runner
         # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           # lgtm-ci docs/python-release-publish.md § Homebrew tap dispatch
@@ -268,7 +268,7 @@ jobs:
             objects.githubusercontent.com:443
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
         with:
           formula: winnow
           version: ${{ needs.pypi-build.outputs.version }}
@@ -315,7 +315,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-failure-notifier.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: list the run's jobs and failed-job logs for the issue body
       actions: read

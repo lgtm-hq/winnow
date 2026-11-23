@@ -10,5 +10,19 @@
       "matchPackageNames": ["tomli"],
       "allowedVersions": "<2.4"
     }
+  ],
+  "customManagers": [
+    {
+      "description": "Track the py-lintro image the lgtm-ci reusables run (#353). lgtm-ci's resolve-lintro-image.sh accepts only a digest-only reference, so the tag is the trailing comment on each lintro-image input line. The match starts at a line break and stays within the line; Renovate replaces the digest and the commented tag inside it. The shared preset groups this image with the lintro package.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "\\n[ \\t]*lintro-image:[ \\t]*ghcr\\.io/lgtm-hq/py-lintro@(?<currentDigest>sha256:[a-f0-9]{64})[ \\t]+#[ \\t]*(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/lgtm-hq/py-lintro"
+    }
   ]
 }

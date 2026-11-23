@@ -24,13 +24,14 @@ _REUSABLE = re.compile(
 )
 _DEFAULT_PR_TYPES = ["opened", "synchronize", "reopened"]
 _SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
-# Inputs reusable-publish-file-breakdown.yml declares in lgtm-ci v0.99.0, read
+# Inputs reusable-publish-file-breakdown.yml declares in lgtm-ci v0.116.3, read
 # from the released workflow file. A caller passing anything else would fail
 # to start, so this list only grows when the pin is bumped and checked.
 _BREAKDOWN_INPUTS = frozenset(
     {
         "allowed-endpoints",
         "allowed-endpoints-mode",
+        "comment-fields",
         "comment-history",
         "comment-history-limit",
         "comment-marker",
@@ -46,7 +47,7 @@ _BREAKDOWN_INPUTS = frozenset(
     }
 )
 # Reusables that declare comment-history and comment-history-limit in lgtm-ci
-# v0.99.0. Others, such as reusable-semantic-pr-title.yml, do not.
+# v0.116.3. Others, such as reusable-semantic-pr-title.yml, do not.
 _DECLARE_HISTORY = frozenset(
     {
         "reusable-publish-file-breakdown.yml",
