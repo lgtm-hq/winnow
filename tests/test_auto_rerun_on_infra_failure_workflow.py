@@ -47,7 +47,6 @@ _NEVER_WATCHED = {
     "all-checks-gate.yml",
     "ghcr-cleanup.yml",
     "publish-pypi-on-tag.yml",
-    "publish-testpypi.yml",
     "release-auto-tag.yml",
     "release-version-pr.yml",
 }

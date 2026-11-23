@@ -82,7 +82,6 @@ def test_workflows_carry_their_own_allow_lists() -> None:
     assert_that(names).contains(
         "docker-build-publish.yml",
         "publish-pypi-on-tag.yml",
-        "publish-testpypi.yml",
     )
 
 
@@ -95,6 +94,17 @@ def test_no_allow_list_names_a_known_dead_host() -> None:
     """One dead entry stops the hardening agent, whatever port it names."""
     for where, hosts in _all_allow_lists():
         assert_that(_names(hosts) & _KNOWN_DEAD_NAMES).described_as(where).is_empty()
+
+
+def test_no_allow_list_admits_a_wildcard_host() -> None:
+    """List exact hosts: a wildcard admits names anyone can register.
+
+    ``*.blob.core.windows.net`` admitted every Azure storage account, so a
+    compromised step could send the PyPI OIDC token to one (#432).
+    """
+    for where, hosts in _all_allow_lists():
+        wildcards = {host for host in hosts if "*" in host}
+        assert_that(wildcards).described_as(where).is_empty()
 
 
 def test_dead_names_are_matched_without_the_port() -> None:
