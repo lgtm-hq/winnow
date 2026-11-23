@@ -18,18 +18,33 @@ Rules for every reader that writes observations (ADR "Evidence model"):
   never 1 January 1985.
 - An observation's :attr:`Observation.id` comes from :func:`observation_id`,
   so reordering a collection cannot change it.
+- Paths are stored with :func:`encode_path`, which writes a name that is not
+  valid UTF-8 as ``hex:`` bytes, so every file a filesystem allows can be
+  stored and hashed.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Final, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, NonNegativeInt, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 EVIDENCE_SCHEMA_VERSION: Final[int] = 1
 """Schema version of :class:`EvidenceSet` and everything it contains.
@@ -137,8 +152,9 @@ class Precision(StrEnum):
     """How much of a :class:`TimeValue` the source states.
 
     Components finer than the precision are anchors, not data: they must be
-    the earliest value (month 1, day 1, ``00:00:00.000000``) and are never
-    rendered or compared.
+    the earliest value (month 1, day 1, ``00:00:00``, and fraction digits
+    past :attr:`TimeValue.fraction_digits` zero) and are never rendered or
+    compared.
     """
 
     YEAR = auto()
@@ -147,15 +163,138 @@ class Precision(StrEnum):
     MINUTE = auto()
     SECOND = auto()
     SUBSECOND = auto()
+    """A fraction of a second; :attr:`TimeValue.fraction_digits` says how
+    many digits the source gave."""
 
 
 _DATE_ONLY: Final[frozenset[Precision]] = frozenset(
     {Precision.YEAR, Precision.MONTH, Precision.DAY},
 )
 
+_MICROSECOND_DIGITS: Final[int] = 6
+
+_WALL_TEXT: Final[re.Pattern[str]] = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?",
+)
+"""The only text form of a wall time accepted: a full naive ISO datetime."""
+
 OffsetOrigin = Literal["source", "utc-by-spec", "derived"]
 """Where an offset came from: the file, a UTC-by-specification field, or a
-rule that derived it (for example from GPS time); never the host."""
+rule that derived it from other evidence in the file (#396 defines which;
+never the host, and never a rounded difference of two naive times)."""
+
+HEX_PREFIX: Final[str] = "hex:"
+"""Prefix of a byte string written as lowercase hexadecimal."""
+
+StrictCount = Annotated[StrictInt, Field(ge=0)]
+"""A non-negative integer; booleans, floats and numeric text are rejected."""
+
+
+def _require_unicode(value: str) -> str:
+    """Reject text that cannot be written as UTF-8.
+
+    Args:
+        value: The text.
+
+    Returns:
+        The text unchanged.
+
+    Raises:
+        ValueError: If it holds a lone surrogate, such as an undecodable
+            byte from a file name; such bytes are stored as ``hex:...``.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "text must be valid Unicode; store undecodable bytes as 'hex:...'",
+        ) from exc
+    return value
+
+
+def _printable(value: str) -> str:
+    """Make free text writable as UTF-8, escaping lone surrogates.
+
+    Args:
+        value: The text.
+
+    Returns:
+        The text with each lone surrogate written as ``\\udcXX``.
+    """
+    return value.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+Text = Annotated[str, AfterValidator(_require_unicode)]
+"""Text stored exactly; it must be valid Unicode."""
+
+Message = Annotated[str, AfterValidator(_printable)]
+"""Human-readable text; lone surrogates are escaped, not rejected."""
+
+
+def encode_path(path: Path) -> str:
+    """Encode a path for storage and hashing, reversibly and byte-safely.
+
+    A path whose bytes are valid UTF-8 is stored as that text. A path whose
+    bytes are not (possible on Linux), or whose text itself starts with
+    ``hex:``, is stored as ``hex:`` and its bytes in lowercase hexadecimal.
+    Paths are stored as given: no resolution, case folding or Unicode
+    normalisation, so two spellings of one file are two paths.
+
+    Args:
+        path: The path.
+
+    Returns:
+        The stored text.
+    """
+    raw = os.fsencode(path)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"{HEX_PREFIX}{raw.hex()}"
+    if text.startswith(HEX_PREFIX):
+        return f"{HEX_PREFIX}{raw.hex()}"
+    return text
+
+
+def decode_path(text: str) -> Path:
+    """Invert :func:`encode_path`.
+
+    Args:
+        text: The stored text.
+
+    Returns:
+        The path.
+
+    Raises:
+        ValueError: If a ``hex:`` value is not valid hexadecimal.
+    """
+    if text.startswith(HEX_PREFIX):
+        return Path(os.fsdecode(bytes.fromhex(text.removeprefix(HEX_PREFIX))))
+    return Path(text)
+
+
+def _path_from_stored(value: object) -> object:
+    """Decode stored path text; pass anything else to pydantic.
+
+    Args:
+        value: The input value.
+
+    Returns:
+        The decoded path's text for text input (pydantic then builds the
+        ``Path``; JSON input must reach it as text), otherwise the value
+        unchanged.
+    """
+    if isinstance(value, str):
+        return os.fspath(decode_path(value))
+    return value
+
+
+StoredPath = Annotated[
+    Path,
+    BeforeValidator(_path_from_stored),
+    PlainSerializer(encode_path, return_type=str, when_used="json"),
+]
+"""A path stored with :func:`encode_path` in JSON; a ``Path`` in Python."""
 
 
 class TimeValue(BaseModel):
@@ -164,75 +303,144 @@ class TimeValue(BaseModel):
     Args:
         wall: The clock reading, naive, never shifted to another zone.
             Components finer than ``precision`` hold their anchors (see
-            :class:`Precision`).
+            :class:`Precision`). Text input must be a full
+            ``YYYY-MM-DDTHH:MM:SS[.ffffff]``; a date alone is rejected, not
+            read as midnight.
         offset_minutes: UTC offset from the source itself, or ``None`` when
-            the source states none. Only for minute precision or finer.
+            the source states none. Only for minute precision or finer, and
+            only an integer.
         offset_origin: Where the offset came from; ``None`` exactly when
             ``offset_minutes`` is ``None``.
         precision: How much of ``wall`` the source states.
+        fraction_digits: For :attr:`Precision.SUBSECOND` only, how many
+            fraction digits the source gave. ``wall`` keeps at most six; a
+            source with more is truncated here, and its observation's
+            ``raw`` keeps every digit.
     """
 
     model_config = _MODEL_CONFIG
 
     wall: datetime
-    offset_minutes: int | None
+    offset_minutes: StrictInt | None
     offset_origin: OffsetOrigin | None
     precision: Precision
+    fraction_digits: Annotated[StrictInt, Field(ge=1)] | None = None
+
+    @field_validator("wall", mode="before")
+    @classmethod
+    def _full_wall(cls, value: object) -> object:
+        """Accept a datetime or the full text form only.
+
+        Args:
+            value: The input.
+
+        Returns:
+            The input unchanged.
+
+        Raises:
+            ValueError: For a date, a partial or zoned text, or a number.
+        """
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str) and _WALL_TEXT.fullmatch(value):
+            return value
+        raise ValueError(
+            "wall must be a datetime or full 'YYYY-MM-DDTHH:MM:SS[.ffffff]' text",
+        )
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
-        """Reject aware walls, inconsistent offsets and invented components.
+        """Reject values that claim more than the source stated.
 
         Returns:
             The validated value.
 
         Raises:
-            ValueError: If ``wall`` is aware, the offset and its origin
-                disagree, the offset is out of range or not allowed at this
-                precision, or a component below the precision is not its
-                anchor.
+            ValueError: If ``wall`` is aware or folded, the offset and its
+                origin disagree, the offset is out of range or not allowed
+                at this precision, the fraction digits do not fit the
+                precision, a component below the precision is not its
+                anchor, or the UTC instant is not representable.
         """
         if self.wall.tzinfo is not None:
             raise ValueError("wall must be naive; put the offset in offset_minutes")
+        if self.wall.fold:
+            raise ValueError("wall must have fold=0; a naive wall has no fold")
         _check_offset(self.offset_minutes, self.offset_origin, self.precision)
-        _check_anchors(self.wall, self.precision)
+        _check_fraction_digits(self.fraction_digits, self.precision)
+        _check_anchors(self.wall, self.precision, self.fraction_digits)
+        if self.offset_minutes is not None:
+            try:
+                _to_utc(self.wall, self.offset_minutes)
+            except OverflowError as exc:
+                raise ValueError(
+                    "the UTC instant of this wall time and offset is outside"
+                    " the representable range",
+                ) from exc
         return self
 
     def instant(self) -> datetime | None:
         """Return the moment in UTC, when the source establishes one.
 
+        For a minute or a fraction of a second the moment is the start of
+        that interval: ``10:10`` at ``+09:00`` gives ``01:10:00`` UTC, the
+        first instant of the stated minute. Validation guarantees the
+        conversion is representable, so this never raises.
+
         Returns:
             An aware UTC datetime when ``offset_minutes`` is set, otherwise
-            ``None``. A wall reading without an offset is not an instant.
+            ``None``. A wall reading without an offset is not an instant,
+            and date-only values never have an offset.
         """
         if self.offset_minutes is None:
             return None
-        zone = timezone(timedelta(minutes=self.offset_minutes))
-        return self.wall.replace(tzinfo=zone).astimezone(UTC)
+        return _to_utc(self.wall, self.offset_minutes)
 
     def render(self) -> str:
         """Render only the components the source states.
 
         Returns:
-            ISO 8601 text: ``1985``, ``1985-07``, ``1985-07-04``,
-            ``1985-07-04T10:10``, ``1985-07-04T10:10:10`` or
-            ``1985-07-04T10:10:10.123000``, with ``+09:00`` appended when an
-            offset is known.
+            ISO 8601 text with a four-digit year on every platform:
+            ``1985``, ``1985-07``, ``1985-07-04``, ``1985-07-04T10:10``,
+            ``1985-07-04T10:10:10`` or ``1985-07-04T10:10:10.123`` (as many
+            fraction digits as the source gave, at most six), with
+            ``+09:00`` appended when an offset is known.
         """
         wall = self.wall
-        text = {
-            Precision.YEAR: f"{wall:%Y}",
-            Precision.MONTH: f"{wall:%Y-%m}",
-            Precision.DAY: f"{wall:%Y-%m-%d}",
-            Precision.MINUTE: f"{wall:%Y-%m-%dT%H:%M}",
-            Precision.SECOND: f"{wall:%Y-%m-%dT%H:%M:%S}",
-            Precision.SUBSECOND: f"{wall:%Y-%m-%dT%H:%M:%S}.{wall.microsecond:06d}",
-        }[self.precision]
+        parts = {
+            Precision.YEAR: f"{wall.year:04d}",
+            Precision.MONTH: f"-{wall.month:02d}",
+            Precision.DAY: f"-{wall.day:02d}",
+            Precision.MINUTE: f"T{wall.hour:02d}:{wall.minute:02d}",
+            Precision.SECOND: f":{wall.second:02d}",
+            Precision.SUBSECOND: f".{wall.microsecond:06d}"[
+                : 1 + min(self.fraction_digits or 0, _MICROSECOND_DIGITS)
+            ],
+        }
+        order = list(Precision)
+        text = "".join(parts[p] for p in order[: order.index(self.precision) + 1])
         if self.offset_minutes is None:
             return text
         sign = "-" if self.offset_minutes < 0 else "+"
         hours, minutes = divmod(abs(self.offset_minutes), 60)
         return f"{text}{sign}{hours:02d}:{minutes:02d}"
+
+
+def _to_utc(wall: datetime, offset_minutes: int) -> datetime:
+    """Convert a naive wall time at a fixed offset to UTC.
+
+    Args:
+        wall: The naive clock reading.
+        offset_minutes: Its UTC offset.
+
+    Returns:
+        The aware UTC datetime.
+
+    Raises:
+        OverflowError: If the result is outside ``datetime``'s range.
+    """
+    zone = timezone(timedelta(minutes=offset_minutes))
+    return wall.replace(tzinfo=zone).astimezone(UTC)
 
 
 def _check_offset(
@@ -267,12 +475,34 @@ def _check_offset(
         raise ValueError(f"a {precision} value has no time of day to offset")
 
 
-def _check_anchors(wall: datetime, precision: Precision) -> None:
+def _check_fraction_digits(fraction_digits: int | None, precision: Precision) -> None:
+    """Check that fraction digits are given exactly for subsecond values.
+
+    Args:
+        fraction_digits: The source's fraction digit count, or ``None``.
+        precision: The value's precision.
+
+    Raises:
+        ValueError: If a subsecond value lacks the count or another value
+            has one.
+    """
+    if precision is Precision.SUBSECOND and fraction_digits is None:
+        raise ValueError("a subsecond value needs fraction_digits")
+    if precision is not Precision.SUBSECOND and fraction_digits is not None:
+        raise ValueError(f"a {precision} value has no fraction digits")
+
+
+def _check_anchors(
+    wall: datetime,
+    precision: Precision,
+    fraction_digits: int | None,
+) -> None:
     """Check that components below the precision hold their anchors.
 
     Args:
         wall: The clock reading.
         precision: How much of it the source states.
+        fraction_digits: Fraction digits the source gave, for subseconds.
 
     Raises:
         ValueError: If a component the source does not state is not its
@@ -292,6 +522,9 @@ def _check_anchors(wall: datetime, precision: Precision) -> None:
         components = (*components, *time_of_day)
     elif precision is not Precision.SUBSECOND:
         components = (*components, wall.microsecond)
+    elif fraction_digits is not None and fraction_digits < _MICROSECOND_DIGITS:
+        unit = 10 ** (_MICROSECOND_DIGITS - fraction_digits)
+        components = (wall.microsecond % unit,)
     if any(components):
         raise ValueError(
             f"a {precision} value must leave finer components at their anchors",
@@ -320,15 +553,21 @@ class ParseStatus(StrEnum):
 class Observation(BaseModel):
     """One value one reader saw in one place.
 
+    Every text field must be valid Unicode: a reader writes bytes as
+    ``"hex:..."`` rather than as undecodable text.
+
     Args:
         id: Stable identity from :func:`observation_id`.
         claim: What the value is about.
         source: Where it was read.
         locator: The exact field, for example ``"ExifIFD:DateTimeOriginal"``,
             ``"ftyp:major_brand"`` or ``"fs:st_birthtime"``. Repeated
-            occurrences of one field get distinct locators. XML fields are
-            named by namespace URI and local name, never by prefix.
-        origin: The media file, or the sidecar the value came from.
+            occurrences of one field get distinct locators through a
+            ``#<n>`` occurrence counter scoped to that field, in emitted
+            order. XML fields are named by namespace URI and local name,
+            never by prefix.
+        origin: The file the value came from. Until #402, always the file
+            being collected; stored with :func:`encode_path`.
         raw: The value as read: bytes as ``"hex:..."``, rationals as
             ``"n/d"``, joined fields as ``"a | b"``; ``None`` when absent.
         value: The parsed value, or ``None`` when nothing parsed.
@@ -343,17 +582,17 @@ class Observation(BaseModel):
 
     model_config = _MODEL_CONFIG
 
-    id: str
+    id: Text
     claim: Claim
     source: SourceKind
-    locator: str
-    origin: Path
-    raw: str | None
-    value: TimeValue | str | None
+    locator: Text
+    origin: StoredPath
+    raw: Text | None
+    value: TimeValue | Text | None
     status: ParseStatus
-    family: str
-    reader: str
-    reader_version: str
+    family: Text
+    reader: Text
+    reader_version: Text
 
 
 ReadIssueStatus = Literal["backend-unavailable", "unreadable", "failed", "file-changed"]
@@ -366,14 +605,26 @@ class ReadIssue(BaseModel):
     Args:
         reader: The reader concerned, or ``"winnow"`` for the collector.
         status: What went wrong.
-        message: A human-readable detail.
+        message: A human-readable detail; undecodable characters are
+            escaped.
     """
 
     model_config = _MODEL_CONFIG
 
-    reader: str
+    reader: Text
     status: ReadIssueStatus
-    message: str
+    message: Message
+
+
+FRESHNESS_FIELDS: Final[tuple[str, ...]] = (
+    "path",
+    "size",
+    "mtime_ns",
+    "ctime_ns",
+    "device",
+    "inode",
+)
+"""The :class:`FileSnapshot` fields compared to decide a file is unchanged."""
 
 
 class FileSnapshot(BaseModel):
@@ -383,7 +634,8 @@ class FileSnapshot(BaseModel):
     unchanged; a consumer that needs exact identity reads the file again.
 
     Args:
-        path: The file, as given to the collector.
+        path: The file, as given to the collector; stored with
+            :func:`encode_path`.
         size: Size in bytes.
         mtime_ns: Modification time, nanoseconds since the epoch.
         device: ``st_dev``.
@@ -396,13 +648,50 @@ class FileSnapshot(BaseModel):
 
     model_config = _MODEL_CONFIG
 
-    path: Path
-    size: NonNegativeInt
-    mtime_ns: int
-    device: NonNegativeInt
-    inode: NonNegativeInt
-    ctime_ns: int
-    birthtime_ns: int | None = None
+    path: StoredPath
+    size: StrictCount
+    mtime_ns: StrictInt
+    device: StrictCount
+    inode: StrictCount
+    ctime_ns: StrictInt
+    birthtime_ns: StrictInt | None = None
+
+    @classmethod
+    def from_stat(cls, path: Path, result: os.stat_result) -> FileSnapshot:
+        """Build a snapshot from a ``stat`` result.
+
+        Args:
+            path: The path that was stat'ed (or opened and ``fstat``'ed).
+            result: The result.
+
+        Returns:
+            The snapshot.
+        """
+        birthtime: int | None = getattr(result, "st_birthtime_ns", None)
+        return cls(
+            path=path,
+            size=result.st_size,
+            mtime_ns=result.st_mtime_ns,
+            device=result.st_dev,
+            inode=result.st_ino,
+            ctime_ns=result.st_ctime_ns,
+            birthtime_ns=birthtime,
+        )
+
+    def differences(self, other: FileSnapshot) -> tuple[str, ...]:
+        """Name the :data:`FRESHNESS_FIELDS` that differ from ``other``.
+
+        Args:
+            other: The snapshot to compare with.
+
+        Returns:
+            The differing field names, empty when the file looks unchanged.
+        """
+        return tuple(
+            name
+            for name in FRESHNESS_FIELDS
+            if getattr(self, name) != getattr(other, name)
+        )
 
 
 class EvidenceSet(BaseModel):
@@ -411,9 +700,11 @@ class EvidenceSet(BaseModel):
     ``EvidenceSet.model_dump_json()`` is the stored and ``--json`` form.
 
     Args:
-        schema_version: :data:`EVIDENCE_SCHEMA_VERSION` when written.
+        schema_version: :data:`EVIDENCE_SCHEMA_VERSION`; any other version is
+            rejected rather than read as this one.
         snapshot: The file's identity before reading; ``None`` only when the
-            file could not be stat'ed, and then ``issues`` says so.
+            file could not be stat'ed, and then there are no observations
+            and ``issues`` holds an ``unreadable`` issue.
         observations: Every observation, in collection order.
         issues: Reasons evidence is missing or may be stale.
         dependencies: Every other file read, sidecars and ambiguous
@@ -424,12 +715,52 @@ class EvidenceSet(BaseModel):
 
     model_config = _MODEL_CONFIG
 
-    schema_version: int = EVIDENCE_SCHEMA_VERSION
+    schema_version: StrictInt = EVIDENCE_SCHEMA_VERSION
     snapshot: FileSnapshot | None
     observations: tuple[Observation, ...]
     issues: tuple[ReadIssue, ...]
     dependencies: tuple[FileSnapshot, ...] = ()
-    association_fingerprint: str | None = None
+    association_fingerprint: Text | None = None
+
+    @field_validator("schema_version")
+    @classmethod
+    def _supported_version(cls, value: int) -> int:
+        """Reject a schema version this code does not write.
+
+        Args:
+            value: The stored version.
+
+        Returns:
+            The version.
+
+        Raises:
+            ValueError: If it is not :data:`EVIDENCE_SCHEMA_VERSION`.
+        """
+        if value != EVIDENCE_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported evidence schema version {value};"
+                f" this code reads {EVIDENCE_SCHEMA_VERSION}",
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _unstat_means_unreadable(self) -> Self:
+        """Require an unreadable issue and no observations without a snapshot.
+
+        Returns:
+            The validated set.
+
+        Raises:
+            ValueError: If ``snapshot`` is ``None`` but observations exist or
+                no issue says the file was unreadable.
+        """
+        if self.snapshot is not None:
+            return self
+        if self.observations:
+            raise ValueError("observations need the snapshot they were read under")
+        if not any(issue.status == "unreadable" for issue in self.issues):
+            raise ValueError("a set without a snapshot needs an unreadable issue")
+        return self
 
 
 class Certainty(StrEnum):
@@ -452,15 +783,16 @@ class Rejection(BaseModel):
 
     model_config = _MODEL_CONFIG
 
-    observation: NonNegativeInt
-    reason: str
+    observation: StrictCount
+    reason: Text
 
 
 class Decision(BaseModel):
     """What a rule decided for one claim, kept apart from the evidence.
 
     Indices refer to the :class:`EvidenceSet` the decision was made from and
-    are local to it; durable references use observation IDs.
+    are local to it; durable references use observation IDs. Checking the
+    indices against that set is the job of whatever stores the two together.
 
     Args:
         claim: What was decided.
@@ -481,19 +813,23 @@ class Decision(BaseModel):
     model_config = _MODEL_CONFIG
 
     claim: Claim
-    value: TimeValue | str | None
+    value: TimeValue | Text | None
     certainty: Certainty
-    rule_id: str
-    rule_version: int
-    chosen: tuple[NonNegativeInt, ...]
+    rule_id: Text
+    rule_version: StrictInt
+    chosen: tuple[StrictCount, ...]
     rejected: tuple[Rejection, ...]
-    conflicts: tuple[NonNegativeInt, ...]
-    warnings: tuple[str, ...] = ()
-    incomparable: tuple[NonNegativeInt, ...] = ()
+    conflicts: tuple[StrictCount, ...]
+    warnings: tuple[Text, ...] = ()
+    incomparable: tuple[StrictCount, ...] = ()
 
 
 def snapshot_fingerprint(snapshot: FileSnapshot | None) -> str | None:
     """Fingerprint a snapshot for :func:`observation_id`.
+
+    The fingerprint covers every snapshot field: path (as
+    :func:`encode_path` writes it), size, ``mtime_ns``, device, inode,
+    ``ctime_ns`` and ``birthtime_ns``.
 
     Args:
         snapshot: The snapshot, or ``None`` when the file was not stat'ed.
@@ -510,11 +846,13 @@ def observation_id(observation: Observation, *, snapshot: FileSnapshot | None) -
     """Derive an observation's stable identity.
 
     The identity is a SHA-256 over a canonical JSON object of the evidence
-    schema version, the source snapshot's fingerprint, the origin, the exact
-    locator, the raw value, the parsed value, the status and the reader
-    fingerprint (``reader`` and ``reader_version``). The observation's
-    current ``id``, its position and the rest of the collection are not part
-    of it, so reordering a collection cannot change it.
+    schema version, the source snapshot's fingerprint, the origin, the
+    claim, the source, the family, the exact locator, the raw value, the
+    parsed value, the status and the reader fingerprint (``reader`` and
+    ``reader_version``). Two observations share an ID only when they say the
+    same thing about the same field occurrence of the same file state. The
+    observation's current ``id``, its position and the rest of the
+    collection are not part of it.
 
     Args:
         observation: The observation; its ``id`` is ignored.
@@ -527,7 +865,10 @@ def observation_id(observation: Observation, *, snapshot: FileSnapshot | None) -
     payload = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "snapshot": snapshot_fingerprint(snapshot),
-        "origin": str(observation.origin),
+        "origin": encode_path(observation.origin),
+        "claim": str(observation.claim),
+        "source": str(observation.source),
+        "family": observation.family,
         "locator": observation.locator,
         "raw": observation.raw,
         "value": (
@@ -542,6 +883,9 @@ def observation_id(observation: Observation, *, snapshot: FileSnapshot | None) -
 
 def _sha256(payload: object) -> str:
     """Hash a JSON-compatible object in canonical form.
+
+    Every text in the payload is valid Unicode (paths go through
+    :func:`encode_path`), so the UTF-8 encoding cannot fail.
 
     Args:
         payload: Object of JSON types only.
@@ -561,6 +905,8 @@ def _sha256(payload: object) -> str:
 
 __all__ = [
     "EVIDENCE_SCHEMA_VERSION",
+    "FRESHNESS_FIELDS",
+    "HEX_PREFIX",
     "MAX_OFFSET_MINUTES",
     "MIN_OFFSET_MINUTES",
     "Certainty",
@@ -576,7 +922,10 @@ __all__ = [
     "ReadIssueStatus",
     "Rejection",
     "SourceKind",
+    "StoredPath",
     "TimeValue",
+    "decode_path",
+    "encode_path",
     "observation_id",
     "snapshot_fingerprint",
 ]

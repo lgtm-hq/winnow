@@ -10,11 +10,32 @@ Observation order is deterministic: the type observations first (one
 container, the ``ftyp`` major brand and each compatible brand), then each
 reader's observations in reader order and in the order that reader
 documents.
+
+Rules:
+
+- **Unreadable.** A file that cannot be stat'ed, is not a regular file or
+  cannot be opened, or whose content detection could not read, gives one
+  ``unreadable`` issue and no observations. Neither the type adapter nor any
+  reader runs, so nothing is taken from the file's name alone.
+- **Reused detection.** A given :class:`DetectionResult` is used only when
+  its :attr:`~DetectionResult.snapshot` matches the file's snapshot on every
+  :data:`~winnow.models.evidence.FRESHNESS_FIELDS` field (path, size,
+  ``mtime_ns``, ``ctime_ns``, device, inode). Otherwise, including when it
+  has no snapshot, the file is detected afresh. A matching result is never
+  detected again.
+- **Changed.** A detection read of a different file state than the snapshot,
+  a different stat after reading, or a file that vanished, gives a
+  ``file-changed`` issue. Equal stats are a freshness hint, never proof the
+  content is unchanged.
+- **Foreign origins.** An observation whose ``origin`` is not the collected
+  path is not stored; its reader gets a ``failed`` issue. Sidecar evidence
+  arrives with #402.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import stat
 from collections.abc import Sequence
 from pathlib import Path
@@ -45,6 +66,9 @@ COLLECTOR: Final[str] = "winnow"
 
 _DECISION_PREFIX: Final[str] = "decision="
 
+_SIGNAL_FIELD: Final[re.Pattern[str]] = re.compile(r"[= ]")
+"""Ends the field name at the start of a signal detail."""
+
 _SIGNAL_SOURCES: Final[dict[str, SourceKind]] = {
     "override": SourceKind.OVERRIDE,
     "ftyp": SourceKind.FTYP,
@@ -61,7 +85,8 @@ class EvidenceReader(Protocol):
 
     A reader documents the order of the observations it returns. It may
     leave each observation's ``id`` empty: :func:`collect_evidence` assigns
-    every ``id`` with :func:`~winnow.models.evidence.observation_id`.
+    every ``id`` with :func:`~winnow.models.evidence.observation_id`. Every
+    observation's ``origin`` must be the ``path`` it was given.
     """
 
     name: str
@@ -102,21 +127,16 @@ def collect_evidence(
 ) -> EvidenceSet:
     """Collect every observation about one file.
 
-    A file that cannot be stat'ed, is not a regular file or cannot be opened
-    gives one ``unreadable`` issue and no observations: nothing, not even its
-    name, is read as evidence. A reader that raises gives one ``failed``
-    issue for that reader only. A file whose size, ``mtime_ns``,
-    ``ctime_ns``, device or inode differs after reading, or that vanished,
-    gives a ``file-changed`` issue. Equal stats are a freshness hint, never
-    proof the content is unchanged.
+    See the module docstring for the unreadable, reuse, change and origin
+    rules.
 
     Args:
         path: The file.
         readers: Readers to run, in order.
         registry: Registry for detection; the default registry when
-            ``None``. Ignored when ``detection`` is given.
+            ``None``. Unused when a matching ``detection`` is given.
         detection: The file's detection result when the caller already has
-            one; detection then does not read the file again.
+            one; used without detecting again when its snapshot matches.
 
     Returns:
         The evidence, every observation carrying its stable ``id``. IDs use
@@ -124,17 +144,29 @@ def collect_evidence(
     """
     try:
         before = _snapshot(path)
-    except OSError as exc:
-        return _unreadable(path, snapshot=None, exc=exc)
+    except (OSError, ValueError) as exc:
+        return _unreadable(snapshot=None, detail=_describe(path, exc))
     try:
         _check_readable(path)
     except OSError as exc:
-        return _unreadable(path, snapshot=before, exc=exc)
+        return _unreadable(snapshot=before, detail=_describe(path, exc))
 
-    if detection is None:
+    if detection is None or not _matches(detection, before):
         detection = detect(path, registry=registry)
-    observations = _type_observations(path, detection)
+    if detection.snapshot is None:
+        return _unreadable(snapshot=before, detail=_content_failure(detection))
+
     issues: list[ReadIssue] = []
+    stale = detection.snapshot.differences(before)
+    if stale:
+        issues.append(
+            ReadIssue(
+                reader=COLLECTOR,
+                status="file-changed",
+                message=f"changed before detection read it: {', '.join(stale)}",
+            ),
+        )
+    observations = _type_observations(path, detection)
     for reader in readers:
         found, problems = _run_reader(reader, path, detection)
         observations.extend(found)
@@ -166,17 +198,24 @@ def _snapshot(path: Path) -> FileSnapshot:
 
     Raises:
         OSError: If the file cannot be stat'ed.
+        ValueError: If the path cannot name a file (an embedded NUL).
     """
-    result = os.stat(path)
-    birthtime: int | None = getattr(result, "st_birthtime_ns", None)
-    return FileSnapshot(
-        path=path,
-        size=result.st_size,
-        mtime_ns=result.st_mtime_ns,
-        device=result.st_dev,
-        inode=result.st_ino,
-        ctime_ns=result.st_ctime_ns,
-        birthtime_ns=birthtime,
+    return FileSnapshot.from_stat(path, os.stat(path))
+
+
+def _matches(detection: DetectionResult, snapshot: FileSnapshot) -> bool:
+    """Report whether a given detection result describes this file state.
+
+    Args:
+        detection: The given result.
+        snapshot: The file's snapshot now.
+
+    Returns:
+        ``True`` when the result has a snapshot equal to ``snapshot`` on
+        every freshness field.
+    """
+    return detection.snapshot is not None and not detection.snapshot.differences(
+        snapshot,
     )
 
 
@@ -199,32 +238,53 @@ def _check_readable(path: Path) -> None:
     descriptor = os.open(path, flags)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise _NotRegularFileError(f"not a regular file: {path}")
+            raise _NotRegularFileError("not a regular file")
     finally:
         os.close(descriptor)
 
 
-def _unreadable(
-    path: Path,
-    *,
-    snapshot: FileSnapshot | None,
-    exc: OSError,
-) -> EvidenceSet:
-    """Build the result for a file that cannot be read.
+def _describe(path: Path, exc: Exception) -> str:
+    """Describe why a file cannot be read.
 
     Args:
         path: The file.
+        exc: The error.
+
+    Returns:
+        The path, the error type and its message.
+    """
+    reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else exc
+    return f"{path}: {type(exc).__name__}: {reason}"
+
+
+def _content_failure(detection: DetectionResult) -> str:
+    """Describe why detection did not read the content.
+
+    Args:
+        detection: A result without a snapshot.
+
+    Returns:
+        The details of its ``unavailable=`` signals, or a generic message.
+    """
+    details = [
+        signal.detail
+        for signal in detection.signals
+        if signal.detail.startswith("unavailable=")
+    ]
+    return f"content not read: {'; '.join(details) or 'no snapshot'}"
+
+
+def _unreadable(*, snapshot: FileSnapshot | None, detail: str) -> EvidenceSet:
+    """Build the result for a file that cannot be read.
+
+    Args:
         snapshot: Its snapshot, if it could be stat'ed.
-        exc: Why it cannot be read.
+        detail: Why it cannot be read.
 
     Returns:
         An evidence set with one ``unreadable`` issue and no observations.
     """
-    issue = ReadIssue(
-        reader=COLLECTOR,
-        status="unreadable",
-        message=f"{path}: {type(exc).__name__}: {exc.strerror or exc}",
-    )
+    issue = ReadIssue(reader=COLLECTOR, status="unreadable", message=detail)
     return EvidenceSet(snapshot=snapshot, observations=(), issues=(issue,))
 
 
@@ -235,17 +295,19 @@ def _run_reader(
 ) -> tuple[list[Observation], list[ReadIssue]]:
     """Run one reader, turning an exception into a ``failed`` issue.
 
+    Observations about another file are dropped with a ``failed`` issue.
+
     Args:
         reader: The reader.
         path: The file.
         detection: The file's detection result.
 
     Returns:
-        The reader's observations and issues; on an exception, no
-        observations and one ``failed`` issue.
+        The reader's own-file observations and its issues; on an exception,
+        no observations and one ``failed`` issue.
     """
     try:
-        return reader.read(path, detection=detection)
+        found, problems = reader.read(path, detection=detection)
     except Exception as exc:
         logger.opt(exception=exc).debug(
             "evidence reader {} failed on {}",
@@ -258,6 +320,21 @@ def _run_reader(
             message=f"{type(exc).__name__}: {exc}",
         )
         return [], [issue]
+    own = [observation for observation in found if observation.origin == path]
+    foreign = len(found) - len(own)
+    if foreign:
+        problems = [
+            *problems,
+            ReadIssue(
+                reader=reader.name,
+                status="failed",
+                message=(
+                    f"{foreign} observation(s) about another file not stored:"
+                    " sidecar evidence is not supported yet (#402)"
+                ),
+            ),
+        ]
+    return own, problems
 
 
 def _change(path: Path, before: FileSnapshot) -> ReadIssue | None:
@@ -272,16 +349,13 @@ def _change(path: Path, before: FileSnapshot) -> ReadIssue | None:
     """
     try:
         after = _snapshot(path)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return ReadIssue(
             reader=COLLECTOR,
             status="file-changed",
             message=f"vanished during read: {type(exc).__name__}",
         )
-    fields = ("size", "mtime_ns", "ctime_ns", "device", "inode")
-    differing = [
-        name for name in fields if getattr(before, name) != getattr(after, name)
-    ]
+    differing = before.differences(after)
     if not differing:
         return None
     return ReadIssue(
@@ -296,8 +370,14 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
 
     Each signal becomes one ``media_type`` observation whose raw value is
     the signal's detail, ``decision=`` prefix included for the deciding
-    signal. The container, the ``ftyp`` major brand and each compatible
-    brand become ``container`` observations when detection found them.
+    signal. Its locator is ``detect:<source>:<field>#<n>``: the field is the
+    detail's leading name (``major_brand``, ``decision``, ``suffix``, or a
+    puremagic match's extension) and ``n`` counts earlier signals with the
+    same source and field, so a signal appearing or disappearing elsewhere
+    does not move it. The container, the ``ftyp`` major brand and each
+    compatible brand (indexed by its position in the ``ftyp`` box) become
+    ``container`` observations when detection found them; a container with
+    no deciding signal to attribute it to is not recorded.
 
     Args:
         path: The file.
@@ -306,15 +386,21 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
     Returns:
         The observations, ids not yet assigned.
     """
-    observations = [
-        _signal_observation(path, index=index, signal=signal)
-        for index, signal in enumerate(detection.signals)
-    ]
-    if detection.container is not None:
+    seen: dict[tuple[str, str], int] = {}
+    observations: list[Observation] = []
+    for signal in detection.signals:
+        field = _SIGNAL_FIELD.split(signal.detail, maxsplit=1)[0]
+        key = (signal.source, field)
+        occurrence = seen.get(key, 0)
+        seen[key] = occurrence + 1
+        locator = f"detect:{signal.source}:{field}#{occurrence}"
+        observations.append(_signal_observation(path, locator=locator, signal=signal))
+    deciding = _deciding_source(detection)
+    if detection.container is not None and deciding is not None:
         observations.append(
             _container_observation(
                 path,
-                source=_deciding_source(detection),
+                source=deciding,
                 locator="detect:container",
                 value=detection.container,
             ),
@@ -340,13 +426,17 @@ def _type_observations(path: Path, detection: DetectionResult) -> list[Observati
     return observations
 
 
-def _signal_observation(path: Path, *, index: int, signal: TypeSignal) -> Observation:
+def _signal_observation(
+    path: Path,
+    *,
+    locator: str,
+    signal: TypeSignal,
+) -> Observation:
     """Turn one detection signal into a ``media_type`` observation.
 
     Args:
         path: The file.
-        index: The signal's position in the detection result, which makes
-            the locator of each occurrence distinct.
+        locator: The signal's stable locator.
         signal: The signal.
 
     Returns:
@@ -359,7 +449,7 @@ def _signal_observation(path: Path, *, index: int, signal: TypeSignal) -> Observ
         id="",
         claim=Claim.MEDIA_TYPE,
         source=source,
-        locator=f"detect:signals[{index}]",
+        locator=locator,
         origin=path,
         raw=signal.detail,
         value=None if media_type is None else media_type.value,
@@ -403,19 +493,19 @@ def _container_observation(
     )
 
 
-def _deciding_source(detection: DetectionResult) -> SourceKind:
+def _deciding_source(detection: DetectionResult) -> SourceKind | None:
     """Return the source of the signal that carried the decision.
 
     Args:
         detection: The detection result.
 
     Returns:
-        The deciding signal's source; ``signature`` if none is marked.
+        The deciding signal's source, or ``None`` if none is marked.
     """
     for signal in detection.signals:
         if signal.detail.startswith(_DECISION_PREFIX):
             return _SIGNAL_SOURCES[signal.source]
-    return SourceKind.SIGNATURE
+    return None
 
 
 __all__ = [

@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "snapshot": {
+    "path": "/photos/2019/IMG_0001.HEIC",
+    "size": 2048576,
+    "mtime_ns": 1562231410123456789,
+    "device": 16777229,
+    "inode": 670575813,
+    "ctime_ns": 1562231411000000001,
+    "birthtime_ns": 1562231409000000000
+  },
+  "observations": [
+    {
+      "id": "sha256:a2a2ae76d4d78e409008b3045edc5e6200f2470862db14c38cb9ee7f0a0a2f28",
+      "claim": "capture_time",
+      "source": "exif",
+      "locator": "ExifIFD:DateTimeOriginal#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "2019:07:04 10:10:10 | 123 | +09:00",
+      "value": {
+        "wall": "2019-07-04T10:10:10.123000",
+        "offset_minutes": 540,
+        "offset_origin": "source",
+        "precision": "subsecond",
+        "fraction_digits": 3
+      },
+      "status": "ok",
+      "family": "exif",
+      "reader": "pillow",
+      "reader_version": "12.0.0"
+    },
+    {
+      "id": "sha256:3148720b3fa902dc384a0923635562bc3ee637a301994b3929917f267aea5dc6",
+      "claim": "modified_time",
+      "source": "exif",
+      "locator": "IFD0:DateTime#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "2021:01:01 09:00:00",
+      "value": {
+        "wall": "2021-01-01T09:00:00",
+        "offset_minutes": null,
+        "offset_origin": null,
+        "precision": "second",
+        "fraction_digits": null
+      },
+      "status": "ok",
+      "family": "exif",
+      "reader": "pillow",
+      "reader_version": "12.0.0"
+    },
+    {
+      "id": "sha256:eb94a558eeb0025aecb2ca4cb1bcf948606a16bc8eed3435b6ad809fe114fe4b",
+      "claim": "container_created_time",
+      "source": "quicktime",
+      "locator": "QuickTime:mvhd:CreationTime#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "3645158400",
+      "value": {
+        "wall": "2019-07-04T01:10:00",
+        "offset_minutes": 0,
+        "offset_origin": "utc-by-spec",
+        "precision": "minute",
+        "fraction_digits": null
+      },
+      "status": "ok",
+      "family": "quicktime-mvhd",
+      "reader": "ffprobe",
+      "reader_version": "8.0"
+    },
+    {
+      "id": "sha256:bfc44e1914f59f30c58c85146112ba555002ea9a59588fe6fe27a9dc3b94e6ea",
+      "claim": "release_time",
+      "source": "audio_tag",
+      "locator": "ID3:TORY#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "1985",
+      "value": {
+        "wall": "1985-01-01T00:00:00",
+        "offset_minutes": null,
+        "offset_origin": null,
+        "precision": "year",
+        "fraction_digits": null
+      },
+      "status": "ok",
+      "family": "id3v2",
+      "reader": "mutagen",
+      "reader_version": "1.47.0"
+    },
+    {
+      "id": "sha256:1ec6b20c04f005e2d0008f0c074738594c6a4ec11a7ffd5a6ae2883d474952b8",
+      "claim": "content_id",
+      "source": "exif",
+      "locator": "ExifIFD:ImageUniqueID#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "hex:00ff10",
+      "value": null,
+      "status": "malformed",
+      "family": "exif",
+      "reader": "pillow",
+      "reader_version": "12.0.0"
+    },
+    {
+      "id": "sha256:31fbf458fa73c3a967af7203e8dd529de1fa045faee31c832f34494e0b41c545",
+      "claim": "media_type",
+      "source": "ftyp",
+      "locator": "detect:ftyp:decision#0",
+      "origin": "/photos/2019/IMG_0001.HEIC",
+      "raw": "decision=iso-bmff image brand",
+      "value": "image",
+      "status": "ok",
+      "family": "ftyp",
+      "reader": "winnow",
+      "reader_version": "0.38.0"
+    }
+  ],
+  "issues": [
+    {
+      "reader": "ffprobe",
+      "status": "backend-unavailable",
+      "message": "ffprobe not found on PATH"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "hex:2f70686f746f732f636166e92e6a7067",
+      "size": 512,
+      "mtime_ns": 1562231410123456789,
+      "device": 16777229,
+      "inode": 670575813,
+      "ctime_ns": 1562231411000000001,
+      "birthtime_ns": 1562231409000000000
+    }
+  ],
+  "association_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
