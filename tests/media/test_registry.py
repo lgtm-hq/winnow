@@ -265,11 +265,19 @@ def test_detect_media_type_falls_back_to_name_for_missing_file(
 def test_detect_media_type_falls_back_to_name_for_unrecognized_content(
     tmp_path: Path,
 ) -> None:
-    """Unrecognized bytes defer to the name-based fallback."""
+    """Unrecognized binary bytes defer to the name-based fallback."""
+    unrecognized = tmp_path / "recording.mp3"
+    unrecognized.write_bytes(b"\x01\x02\x03\x04 binary, no magic here\x00")
+
+    assert_that(detect_media_type(unrecognized)).is_equal_to(MediaType.AUDIO)
+
+
+def test_detect_media_type_plain_text_is_not_media(tmp_path: Path) -> None:
+    """Plain text is recognised as non-media; its name does not override."""
     plain_text = tmp_path / "playlist.mp3"
     plain_text.write_bytes(b"just some plain text, no magic here\n")
 
-    assert_that(detect_media_type(plain_text)).is_equal_to(MediaType.AUDIO)
+    assert_that(detect_media_type(plain_text)).is_none()
 
 
 def test_detect_media_type_returns_none_when_all_layers_fail(
@@ -287,7 +295,7 @@ def test_sniff_skips_matches_without_mime_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """puremagic matches lacking a MIME type are skipped, not fatal."""
-    target = tmp_path / "sample.bin"
+    target = tmp_path / "sample.png"
     target.write_bytes(b"\x00\x01")
 
     class _Match:
@@ -298,7 +306,7 @@ def test_sniff_skips_matches_without_mime_type(
             self.byte_match = b"\x89PNG"
 
     monkeypatch.setattr(
-        "winnow.media._detect.puremagic.magic_file",
+        "winnow.media._detect.puremagic.magic_stream",
         lambda _: [_Match(None), _Match(""), _Match("image/png")],
     )
 
