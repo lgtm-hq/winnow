@@ -117,11 +117,16 @@ back in its own format:
 
 - Values from the `.local` companion file and `WINNOW_*` variables never reach the file,
   and other keys keep their cast markers (`workers: "@int 4"`).
-- In a YAML file only the key's line changes: comments, quoting, indentation, flow
-  lists, anchors, key order and the file's spelling of null (empty, `null`, `~`, `Null`
-  or `NULL`) are kept. A null that `set` writes uses that spelling, or the empty form in
-  a file that spells none. A file the YAML round trip would change elsewhere is refused
-  (see below).
+- In a YAML file only the key's lines change: comments, quoting, indentation, flow
+  lists, anchors, key order, the file's spelling of null (empty, `null`, `~`, `Null` or
+  `NULL`) and the letter case of its booleans (`true`, `True` or `TRUE`) are kept. A
+  null or boolean that `set` writes uses that spelling, or the empty null and lowercase
+  booleans in a file that writes none. Only real values count: quoted text such as
+  `"[~]"` does not set the spelling. Comments and blank lines after the old value, or
+  after the last key of the mapping a new key joins, stay after the new value, and an
+  item or key the new value keeps keeps its inline comment. A file the YAML round trip
+  would change elsewhere, or an edit that would move or drop a comment or blank line, is
+  refused (see below).
 - A JSON file is re-serialised with the indent it uses. Keys, their order and values are
   kept, while spacing, number forms and escapes can change: a compact one-line file
   `{"workers":2}` comes back as `{"workers": 3}`, and an inline array such as
@@ -148,10 +153,21 @@ fail with an error and leave the file untouched:
   among its leading comments;
 - a YAML file that is an empty document (`null`, `~` or `{}`) holding a comment;
 - a YAML file the round trip would change beyond the key: bare `-` items, an empty `-`
-  included; `+` chomping on a block scalar; block scalar text indented differently from
-  the mappings; values aligned with extra spaces (`workers:    2`); trailing spaces;
-  null spellings mixed in one file (`null` with `~` or empty values); an empty null in a
-  flow map (`{output_dir: }`); and an anchored empty null (`a: &n` with `b: *n`);
+  included; `+` chomping on a block scalar where the round trip rewrites it, such as at
+  the end of the file or with no blank line after it; block scalar text indented
+  differently from the mappings; values aligned with extra spaces (`workers:    2`);
+  trailing spaces; null spellings mixed in one file (`null` with `~` or empty values);
+  booleans in mixed letter case (`True` with `false`); an empty null in a flow map
+  (`{output_dir: }`); and anchored nulls and anchored dates (`a: &n`,
+  `d: &d 2024-01-01`), whether an alias refers to them or not;
+- layouts that formatters produce and the round trip rewrites: flow collections with
+  spaces inside the brackets (`{ enabled: true }`, `[ /a, /b ]`), flow collections
+  wrapped over several lines, plain scalars wrapped over several lines, nested lists
+  written `- - a`, an explicit indent indicator (`|2`) where the text does not need one,
+  and mapping or list indents that differ within one file;
+- an edit that would drop or move a comment or blank line: a comment inside the value
+  being replaced that the new value does not keep, an inline comment on a list item the
+  new list does not keep, or a change on both sides of a kept comment;
 - a `NaN` or infinite number, or a value the file's format cannot hold;
 - a JSON file with a duplicate key or a byte order mark, or a YAML file that does not
   parse;
