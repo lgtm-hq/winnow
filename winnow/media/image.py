@@ -224,7 +224,7 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
     """
     try:
         with Image.open(path) as image:
-            tags = _maker_note_tags_from_pillow(image)
+            tags = apple_maker_note_tags(image)
     except Exception as exc:  # noqa: BLE001 - codec plugins may raise anything
         logger.debug("Pillow MakerNote read failed for {}: {}", path, exc)
         tags = None
@@ -248,7 +248,7 @@ def read_maker_note_tags(path: Path) -> dict[str, str]:
     }
 
 
-def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str] | None:
+def apple_maker_note_tags(image: Image.Image) -> dict[str, str] | None:
     """Decode the Apple MakerNote from an opened Pillow image's EXIF.
 
     The Apple MakerNote is a 12-byte header (``Apple iOS\\0`` plus a 2-byte
