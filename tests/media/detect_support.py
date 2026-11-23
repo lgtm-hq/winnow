@@ -7,8 +7,10 @@ import io
 import itertools
 import os
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 from assertpy import assert_that
@@ -40,6 +42,8 @@ AUDIO_IN = ("-f", "lavfi", "-i", "sine=duration=0.3")
 AUDIO_48K_IN = ("-f", "lavfi", "-i", "sine=duration=0.3:sample_rate=48000")
 
 _CODEC_FLAGS = frozenset({"-c", "-c:a", "-c:v", "-codec", "-acodec", "-vcodec"})
+
+T = TypeVar("T")
 
 
 @functools.cache
@@ -150,6 +154,31 @@ def write_canon(path: Path, profile: bytes | None) -> Path:
     return path
 
 
+def cpu_seconds(call: Callable[[], T]) -> tuple[T, float]:
+    """Run ``call`` and return its result with the CPU seconds the process used.
+
+    The work bounds in the timing tests compare this, not wall-clock time:
+    wall-clock time also counts the time the process waited to be scheduled,
+    so a slow or busy runner could fail a bound although no extra work was
+    done. The count comes from :func:`time.process_time`, which on Linux and
+    macOS reads ``CLOCK_PROCESS_CPUTIME_ID`` with a resolution near a
+    microsecond. It is the user plus system CPU time of every thread of this
+    process, so it includes a worker thread such as the one
+    :func:`detect_with_deadline` starts, and the kernel time of its read
+    calls. It does not include time spent blocked, which uses no CPU, nor
+    the CPU time of child processes such as ffprobe.
+
+    Args:
+        call: The work to measure.
+
+    Returns:
+        What ``call`` returned, and the CPU seconds the process used meanwhile.
+    """
+    start = time.process_time()
+    result = call()
+    return result, time.process_time() - start
+
+
 def detect_with_deadline(target: Path) -> DetectionResult:
     """Run :func:`detect` in a thread and fail if it blocks.
 
@@ -163,6 +192,8 @@ def detect_with_deadline(target: Path) -> DetectionResult:
     worker = threading.Thread(target=lambda: results.append(detect(target)))
     worker.daemon = True
     worker.start()
+    # The one wall-clock deadline: a read blocked on a FIFO uses no CPU, so
+    # only elapsed time can show that detect is stuck.
     worker.join(timeout=5)
     if worker.is_alive():
         # Release a reader stuck opening a FIFO, then fail.
