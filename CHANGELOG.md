@@ -21,6 +21,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.16] - 2026-11-23
+
+### Fixed
+
+- **media**: detect ISO-BMFF images, audio and video from their structure (#449)
+  (e60bca5)
+
 ## [0.37.15] - 2026-11-23
 
 ### Changed
