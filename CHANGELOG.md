@@ -21,6 +21,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.19] - 2026-11-23
+
+### Changed
+
+- **deps**: bring every dependency and CI pin up to date (#466) (e0fe337)
+
+### Fixed
+
+- **ci**: stop release jobs when network hardening is not enforcing (#467) (34ff4e1)
+
 ## [0.37.18] - 2026-11-23
 
 ### Fixed
