@@ -2,23 +2,22 @@
 
 Each case fills the 64 KiB head with the input most likely to make a
 signature's scan backtrack or repeat work, and requires ``detect`` to
-return well within a deadline. On 7aa40b3 the playlist and XBM regular
+use well under a second of CPU time. On 7aa40b3 the playlist and XBM regular
 expressions, and the SVG check behind the playlist check, ran past 30 s.
 """
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
-from tests.media.detect_support import detect_with_deadline
+from tests.media.detect_support import cpu_seconds, detect_with_deadline
 from winnow.media._packet_streams import MAX_FLV_TAGS, MAX_PROGRAM_STREAM_PACKETS
 
 LIMIT_SECONDS = 1.0
-"""Longest a single ``detect`` call may take on these inputs."""
+"""Most CPU seconds a single ``detect`` call may use on these inputs."""
 
 _HEAD = 64 * 1024
 
@@ -79,9 +78,7 @@ def test_named_check_worst_case_time(tmp_path: Path, name: str) -> None:
     target = tmp_path / file_name
     target.write_bytes(data[:_HEAD])
 
-    start = time.perf_counter()
-    detect_with_deadline(target)
-    elapsed = time.perf_counter() - start
+    _, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
 
     assert_that(elapsed).described_as(name).is_less_than(LIMIT_SECONDS)
 
@@ -128,9 +125,7 @@ def test_header_walks_at_their_caps_are_fast(
     target = tmp_path / name
     target.write_bytes(data)
 
-    start = time.perf_counter()
-    detect_with_deadline(target)
-    elapsed = time.perf_counter() - start
+    _, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
 
     assert_that(elapsed).is_less_than(LIMIT_SECONDS)
 
@@ -141,8 +136,6 @@ def test_text_signature_worst_case_time(tmp_path: Path, name: str) -> None:
     target = tmp_path / "hostile.bin"
     target.write_bytes(_HOSTILE[name][:_HEAD])
 
-    start = time.perf_counter()
-    detect_with_deadline(target)
-    elapsed = time.perf_counter() - start
+    _, elapsed = cpu_seconds(lambda: detect_with_deadline(target))
 
     assert_that(elapsed).described_as(name).is_less_than(LIMIT_SECONDS)

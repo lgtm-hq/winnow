@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import random
-import time
 from itertools import combinations
 from pathlib import Path
 
 import pytest
 from assertpy import assert_that
 
+from tests.media.detect_support import cpu_seconds
 from winnow.dedup.finder import (
     DEFAULT_HASH_DISTANCE_THRESHOLD,
     DuplicateFinder,
@@ -264,9 +264,7 @@ def test_scales_to_many_files_without_explosion() -> None:
     ]
     files.extend(_image(f"/dup_{index}.jpg", "f" * 16) for index in range(1_000))
 
-    started = time.perf_counter()
-    groups = find_duplicates(files, threshold=5)
-    elapsed = time.perf_counter() - started
+    groups, elapsed = cpu_seconds(lambda: find_duplicates(files, threshold=5))
 
     assert_that(groups).is_length(1)
     assert_that(groups[0].files).is_length(1_000)
