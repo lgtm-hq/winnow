@@ -105,8 +105,8 @@ def _assert_pins_agree(
     assert_that(images).described_as("lintro images").is_length(1)
 
 
-def _renovate_pattern() -> re.Pattern[str]:
-    """Compile renovate.json's lintro-image match string for Python."""
+def _renovate_manager() -> dict[str, Any]:
+    """Return renovate.json's custom manager for the lintro image."""
     config = json.loads((_ROOT / "renovate.json").read_text(encoding="utf-8"))
     managers = [
         manager
@@ -114,7 +114,12 @@ def _renovate_pattern() -> re.Pattern[str]:
         if manager.get("depNameTemplate") == "ghcr.io/lgtm-hq/py-lintro"
     ]
     assert_that(managers).is_length(1)
-    (match_string,) = managers[0]["matchStrings"]
+    return cast(dict[str, Any], managers[0])
+
+
+def _renovate_pattern() -> re.Pattern[str]:
+    """Compile renovate.json's lintro-image match string for Python."""
+    (match_string,) = _renovate_manager()["matchStrings"]
     return re.compile(str(match_string).replace("(?<", "(?P<"))
 
 
@@ -137,6 +142,26 @@ def test_the_images_match_each_other_and_the_lintro_pin() -> None:
     version = _pyproject_version()
     assert_that(_lock_version()).is_equal_to(version)
     _assert_pins_agree(_pins(_workflow_texts()), version)
+
+
+def test_renovate_looks_in_the_pinned_files_at_the_image_registry() -> None:
+    """Keep the manager reading these workflows and resolving a container image.
+
+    The match string alone does not prove Renovate applies it: a file pattern
+    that selects no workflow, or a datasource other than the registry, would
+    leave the pins untracked while every regex test still passed.
+    """
+    manager = _renovate_manager()
+    assert_that(manager["customType"]).is_equal_to("regex")
+    assert_that(manager["datasourceTemplate"]).is_equal_to("docker")
+    patterns = [
+        re.compile(str(pattern).removeprefix("/").removesuffix("/"))
+        for pattern in manager["managerFilePatterns"]
+    ]
+    for name in _PINNED_IN:
+        path = f".github/workflows/{name}"
+        selected = [pattern.pattern for pattern in patterns if pattern.search(path)]
+        assert_that(selected).described_as(path).is_not_empty()
 
 
 def test_renovate_finds_exactly_the_three_image_pins() -> None:
