@@ -504,6 +504,90 @@ def test_replay_fragmented_mp4_frame_cut_is_truncated(
     assert_that(metadata.audio_flags).is_equal_to(())
 
 
+@pytest.mark.parametrize(
+    ("name", "codec", "duration"),
+    [
+        ("aac_fragments", "aac", 2.021333),
+        ("alac_fragments", "alac", 2.0),
+        ("alac_indexed", "alac", 2.0),
+        ("aac_fragments_cut", "aac", 1.536),
+        ("alac_fragments_cut", "alac", 1.536),
+    ],
+)
+def test_replay_fragmented_mp4_is_never_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    codec: str,
+    duration: float,
+) -> None:
+    """A15a: a fragmented MP4 is measured, never ``truncated=false``.
+
+    Its packets come from fragments, not from the ``moov`` index, so the
+    walk finds more packets than ``nb_frames`` (none here). Healthy files
+    are 2 s of audio; a cut on the last fragment boundary leaves three
+    0.5 s fragments, 1.536 s in 512 ms packets. Before A15a the ALAC cut
+    was ``truncated=false`` with that length.
+    """
+    metadata = _replay(monkeypatch, tmp_path, name)
+
+    assert_that(metadata.codec).is_equal_to(codec)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.bitrate).is_none()
+    assert_that(known_duration(metadata)).is_close_to(duration, 0.000_001)
+
+
+def test_replay_indexed_fragment_cut_is_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A15a: a ``sidx`` index keeps declaring 2 s, so the cut is ``truncated``."""
+    metadata = _replay(monkeypatch, tmp_path, "alac_indexed_cut")
+
+    assert_that(metadata.codec).is_equal_to("alac")
+    assert_that(metadata.truncated).is_same_as(True)
+    assert_that(metadata.duration_seconds).is_none()
+    assert_that(metadata.audio_flags).is_equal_to(())
+
+
+def test_replay_stretched_first_packet_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A15b: B-frame video stretches the first ALAC packet by 40 ms.
+
+    The 552 ms first packet is under twice the 512 ms median, so A10b does
+    not apply, but it is more than the A5 tolerance over the median: the
+    span counts the delay, and the 2 s of audio measure 2.04 s.
+    """
+    metadata = _replay(monkeypatch, tmp_path, "alac_bframes")
+
+    assert_that(metadata.codec).is_equal_to("alac")
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(known_duration(metadata)).is_close_to(2.04, 0.000_001)
+
+
+def test_replay_he_aac_is_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A15b: HE-AAC declares about 90 ms past 2 s of audio, so it is measured.
+
+    The measured span counts the priming too (133 ms); it is reported as an
+    estimate, never as a checked length.
+    """
+    metadata = _replay(monkeypatch, tmp_path, "heaac")
+
+    assert_that(metadata.codec).is_equal_to("aac")
+    assert_that(metadata.sample_rate).is_equal_to(48000)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.bitrate).is_none()
+    assert_that(known_duration(metadata) - 2.0).is_between(0.08, 0.17)
+
+
 def test_replay_empty_m4a_says_why(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

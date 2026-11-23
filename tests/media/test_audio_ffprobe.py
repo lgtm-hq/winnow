@@ -27,11 +27,15 @@ from tests.media.fixtures.audio.generate_audio_fixtures import (
     EMPTY_CONTAINER_FIXTURES,
     EMPTY_FIXTURES,
     FIXTURES,
+    FRAGMENT_CUTS,
     FRAME_CUTS,
     FRAME_SOURCES,
+    HE_AAC_EXCESS,
+    HE_AAC_FIXTURE,
     INCONSISTENT_FIXTURES,
     UNSUPPORTED_FIXTURES,
     AudioFixture,
+    FragmentCut,
     FrameCut,
 )
 from winnow.media import audio as audio_module
@@ -261,6 +265,18 @@ PINS: Final[dict[int, Pins]] = {
                 "unrecognized_output",
                 "unrecognized_output",
             ),
+            "aac_fragments.mp4": ("unrecognized_output", "truncated", "estimated"),
+            "alac_fragments.mp4": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "estimated",
+            ),
+            "alac_indexed.mp4": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "estimated",
+            ),
+            "alac_bframes.mp4": ("unsupported", "unrecognized_output", "estimated"),
         },
     ),
 }
@@ -611,6 +627,54 @@ def test_last_frames_removed(cut: FrameCut) -> None:
         )
 
 
+@pytest.mark.parametrize("cut", FRAGMENT_CUTS, ids=lambda cut: cut.name)
+def test_fragment_boundary_cut_is_never_complete(cut: FragmentCut) -> None:
+    """A15a: a fragmented MP4 cut on a fragment boundary is never complete.
+
+    Without a fragment index the declared duration shrinks with the
+    packets, so the three fragments left (1.536 s) are measured, lossless
+    included. With a ``sidx`` index the declared 2 s stands and the cut is
+    ``truncated``.
+    """
+    source = BY_NAME[cut.source]
+
+    metadata = extract_audio_metadata(AUDIO_DIR / cut.name)
+
+    assert_that(metadata.codec).is_equal_to(source.codec)
+    assert_that(metadata.truncated).is_equal_to(cut.truncated)
+    if cut.truncated is True:
+        assert_that(_flags(metadata)).is_empty()
+        assert_that(metadata.duration_seconds).is_none()
+        return
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(_duration(metadata)).is_close_to(
+        source.duration * 3 / 4,
+        DURATION_TOLERANCE,
+    )
+
+
+def test_he_aac_is_estimated() -> None:
+    """A15b: HE-AAC in MP4 declares more than a codec frame past the audio.
+
+    ffprobe names the profile, so the duration is measured, not checked. The
+    measured span counts the priming, so it is held to the stated range past
+    the true length.
+    """
+    fixture = HE_AAC_FIXTURE
+
+    metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
+
+    assert_that(metadata.container).is_equal_to(fixture.format_name)
+    assert_that(metadata.codec).is_equal_to(fixture.codec)
+    assert_that(metadata.sample_rate).is_equal_to(fixture.sample_rate)
+    assert_that(metadata.channels).is_equal_to(fixture.channels)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
+    assert_that(metadata.bitrate).is_none()
+    low, high = HE_AAC_EXCESS
+    assert_that(_duration(metadata) - fixture.duration).is_between(low, high)
+
+
 def test_two_tracks_and_cover_art() -> None:
     """The default track is primary; cover art is not a stream (R3)."""
     tracks = extract_audio_metadata(AUDIO_DIR / "two_tracks.mka")
@@ -851,10 +915,12 @@ ALL_FIXTURE_NAMES: Final[tuple[str, ...]] = (
             *EMPTY_FIXTURES,
             *EMPTY_CONTAINER_FIXTURES,
             *FRAME_SOURCES,
+            HE_AAC_FIXTURE,
         )
     ),
     CHAINED_OGG,
     *(cut.name for cut in FRAME_CUTS),
+    *(cut.name for cut in FRAGMENT_CUTS),
 )
 """Every generated audio fixture."""
 

@@ -14,10 +14,16 @@ more than one packet, which is the smallest loss a packet walk can see.
 
 ffmpeg and ffprobe run through winnow's own runner
 (:func:`winnow.media._ffprobe.run_command`). The only byte handling done
-here is joining two generated Ogg files into a chained Ogg file and cutting
-the last frames off four files at offsets ffprobe reports (:data:`FRAME_CUTS`);
-nothing in this script parses media. Every output is byte for byte the same
-on each run with the same FFmpeg build.
+here is joining two generated Ogg files into a chained Ogg file, cutting
+the last frames off files at offsets ffprobe reports (:data:`FRAME_CUTS`),
+and cutting fragmented MP4 files on a fragment boundary that ffprobe's
+packet offsets show (:data:`FRAGMENT_CUTS`); nothing in this script parses
+media. Every output is byte for byte the same on each run with the same
+FFmpeg build.
+
+``heaac.m4a`` needs Apple's AudioToolbox AAC encoder (``aac_at``), which
+only macOS builds of FFmpeg have. Elsewhere the committed file is kept and
+the script says so.
 """
 
 from __future__ import annotations
@@ -161,6 +167,33 @@ _MP3_LOW: Final[tuple[str, ...]] = ("-c:a", "libmp3lame", "-b:a", "8k")
 _FASTSTART: Final[tuple[str, ...]] = ("-movflags", "+faststart")
 
 _FRAGMENTED: Final[tuple[str, ...]] = ("-movflags", "+frag_keyframe+empty_moov")
+
+_FRAGMENT_DURATION: Final[tuple[str, ...]] = ("-frag_duration", "500000")
+_FRAGMENTS: Final[tuple[str, ...]] = (
+    "-movflags",
+    "+empty_moov",
+    *_FRAGMENT_DURATION,
+)
+"""Fragments of 0.5 s with no fragment index besides the trailing ``mfra``."""
+
+_INDEXED_FRAGMENTS: Final[tuple[str, ...]] = (
+    "-movflags",
+    "+empty_moov+global_sidx+default_base_moof",
+    *_FRAGMENT_DURATION,
+)
+"""Fragments of 0.5 s with a ``sidx`` index at the front.
+
+``+default_base_moof`` keeps each fragment's data offsets relative to its
+``moof``: with absolute offsets the inserted ``sidx`` shifts the data away
+from them, and FFmpeg 9.0.2 cannot decode the file.
+"""
+
+_VIDEO_25FPS_BFRAME: Final[tuple[str, ...]] = (
+    "-f",
+    "lavfi",
+    "-i",
+    "color=c=black:size=16x16:rate=25:duration=2",
+)
 
 FIXTURES: Final[tuple[AudioFixture, ...]] = (
     # One healthy file per allow-listed demuxer.
@@ -1014,8 +1047,109 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=2.0,
         estimated=True,
     ),
+    # A15a: a fragmented MP4 is never reported complete, lossless included:
+    # without a fragment index its declared duration is the sum of the
+    # fragments present. Four fragments of 0.5 s each.
+    AudioFixture(
+        name="aac_fragments.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "aac", "-b:a", "8k", *_FRAGMENTS),
+        format_name=MP4_FORMAT,
+        codec="aac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=None,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="alac_fragments.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "alac", *_FRAGMENTS),
+        format_name=MP4_FORMAT,
+        codec="alac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=16,
+        duration=2.0,
+        estimated=True,
+    ),
+    AudioFixture(
+        name="alac_indexed.mp4",
+        inputs=_silence(rate=48000, seconds=2),
+        outputs=("-c:a", "alac", *_INDEXED_FRAGMENTS),
+        format_name=MP4_FORMAT,
+        codec="alac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=16,
+        duration=2.0,
+        estimated=True,
+    ),
+    # A15b: without an edit list the muxer stretches the first ALAC packet
+    # (512 ms at 8 kHz) by the 40 ms delay that one B-frame at 25 fps gives
+    # the video. That is under the A10b bound, so only A15b sees it.
+    AudioFixture(
+        name="alac_bframes.mp4",
+        inputs=(*_VIDEO_25FPS_BFRAME, *_silence(rate=8000, seconds=2)),
+        outputs=(
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "alac",
+            "-use_editlist",
+            "0",
+            *_FASTSTART,
+        ),
+        format_name=MP4_FORMAT,
+        codec="alac",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=2.0,
+        estimated=True,
+    ),
 )
 """Fixtures written by ffmpeg directly, sized so a 2 % cut removes a packet."""
+
+
+HE_AAC_FIXTURE: Final[AudioFixture] = AudioFixture(
+    name="heaac.m4a",
+    inputs=_silence(rate=48000, seconds=2, channels=2),
+    outputs=("-c:a", "aac_at", "-profile:a", "4", "-b:a", "32k", *_FASTSTART),
+    format_name=MP4_FORMAT,
+    codec="aac",
+    sample_rate=48000,
+    channels=2,
+    bit_depth=None,
+    duration=2.0,
+    estimated=True,
+)
+"""HE-AAC from AudioToolbox in faststart M4A (A15b).
+
+The source is stereo: FFmpeg's AAC decoder reports two channels for any
+HE-AAC stream, mono included, because parametric stereo may follow.
+ffprobe reports ``profile`` ``HE-AAC``. The declared duration is about
+90 ms past the audio, more than a 43 ms packet, so the reader reports the
+measured span, ``estimated``. That span counts the priming too, so the
+duration is checked against :data:`HE_AAC_EXCESS` instead of the usual
+tolerance.
+"""
+
+HE_AAC_EXCESS: Final[tuple[float, float]] = (0.08, 0.17)
+"""Range, in seconds, of the measured span of :data:`HE_AAC_FIXTURE` past
+its true length on FFmpeg 9.0.2 (133 ms; 145 to 166 ms over a wider set at
+48 kHz with a tone)."""
+
+HE_AAC_ENCODER: Final[str] = "aac_at"
 
 
 INCONSISTENT_FIXTURES: Final[tuple[AudioFixture, ...]] = (
@@ -1275,6 +1409,53 @@ whose packets hold the priming (A14a): the declared duration stays above
 the shorter span, so each cut is ``truncated``.
 """
 
+
+@dataclass(frozen=True, slots=True)
+class FragmentCut:
+    """A fragmented MP4 with its last fragment removed (A15a).
+
+    The file is cut where the last ``moof`` box starts, so whole
+    ``moof``+``mdat`` pairs and the trailing ``mfra`` are gone. That offset
+    is where the packet data of one fragment ends and the next one does not
+    follow on: the gap is the next fragment's ``moof``.
+
+    Args:
+        name: File name inside the fixture directory.
+        source: Name of the healthy fixture it is cut from.
+        truncated: The expected ``truncated`` value: ``True`` when a fragment
+            index still declares the full length, ``None`` (``estimated``)
+            when nothing does.
+    """
+
+    name: str
+    source: str
+    truncated: bool | None
+
+
+FRAGMENT_CUTS: Final[tuple[FragmentCut, ...]] = (
+    FragmentCut(
+        name="aac_fragments_cut.mp4",
+        source="aac_fragments.mp4",
+        truncated=None,
+    ),
+    FragmentCut(
+        name="alac_fragments_cut.mp4",
+        source="alac_fragments.mp4",
+        truncated=None,
+    ),
+    FragmentCut(
+        name="alac_indexed_cut.mp4",
+        source="alac_indexed.mp4",
+        truncated=True,
+    ),
+)
+"""Fragmented MP4 files cut on their last fragment boundary.
+
+Without an index the declared duration shrinks with the packets, so the cut
+is measured, never reported complete. With a ``sidx`` index the declared
+duration stays 2 s and the cut is ``truncated``.
+"""
+
 CHAINED_OGG: Final[str] = "chained.ogg"
 """Two one-second Ogg Opus links with different serial numbers, back to back."""
 
@@ -1353,14 +1534,14 @@ def _ffmpeg(*, inputs: tuple[str, ...], outputs: tuple[str, ...], dest: Path) ->
     _run(argv, dest)
 
 
-def _packet_offsets(source: Path) -> list[int]:
-    """Return the byte offset of each audio packet, as ffprobe reports it.
+def _packets(source: Path) -> list[tuple[int, int]]:
+    """Return the byte offset and size of each audio packet, as ffprobe reports it.
 
     Args:
         source: A generated fixture.
 
     Returns:
-        Offsets in packet order.
+        ``(offset, size)`` in packet order.
     """
     stdout = _run(
         [
@@ -1370,7 +1551,7 @@ def _packet_offsets(source: Path) -> list[int]:
             "-select_streams",
             "a:0",
             "-show_entries",
-            "packet=pos",
+            "packet=pos,size",
             "-of",
             "json",
             f"file:{source.absolute()}",
@@ -1378,7 +1559,19 @@ def _packet_offsets(source: Path) -> list[int]:
         source,
     )
     packets = json.loads(stdout)["packets"]
-    return [int(packet["pos"]) for packet in packets]
+    return [(int(packet["pos"]), int(packet["size"])) for packet in packets]
+
+
+def _packet_offsets(source: Path) -> list[int]:
+    """Return the byte offset of each audio packet, as ffprobe reports it.
+
+    Args:
+        source: A generated fixture.
+
+    Returns:
+        Offsets in packet order.
+    """
+    return [offset for offset, _size in _packets(source)]
 
 
 def _cut_frames(cut: FrameCut, directory: Path) -> Path:
@@ -1396,6 +1589,53 @@ def _cut_frames(cut: FrameCut, directory: Path) -> Path:
     dest = directory / cut.name
     dest.write_bytes(source.read_bytes()[:offset])
     return dest
+
+
+def _cut_fragment(cut: FragmentCut, directory: Path) -> Path:
+    """Write ``cut``: its source up to the start of its last fragment.
+
+    Args:
+        cut: The fragment cut.
+        directory: Directory holding the source and receiving the cut.
+
+    Returns:
+        The written path.
+
+    Raises:
+        SystemExit: When the source has fewer than two fragments.
+    """
+    source = directory / cut.source
+    packets = _packets(source)
+    boundaries = [
+        offset + size
+        for (offset, size), (following, _size) in zip(
+            packets,
+            packets[1:],
+            strict=False,
+        )
+        if offset + size != following
+    ]
+    if not boundaries:
+        raise SystemExit(f"{source} has a single fragment")
+    dest = directory / cut.name
+    dest.write_bytes(source.read_bytes()[: boundaries[-1]])
+    return dest
+
+
+def _has_encoder(name: str) -> bool:
+    """Report whether the installed ffmpeg has an encoder.
+
+    Args:
+        name: Encoder name.
+
+    Returns:
+        ``True`` when ``ffmpeg -h encoder=<name>`` describes it.
+    """
+    stdout = _run(
+        [_tool(FFMPEG), "-hide_banner", "-h", f"encoder={name}"],
+        FIXTURE_DIR,
+    )
+    return f"Encoder {name} " in stdout
 
 
 def generate(directory: Path) -> list[Path]:
@@ -1434,6 +1674,17 @@ def generate(directory: Path) -> list[Path]:
         chained.write_bytes(b"".join(part.read_bytes() for part in parts))
         written.append(chained)
     written.extend(_cut_frames(cut, directory) for cut in FRAME_CUTS)
+    written.extend(_cut_fragment(cut, directory) for cut in FRAGMENT_CUTS)
+    he_aac = directory / HE_AAC_FIXTURE.name
+    if _has_encoder(HE_AAC_ENCODER):
+        _ffmpeg(
+            inputs=HE_AAC_FIXTURE.inputs,
+            outputs=HE_AAC_FIXTURE.outputs,
+            dest=he_aac,
+        )
+        written.append(he_aac)
+    else:
+        print(f"{HE_AAC_ENCODER} is not available: {he_aac.name} is kept as committed")
     return written
 
 

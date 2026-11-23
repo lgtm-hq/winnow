@@ -87,6 +87,10 @@ packets, truncation not checked).
 | `aac_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
 | `vorbis_frag.mp4`    | `mov,mp4,m4a,3gp,3g2,mj2` | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
 | `opus_frag.mp4`      | `mov,mp4,m4a,3gp,3g2,mj2` | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
+| `aac_fragments.mp4`  | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `alac_fragments.mp4` | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
+| `alac_indexed.mp4`   | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
+| `alac_bframes.mp4`   | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 8000  | 1   | 16   | 2.0      | estimated |
 
 Notes:
 
@@ -130,6 +134,47 @@ Notes:
   A14a). Before A14a, Vorbis and Opus were checked against that duration. A 2 % cut of
   `aac_frag.mp4` removes only the fragment index at the end, not audio, so it is still
   `estimated` with the full length.
+- `aac_fragments.mp4` and `alac_fragments.mp4` are fragmented MP4 in four 0.5 s
+  fragments (`+empty_moov -frag_duration 500000`) with no fragment index besides the
+  trailing `mfra`. `alac_indexed.mp4` is the ALAC file with a `sidx` index at the front
+  (`+global_sidx+default_base_moof`; without `default_base_moof` the inserted `sidx`
+  shifts the data away from the offsets the fragments record, and FFmpeg 9.0.2 cannot
+  decode the file). ffprobe shows no difference between an indexed and an unindexed
+  file, so every fragmented MP4 is measured, lossless included (amendment A15a). Before
+  A15a the ALAC files were checked.
+- `alac_bframes.mp4` is 2 s of ALAC at 8 kHz beside a 25 frame/s H.264 video with one
+  B-frame, written with `-use_editlist 0`. The muxer stretches the first audio packet
+  from 512 ms to 552 ms by the video's 40 ms delay. That is under twice the median, so
+  A10b does not see it, but more than the A5 tolerance over the median, so the duration
+  is measured: 2.04 s (amendment A15b). Before A15b it was checked at 2.04 s.
+
+## HE-AAC fixture
+
+`heaac.m4a` is 2 s of stereo silence at 48 kHz encoded as HE-AAC by Apple's AudioToolbox
+encoder (`aac_at -profile:a 4`) into faststart M4A. ffprobe reports `profile` `HE-AAC`.
+The source is stereo because FFmpeg reports two channels for any HE-AAC stream, mono
+included: parametric stereo may follow. Its declared duration runs about 90 ms past the
+audio, more than its 43 ms packets, so the reader reports the measured span, `estimated`
+(amendment A15b). The span counts the priming too: 2.133 s, so the tests hold it to 80
+to 170 ms over the true length rather than the usual tolerance. Only macOS builds of
+FFmpeg have `aac_at`; elsewhere the generator keeps the committed file.
+
+## Fragment cuts
+
+`FRAGMENT_CUTS` are fragmented fixtures cut where their last `moof` box starts, so the
+last `moof`+`mdat` pair and the trailing `mfra` are gone. The generator finds that
+offset from ffprobe's packet offsets and sizes: it is where one fragment's packet data
+ends and the next packet does not follow on.
+
+| File                     | Cut from             | Reported                                  |
+| ------------------------ | -------------------- | ----------------------------------------- |
+| `aac_fragments_cut.mp4`  | `aac_fragments.mp4`  | `estimated`, 1.536 s                      |
+| `alac_fragments_cut.mp4` | `alac_fragments.mp4` | `estimated`, 1.536 s                      |
+| `alac_indexed_cut.mp4`   | `alac_indexed.mp4`   | `truncated=true`, the `sidx` declares 2 s |
+
+Without an index the declared duration is the sum of the fragments present, so it
+shrinks with the packets; the reader must never report such a cut complete. Before A15a,
+`alac_fragments_cut.mp4` was reported `truncated=false` with 1.536 s.
 
 ## Unsupported and empty fixtures
 
