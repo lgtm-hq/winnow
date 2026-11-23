@@ -41,6 +41,9 @@ from winnow.exceptions import MediaError
 DEVNULL: Final[int] = subprocess.DEVNULL
 """Stdin value for runs that read no file through stdin."""
 
+TimeoutExpired = subprocess.TimeoutExpired
+"""The time-out exception a child's ``wait`` raises, for callers and tests."""
+
 FFPROBE: Final[str] = "ffprobe"
 FFMPEG: Final[str] = "ffmpeg"
 
@@ -799,6 +802,7 @@ __all__ = [
     "TESTED_FFPROBE_MAJORS",
     "BoundedRun",
     "BoundedRunError",
+    "TimeoutExpired",
     "clear_info_caches",
     "fd_protocol_supported",
     "ffmpeg_available",
