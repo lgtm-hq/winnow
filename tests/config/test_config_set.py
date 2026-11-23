@@ -551,7 +551,10 @@ def test_unshared_key_in_a_file_with_anchors_can_be_set(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can write read-only files")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root can write read-only files",
+)
 def test_read_only_file_is_refused(tmp_path: Path) -> None:
     """A file the user cannot write is refused, not replaced."""
     config_path = tmp_path / CONFIG_FILE_NAME
