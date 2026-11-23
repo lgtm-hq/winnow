@@ -3,7 +3,7 @@
     {
       "kind": "header",
       "returncode": 0,
-      "stderr": "[mp3 @ 0x77fcc18000] filesize and duration do not match (growing file?)\n",
+      "stderr": "[mp3 @ 0x7c32c14000] filesize and duration do not match (growing file?)\n",
       "stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"mp3\",\n            \"codec_type\": \"audio\",\n            \"sample_rate\": \"24000\",\n            \"channels\": 1,\n            \"bits_per_sample\": 0,\n            \"time_base\": \"1/14112000\",\n            \"duration\": \"6.000000\",\n            \"bit_rate\": \"8000\",\n            \"disposition\": {\n                \"default\": 0,\n                \"attached_pic\": 0\n            }\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"mp3\",\n        \"start_time\": \"0.046042\",\n        \"duration\": \"6.000000\",\n        \"probe_score\": 52\n    }\n}\n"
     }
   ],

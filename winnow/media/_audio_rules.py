@@ -4,8 +4,8 @@ Everything here works on ffprobe output that has already been captured:
 stderr filtering against the benign list (R2 with amendments A1 to A3),
 strict JSON parsing (R1), the header outcome (R2 with A12a to A12c), stream
 selection and facts (R2 to R4, A12f), the declared duration (R5 with A5, A8,
-A9 and A9b), and the packet-walk decision (R6 with A5, A10b, A11, A12d and
-A12e).
+A9, A9b and A15b), and the packet-walk decision (R6 with A5, A10b, A11,
+A12d, A12e and A15a).
 Nothing here starts a process or touches a file; :mod:`winnow.media.audio`
 runs ffprobe and feeds these functions.
 """
@@ -154,10 +154,15 @@ unknown (A12f)."""
 HEADER_SHOW_ENTRIES: Final[str] = (
     "format=format_name,probe_score,duration,start_time"
     ":stream=index,id,codec_type,codec_name,sample_rate,channels,"
-    "bits_per_raw_sample,bits_per_sample,bit_rate,time_base,duration"
+    "bits_per_raw_sample,bits_per_sample,bit_rate,time_base,duration,"
+    "nb_frames,profile"
     ":stream_disposition=default,attached_pic"
 )
-"""The only header fields the rules read (A12a); tags are never requested."""
+"""The only header fields the rules read (A12a); tags are never requested.
+
+``nb_frames`` tells a fragmented MP4 apart (A15a); ``profile`` names
+HE-AAC (A15b).
+"""
 
 
 BIT_DEPTH_CODECS: Final[frozenset[str]] = frozenset(
@@ -260,6 +265,15 @@ Other containers carry codecs such as Vorbis that vary packet size by design.
 """
 
 
+HE_AAC_PROFILES: Final[frozenset[str]] = frozenset({"HE-AAC", "HE-AACv2"})
+"""AAC ``profile`` values that ffprobe reports for HE-AAC (A15b).
+
+HE-AAC from AudioToolbox in MP4 declares a duration 88 to 130 ms past the
+audio, against 43 to 64 ms packets, so the checked value would be more than
+a codec frame long.
+"""
+
+
 UNTIMED_PACKET_FORMATS: Final[frozenset[str]] = frozenset({"flv"})
 """Containers where an untimed packet makes every audio fact unknown (A11).
 
@@ -308,6 +322,10 @@ class ProbeHeader:
         estimate_warned: ``True`` when stderr says the duration was estimated.
         stderr_context: Conditions for the conditional stderr pins, used for
             the walk's stderr too.
+        frame_count: The primary stream's ``nb_frames``. In MP4 it counts
+            only the samples indexed in the ``moov`` box, not those in
+            fragments (A15a).
+        profile: The primary stream's ``profile`` (A15b).
     """
 
     container: str
@@ -326,6 +344,8 @@ class ProbeHeader:
     format_start: Decimal | None
     estimate_warned: bool
     stderr_context: StderrContext = StderrContext()
+    frame_count: int | None = None
+    profile: str | None = None
 
 
 @dataclass(slots=True)
@@ -341,6 +361,7 @@ class PacketWalk:
     first_time: Decimal | None = None
     last_time: Decimal | None = None
     last_duration: Decimal | None = None
+    first_duration: Decimal | None = None
     missing_time: bool = False
     backwards: bool = False
     corrupt_packet: bool = False
@@ -377,6 +398,7 @@ class PacketWalk:
             self.backwards = True
         if self.first_time is None:
             self.first_time = time
+            self.first_duration = duration
         self.last_time = time
         self.last_duration = duration
         if self.longest_duration is None or duration > self.longest_duration:
@@ -510,8 +532,9 @@ def header_rejection(data: dict[str, object]) -> AudioFlag:
     Returns:
         ``unrecognized_output`` when the JSON does not have the shape
         ffprobe writes (a missing ``format`` object or ``streams`` list, a
-        stream that is not an object, or an audio stream index that is not
-        a non-negative integer); ``no_audio_stream`` when the streams hold
+        missing or non-string ``format_name``, a stream that is not an
+        object, or an audio stream index that is not a non-negative
+        integer); ``no_audio_stream`` when the streams hold
         no audio stream besides cover art, as in a video-only file or an
         empty M4A or MOV; ``inconsistent`` otherwise, as for a container
         off the allow-list or an audio stream without a codec, sample rate,
@@ -522,6 +545,7 @@ def header_rejection(data: dict[str, object]) -> AudioFlag:
     if (
         not isinstance(container_section, dict)
         or not isinstance(streams, list)
+        or not isinstance(container_section.get("format_name"), str)
         or not all(isinstance(stream, dict) for stream in streams)
     ):
         return AudioFlag.UNRECOGNIZED_OUTPUT
@@ -712,7 +736,21 @@ def header_from_json(
         format_duration=parse_positive_decimal(container_section.get("duration")),
         format_start=parse_decimal(container_section.get("start_time")),
         estimate_warned=estimate_warned,
+        frame_count=parse_positive_int(primary.get("nb_frames")),
+        profile=_text(primary.get("profile")),
     )
+
+
+def _text(value: object) -> str | None:
+    """Return a non-empty string value.
+
+    Args:
+        value: Raw ffprobe value.
+
+    Returns:
+        The string, or ``None`` for anything else.
+    """
+    return value if isinstance(value, str) and value else None
 
 
 def _accepted_sections(
@@ -796,7 +834,7 @@ def bit_depth_for(stream: dict[str, object], *, codec: str) -> int | None:
         listed lossless codecs; ``None`` otherwise or when both are zero or
         ``N/A``.
     """
-    if not codec.startswith("pcm_") and codec not in BIT_DEPTH_CODECS:
+    if not codec.startswith(PCM_CODEC_PREFIX) and codec not in BIT_DEPTH_CODECS:
         return None
     raw = parse_positive_int(stream.get("bits_per_raw_sample"))
     if raw is not None:
@@ -824,7 +862,10 @@ def declared_duration(
     is above the packet span by more than the A5 tolerance (A14a). In
     Matroska and MP4, a declared duration that equals the packet span of a
     stream starting before zero, and runs past the last packet's end,
-    counts the priming too and declares nothing (A13a revised).
+    counts the priming too and declares nothing (A13a revised). In MP4,
+    HE-AAC declares nothing, and neither does a stream whose first packet is
+    longer than the median packet by more than the A5 tolerance: the packet
+    is stretched across a start delay, so the span counts the delay (A15b).
 
     The stream's own ``duration`` is declared. Otherwise ``format.duration``
     is declared only for a file with one non-picture stream whose
@@ -843,6 +884,10 @@ def declared_duration(
         The declared duration, or ``None`` when nothing declares one.
     """
     if not _starts_at_zero(header, walk.first_time):
+        return None
+    if header.container == MP4_FORMAT_NAME and (
+        is_he_aac(header) or first_packet_stretched(header, walk)
+    ):
         return None
     declared = declared_without_packets(header, estimate_warned=estimate_warned)
     if declared is None or _declared_counts_priming(header, walk, declared):
@@ -897,6 +942,63 @@ def _declared_counts_priming(
         )
     last_end = span + first
     return abs(declared - span) <= tolerance and declared - last_end > tolerance
+
+
+def is_he_aac(header: ProbeHeader) -> bool:
+    """Report whether the primary stream is HE-AAC (A15b).
+
+    Args:
+        header: Accepted header facts.
+
+    Returns:
+        ``True`` for AAC whose ``profile`` is in :data:`HE_AAC_PROFILES`.
+    """
+    return header.codec == "aac" and header.profile in HE_AAC_PROFILES
+
+
+def first_packet_stretched(header: ProbeHeader, walk: PacketWalk) -> bool:
+    """Report whether the first packet is longer than the median (A15b).
+
+    Without an edit list, an MP4 muxer stretches the first audio packet
+    across the start delay that B-frame video gives the file (40 ms at
+    25 fps for one B-frame). That stays under the A10b bound when the
+    delay is shorter than a packet.
+
+    Args:
+        header: Accepted header facts.
+        walk: Completed packet walk of the primary stream.
+
+    Returns:
+        ``True`` when the first packet exceeds the median packet duration
+        by more than the A5 tolerance.
+    """
+    first = walk.first_duration
+    median = walk.median_duration()
+    if first is None or median is None:
+        return False
+    return first - median > shortfall_tolerance(header)
+
+
+def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
+    """Report whether an MP4 file holds packets outside its ``moov`` index (A15a).
+
+    ``nb_frames`` counts the samples the ``moov`` box indexes; samples in
+    movie fragments (``moof``) are not counted. A walk that finds more
+    packets than that read fragments. ffprobe reports no field that tells
+    a fragment index (``sidx`` or ``mfra``) apart, so every fragmented MP4
+    is treated as unindexed.
+
+    Args:
+        header: Accepted header facts.
+        walk: Completed packet walk of the primary stream.
+
+    Returns:
+        ``True`` for MP4 whose walk found more packets than ``nb_frames``
+        (taken as zero when ffprobe does not report it).
+    """
+    if header.container != MP4_FORMAT_NAME:
+        return False
+    return walk.packets > (header.frame_count or 0)
 
 
 def may_be_primed(codec: str) -> bool:
@@ -1036,7 +1138,12 @@ def _measured_walk(
     *,
     estimate_warned: bool,
 ) -> DurationOutcome:
-    """Decide a walk with packets (R6 steps 5 to 8 with A5 and A12e).
+    """Decide a walk with packets (R6 steps 5 to 8 with A5, A12e and A15a).
+
+    In a fragmented MP4 the declared duration is the sum of the fragments
+    present, so a cut on a fragment boundary shortens it with the span. There
+    the walk may find the file ``truncated`` but never complete: a result
+    that would be ``truncated=false`` is ``estimated`` instead (A15a).
 
     Args:
         header: Accepted header facts.
@@ -1055,6 +1162,8 @@ def _measured_walk(
         return DurationOutcome(measured, None, (AudioFlag.ESTIMATED,))
     if declared - measured > shortfall_tolerance(header):
         return DurationOutcome(None, True)
+    if is_fragmented(header, walk):
+        return DurationOutcome(measured, None, (AudioFlag.ESTIMATED,))
     if measured - declared > _THREE * median:
         return DurationOutcome(None, None, (AudioFlag.INCONSISTENT,))
     return DurationOutcome(declared, False)
@@ -1313,6 +1422,7 @@ __all__ = [
     "GAP_PACKET_FORMATS",
     "GAP_PACKET_MEDIAN_RATIO",
     "HEADER_SHOW_ENTRIES",
+    "HE_AAC_PROFILES",
     "MATROSKA_FORMAT_NAME",
     "MAX_DISTINCT_PACKET_DURATIONS",
     "MP4_FORMAT_NAME",
@@ -1334,10 +1444,13 @@ __all__ = [
     "decide_duration",
     "declared_duration",
     "declared_without_packets",
+    "first_packet_stretched",
     "has_unrecognized_line",
     "header_from_json",
     "header_rejection",
     "interpret_header",
+    "is_fragmented",
+    "is_he_aac",
     "load_probe_json",
     "may_be_primed",
     "parse_decimal",

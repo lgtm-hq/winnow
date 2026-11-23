@@ -3,8 +3,8 @@
 Hand-built ffprobe output is fed to the functions in
 :mod:`winnow.media._audio_rules`: stderr filtering (R2, A1 to A3), strict JSON
 (R1), the header outcome (A12a to A12c), stream selection and facts (R2 to
-R4, A12f), the declared duration (R5, A5, A8, A9, A9b), and the packet-walk
-decision (R6, A5, A7, A10, A11, A12d, A12e).
+R4, A12f), the declared duration (R5, A5, A8, A9, A9b, A15b), and the
+packet-walk decision (R6, A5, A7, A10, A11, A12d, A12e, A15a).
 """
 
 from __future__ import annotations
@@ -23,12 +23,17 @@ from winnow.media._audio_rules import (
     AUDIO_ONLY_DECLARED_FORMATS,
     COVER_TIMESCALE_WARNING,
     DATA_TRACK_WARNING,
+    HE_AAC_PROFILES,
+    HEADER_SHOW_ENTRIES,
     MAX_DISTINCT_PACKET_DURATIONS,
     MP4_FORMAT_NAME,
     SHORTFALL_FLOOR_SECONDS,
     StderrContext,
     declared_without_packets,
+    first_packet_stretched,
     has_unrecognized_line,
+    is_fragmented,
+    is_he_aac,
     may_be_primed,
     parse_probe_score,
     parse_time_base,
@@ -64,6 +69,11 @@ BENIGN_9 = BENIGN_STDERR_BY_MAJOR[9]
 ESTIMATE_LINE = "Estimating duration from bitrate, this may be inaccurate"
 
 
+MOOV_FRAME_COUNT = 1_000_000
+"""``nb_frames`` of a test header: more than any test walk has, so an MP4
+header describes a file whose packets are all indexed in ``moov`` (A15a)."""
+
+
 def _header(**overrides: Any) -> ProbeHeader:
     """Build accepted header facts.
 
@@ -89,6 +99,7 @@ def _header(**overrides: Any) -> ProbeHeader:
         format_duration=Decimal("2.000000"),
         format_start=Decimal("0.000000"),
         estimate_warned=False,
+        frame_count=MOOV_FRAME_COUNT,
     )
     return replace(header, **overrides)
 
@@ -902,6 +913,9 @@ def test_interpret_header_without_audio_says_no_audio_stream(
         probe_json(audio_stream(index="0")),
         probe_json(audio_stream(index=-1)),
         probe_json(audio_stream(index=True)),
+        {"format": {"duration": "2.0"}, "streams": [audio_stream()]},
+        probe_json(format_name=3),
+        probe_json(format_name=None),
     ],
     ids=[
         "no-format",
@@ -912,12 +926,19 @@ def test_interpret_header_without_audio_says_no_audio_stream(
         "string-index",
         "negative-index",
         "bool-index",
+        "no-format-name",
+        "number-format-name",
+        "null-format-name",
     ],
 )
 def test_interpret_header_malformed_shape_is_unrecognized(
     data: dict[str, object],
 ) -> None:
-    """A14b: JSON without the shape ffprobe writes is ``unrecognized_output``."""
+    """A14b: JSON without the shape ffprobe writes is ``unrecognized_output``.
+
+    A missing or non-string ``format_name`` is a shape fault too (A15d); a
+    string off the allow-list stays ``inconsistent``.
+    """
     assert_that(
         interpret_header(run_result(stdout=json.dumps(data).encode()), benign=BENIGN_9),
     ).is_equal_to((None, (AudioFlag.UNRECOGNIZED_OUTPUT,)))
@@ -2159,3 +2180,244 @@ def test_span_rule_is_limited_to_matroska_and_mp4() -> None:
     assert_that(
         declared_duration(header, _primed_walk(), estimate_warned=False),
     ).is_equal_to(Decimal("1.536"))
+
+
+# --- A15: fragmented MP4, HE-AAC, stretched first packet ---------------------
+
+
+def test_header_asks_for_frame_count_and_profile() -> None:
+    """A15a, A15b: the header probe asks for ``nb_frames`` and ``profile``."""
+    stream_fields = HEADER_SHOW_ENTRIES.split(":")[1].split(",")
+
+    assert_that(stream_fields).contains("nb_frames", "profile")
+    assert_that(HEADER_SHOW_ENTRIES).does_not_contain("tags")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "frame_count", "profile"),
+    [
+        ({"nb_frames": "47", "profile": "HE-AAC"}, 47, "HE-AAC"),
+        ({}, None, None),
+        ({"nb_frames": "0", "profile": ""}, None, None),
+        ({"nb_frames": "N/A", "profile": 4}, None, None),
+    ],
+    ids=["reported", "absent", "zero-and-empty", "unparsable"],
+)
+def test_header_reads_frame_count_and_profile(
+    overrides: dict[str, object],
+    frame_count: int | None,
+    profile: str | None,
+) -> None:
+    """``nb_frames`` must be a positive integer and ``profile`` a non-empty string."""
+    header = _accepted(probe_json(audio_stream(**overrides)))
+
+    assert_that((header.frame_count, header.profile)).is_equal_to(
+        (frame_count, profile),
+    )
+
+
+@pytest.mark.parametrize(
+    ("container", "frame_count", "packets", "expected"),
+    [
+        (MP4_FORMAT_NAME, None, 4, True),
+        (MP4_FORMAT_NAME, 6, 47, True),
+        (MP4_FORMAT_NAME, 47, 47, False),
+        (MP4_FORMAT_NAME, 192000, 47, False),
+        (MP4_FORMAT_NAME, None, 0, False),
+        ("matroska,webm", None, 47, False),
+    ],
+    ids=[
+        "empty-moov",
+        "first-fragment-in-moov",
+        "all-in-moov",
+        "pcm-samples",
+        "no-packets",
+        "not-mp4",
+    ],
+)
+def test_is_fragmented(
+    container: str,
+    frame_count: int | None,
+    packets: int,
+    expected: bool,
+) -> None:
+    """A15a: an MP4 walk with more packets than ``nb_frames`` read fragments.
+
+    ``nb_frames`` counts only the samples ``moov`` indexes: none with
+    ``empty_moov``, the first fragment's without it. PCM counts samples,
+    so it is never below the number of packets.
+    """
+    header = _header(container=container, frame_count=frame_count)
+    walk = _walk(*_packets(packets))
+
+    assert_that(is_fragmented(header, walk)).is_equal_to(expected)
+
+
+def _fragmented_header(**overrides: Any) -> ProbeHeader:
+    """Build a fragmented ALAC MP4 header: ``nb_frames`` is not reported.
+
+    Args:
+        overrides: Fields to replace.
+
+    Returns:
+        The header.
+    """
+    fields: dict[str, Any] = {
+        "codec": "alac",
+        "frame_count": None,
+        "time_base": Decimal(1) / Decimal(48000),
+        "stream_duration": Decimal("0.960000"),
+    }
+    fields.update(overrides)
+    return _mp4_header(**fields)
+
+
+def test_fragmented_mp4_matching_its_span_is_estimated() -> None:
+    """A15a: a fragmented MP4 is never complete; lossless is no exception.
+
+    A cut on a fragment boundary shortens the declared duration and the span
+    together, so a match proves nothing: the span is measured.
+    """
+    walk = _walk(*_packets(48))
+
+    assert_that(_decide(walk, header=_fragmented_header())).is_equal_to(
+        (Decimal("0.960000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+def test_fragmented_mp4_short_of_its_declared_duration_is_truncated() -> None:
+    """A15a: ``truncated=true`` is still allowed, as when a ``sidx`` declares more."""
+    walk = _walk(*_packets(36))
+
+    assert_that(_decide(walk, header=_fragmented_header())).is_equal_to(
+        (None, True, ()),
+    )
+
+
+def test_fragmented_mp4_past_its_declared_duration_is_estimated() -> None:
+    """A15a: whatever the walk finds beyond the declared duration, it is measured."""
+    walk = _walk(*_packets(60))
+
+    assert_that(_decide(walk, header=_fragmented_header())).is_equal_to(
+        (Decimal("1.200000"), None, (AudioFlag.ESTIMATED,)),
+    )
+
+
+def test_mp4_indexed_in_moov_is_still_checked() -> None:
+    """A15a: with every packet indexed in ``moov`` the declared duration is checked."""
+    walk = _walk(*_packets(48))
+
+    assert_that(
+        _decide(walk, header=_fragmented_header(frame_count=48)),
+    ).is_equal_to((Decimal("0.960000"), False, ()))
+
+
+@pytest.mark.parametrize(
+    ("codec", "profile", "expected"),
+    [
+        ("aac", "HE-AAC", True),
+        ("aac", "HE-AACv2", True),
+        ("aac", "LC", False),
+        ("aac", None, False),
+        ("mp3", "HE-AAC", False),
+    ],
+)
+def test_is_he_aac(codec: str, profile: str | None, expected: bool) -> None:
+    """A15b: HE-AAC is AAC whose profile ffprobe names as HE-AAC or HE-AACv2."""
+    header = _mp4_header(codec=codec, profile=profile)
+
+    assert_that(HE_AAC_PROFILES).is_equal_to(frozenset({"HE-AAC", "HE-AACv2"}))
+    assert_that(is_he_aac(header)).is_equal_to(expected)
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("HE-AAC", (Decimal("2.048000"), None, (AudioFlag.ESTIMATED,))),
+        ("LC", (Decimal("1.984000"), False, ())),
+    ],
+)
+def test_he_aac_in_mp4_declares_nothing(
+    profile: str,
+    expected: tuple[Decimal | None, bool | None, tuple[AudioFlag, ...]],
+) -> None:
+    """A15b: HE-AAC in MP4 declares more than a codec frame past its audio.
+
+    The edit list trims the 64 ms priming from the declared 1.984 s, as in a
+    faststart file. The same header with the LC profile is checked as before.
+    """
+    header = _mp4_header(
+        codec="aac",
+        profile=profile,
+        time_base=Decimal(1) / Decimal(48000),
+        stream_duration=Decimal("1.984000"),
+    )
+    walk = _walk(*_packets(32, step="0.064000", start="-0.064"))
+
+    assert_that(_decide(walk, header=header)).is_equal_to(expected)
+
+
+def _stretched_walk(first: str) -> PacketWalk:
+    """Build a 2 s ALAC walk at 8 kHz whose first packet lasts ``first`` seconds.
+
+    Args:
+        first: Duration of the first packet.
+
+    Returns:
+        The walk: the first packet, then three 512 ms packets.
+    """
+    start = Decimal(first)
+    rest = [
+        f"{start + Decimal('0.512') * index:.6f},0.512000,K__" for index in range(3)
+    ]
+    return _walk(f"0.000000,{start:.6f},K__", *rest)
+
+
+@pytest.mark.parametrize(
+    ("first", "expected"),
+    [("0.552", True), ("0.517", False), ("0.512", False)],
+    ids=["40ms", "5ms", "none"],
+)
+def test_first_packet_stretched(first: str, expected: bool) -> None:
+    """A15b: a first packet longer than the median by more than the A5 tolerance.
+
+    40 ms over a 512 ms median is stretched; exactly the 5 ms tolerance is
+    not.
+    """
+    header = _mp4_header(codec="alac", time_base=Decimal(1) / Decimal(8000))
+
+    assert_that(first_packet_stretched(header, _stretched_walk(first))).is_equal_to(
+        expected,
+    )
+
+
+def test_first_packet_stretched_needs_a_packet() -> None:
+    """With no timed packet there is nothing to compare."""
+    assert_that(first_packet_stretched(_mp4_header(), PacketWalk())).is_false()
+
+
+@pytest.mark.parametrize(
+    ("container", "expected"),
+    [
+        (MP4_FORMAT_NAME, (Decimal("2.088000"), None, (AudioFlag.ESTIMATED,))),
+        ("flac", (Decimal("2.088000"), False, ())),
+    ],
+)
+def test_stretched_first_packet_in_mp4_declares_nothing(
+    container: str,
+    expected: tuple[Decimal | None, bool | None, tuple[AudioFlag, ...]],
+) -> None:
+    """A15b: in MP4 the stretched span counts the video's delay, so it is measured.
+
+    The rule is for MP4 alone; other containers are checked as before.
+    """
+    header = _header(
+        container=container,
+        codec="alac",
+        time_base=Decimal(1) / Decimal(8000),
+        stream_duration=Decimal("2.088000"),
+    )
+
+    assert_that(_decide(_stretched_walk("0.552"), header=header)).is_equal_to(
+        expected,
+    )
