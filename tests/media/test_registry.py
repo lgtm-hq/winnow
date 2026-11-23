@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
+from tests.media.bmff_support import box, ftyp, moov
 from winnow.media import (
     DEFAULT_FORMAT_REGISTRY,
     DEFAULT_FORMATS,
@@ -23,7 +24,7 @@ from winnow.models.media import MediaType
 JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00" + b"\x00" * 20
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 20
 GIF_BYTES = b"GIF89a" + b"\x00" * 20
-MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 16
+MP4_BYTES = ftyp("mp42", ["mp42", "isom"]) + moov(["vide"]) + box(b"mdat", b"\x00" * 16)
 MP3_BYTES = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 20
 WAV_BYTES = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 20
 
@@ -292,9 +293,12 @@ def test_sniff_skips_matches_without_mime_type(
     class _Match:
         def __init__(self, mime_type: str | None) -> None:
             self.mime_type = mime_type
+            self.extension = ".png"
+            self.confidence = 0.9
+            self.byte_match = b"\x89PNG"
 
     monkeypatch.setattr(
-        "winnow.media.registry.puremagic.magic_file",
+        "winnow.media._detect.puremagic.magic_file",
         lambda _: [_Match(None), _Match(""), _Match("image/png")],
     )
 

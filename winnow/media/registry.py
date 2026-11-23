@@ -1,11 +1,11 @@
 """Extensible media format registry and layered media-type detection.
 
-Media types are resolved through three layers, most authoritative first:
-
-1. User overrides registered on a :class:`FormatRegistry`.
-2. Content sniffing of magic bytes via ``puremagic``.
-3. Name-based inference through the standard library ``mimetypes`` table,
-   seeded once at import with RAW camera formats the table lacks.
+Media types are resolved by :func:`winnow.media._detect.detect`, most
+authoritative rule first: user overrides registered on a
+:class:`FormatRegistry`, the file's content (container structure and
+signatures, with ``puremagic`` as advisory evidence), then name-based
+inference through the standard library ``mimetypes`` table, seeded once at
+import with RAW camera formats the table lacks.
 
 The registry itself only hand-maintains the RAW supplement; every mainstream
 extension is answered by the MIME table or by sniffing file content.
@@ -20,8 +20,7 @@ from threading import Lock
 from types import MappingProxyType
 from typing import Self
 
-import puremagic
-
+from winnow.media import _detect
 from winnow.models.media import MediaType
 
 RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
@@ -306,14 +305,10 @@ def detect_media_type(
     *,
     registry: FormatRegistry | None = None,
 ) -> MediaType | None:
-    """Detect a file's media type using layered detection.
+    """Detect a file's media type from overrides, content, then name.
 
-    Layers are consulted most-authoritative first:
-
-    1. Explicit registry overrides for the file's extension.
-    2. Magic-byte content sniffing via ``puremagic``.
-    3. Name-based inference through the ``mimetypes`` table, which covers
-       unreadable or absent files.
+    See :func:`winnow.media._detect.detect` for the rules and the evidence
+    behind the answer.
 
     Args:
         path: File to classify. The file does not need to exist; detection then
@@ -322,44 +317,9 @@ def detect_media_type(
             fallback. Defaults to Winnow's shared default registry.
 
     Returns:
-        Detected media type, or ``None`` when no layer can classify the file.
+        Detected media type, or ``None`` when no rule establishes one.
     """
-    active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
-    override = active_registry.lookup_override(path.suffix)
-    if override is not None:
-        return override
-
-    sniffed = _sniff_media_type(path)
-    if sniffed is not None:
-        return sniffed
-
-    return active_registry.lookup(path.suffix)
-
-
-def _sniff_media_type(path: Path) -> MediaType | None:
-    """Sniff a file's media type from its magic bytes.
-
-    Args:
-        path: File whose content should be inspected.
-
-    Returns:
-        Media type of the strongest image, video, or audio signature match, or
-        ``None`` when the file is unreadable or its content is unrecognized.
-    """
-    try:
-        matches = puremagic.magic_file(str(path))
-    except (puremagic.PureError, OSError, ValueError):
-        return None
-
-    for match in matches:
-        mime_type = match.mime_type
-        if not mime_type:
-            continue
-        mime_prefix, _, _ = mime_type.partition("/")
-        media_type = _MIME_PREFIX_TYPES.get(mime_prefix)
-        if media_type is not None:
-            return media_type
-    return None
+    return _detect.detect(path, registry=registry).media_type
 
 
 def normalize_extension(extension: str) -> str:
