@@ -8,16 +8,32 @@ files such as ``/etc/mime.types`` and differs between machines and Python
 releases, is consulted only when a registry asks for it
 (``FormatRegistry(use_mime_fallback=True)``).
 
-The table names a media type for an extension that names one format, or
-one family of formats, whose media type is image, audio or video. Each
-group below cites its source: CPython's built-in table
-(``Lib/mimetypes.py``, ``_types_map_default`` in 3.15), the IANA media type
-registry, or the format's own specification. An extension that names
-formats of different media types, or a common non-media format, is left
-out (see :data:`EXCLUDED_EXTENSIONS`); a file with such an extension and
-unrecognised content is unknown. Playlist extensions
-(:data:`~winnow.media._format_checks.PLAYLIST_EXTENSIONS`) are never in
-the table: a playlist is not media.
+The table only makes the existing name answers host-independent; it never
+makes a file media by name that winnow did not already type by name. An
+extension is in the table only under one of these rules:
+
+1. **Stable before.** CPython's built-in table (``mimetypes.MimeTypes``
+   with no host files) gives it the same media type in every supported
+   Python, 3.11 to 3.15, or it is one of the registry's own formats
+   (``registry.RAW_IMAGE_MIME_TYPES`` and
+   ``registry.EXTENSION_ONLY_FORMATS``). It keeps exactly that type, even
+   where the type is debatable; changing a stable answer is a separate
+   decision.
+2. **Host- or version-dependent before, one answer now.** A host MIME file
+   or a newer Python typed it as media and the built-in table of an older
+   Python did not (or typed it differently). It is in the table only if it
+   names a single media format with no credible competing use *and* winnow
+   has a content rule for that format, so a real file is recognised by its
+   content anyway and the name only fills in for unreadable or
+   unrecognised content. These are :data:`HOST_DEPENDENT_ADDITIONS`, each
+   with its format and content rule. The others are
+   :data:`EXCLUDED_EXTENSIONS`, each with the reason.
+
+Any extension no supported Python typed as media by name stays out of the
+table, even when a content rule recognises its format: content still types
+such a file, the name alone does not. Playlist extensions
+(:data:`~winnow.media._format_checks.PLAYLIST_EXTENSIONS`) are never in the
+table.
 
 Any change to an entry's answer raises :data:`EXTENSION_TABLE_VERSION`,
 which detection records in the extension signal (``table=winnow/1``).
@@ -41,160 +57,174 @@ _IMAGE = MediaType.IMAGE
 _AUDIO = MediaType.AUDIO
 _VIDEO = MediaType.VIDEO
 
-_GROUPS: Final[tuple[tuple[MediaType, str], ...]] = (
-    # --- CPython's built-in table (Lib/mimetypes.py, 3.15), image/* ---------
+_STABLE_GROUPS: Final[tuple[tuple[MediaType, str], ...]] = (
+    # --- Rule 1: CPython's built-in table, the same in 3.11 to 3.15 --------
+    # (Lib/mimetypes.py, _types_map_default; .svgz through its suffix_map,
+    # as .svg.gz). Kept exactly as CPython types them: .3gp, .3g2, .3gpp
+    # and .3gpp2 are audio/3gpp*, .ass is audio/aac, .mpa is video/mpeg.
     (
         _IMAGE,
-        "avif bmp emf fits g3 gif heic heif ico ief jp2 jpe jpeg jpg jpm jpx jxl"
-        " pbm pgm png pnm ppm ras rgb svg t38 tfx tif tiff webp wmf xbm xpm xwd",
+        "avif bmp gif heic heif ico ief jpe jpeg jpg pbm pgm png pnm ppm ras"
+        " rgb svg svgz tif tiff xbm xpm xwd",
     ),
-    # CPython's suffix_map reads .svgz as .svg.gz, which its table types
-    # image/svg+xml with gzip encoding.
-    (_IMAGE, "svgz"),
-    # --- CPython's built-in table (Lib/mimetypes.py, 3.15), audio/* ---------
-    # .ass is left out though CPython maps it to audio/aac: it names the
-    # Advanced SubStation Alpha subtitle format (EXCLUDED_EXTENSIONS).
     (
         _AUDIO,
-        "aac adts aif aifc aiff au flac loas m4a mka mp2 mp3 ogg opus ra snd"
-        " wav weba",
+        "3g2 3gp 3gpp 3gpp2 aac adts aif aifc aiff ass au loas mp2 mp3 opus ra"
+        " snd wav",
     ),
-    # --- CPython's built-in table (Lib/mimetypes.py, 3.15), video/* ---------
-    # .mpa is video/mpeg there, and stays so here.
-    (
-        _VIDEO,
-        "avi m1v m4v mk3d mkv mov movie mp4 mpa mpe mpeg mpg ogv qt webm wmv",
-    ),
-    # 3GPP and 3GPP2 files: RFC 3839 and RFC 4393 register both an audio and
-    # a video type for .3gp and .3g2; the video type is the one for files
-    # that hold video. winnow takes video, as for the other ISO-BMFF
-    # movie extensions (CPython's built-in table says audio/3gpp).
-    (_VIDEO, "3g2 3gp 3gpp 3gpp2"),
-    # --- Images winnow's signature table recognises (_signatures.py) -------
-    # JPEG File Interchange Format 1.02; PNG (ISO/IEC 15948) and APNG.
-    (_IMAGE, "jfif apng"),
-    # Microsoft ICONDIR type 2 (cursor).
-    (_IMAGE, "cur"),
-    # RFC 3745: image/jp2 and image/jpx files; .j2k and .j2c hold the raw
-    # codestream (ISO/IEC 15444-1, Annex A).
-    (_IMAGE, "j2c j2k jpf jpg2"),
-    # Netpbm PAM; SGI image (The SGI Image File Format 1.00); Sun raster.
-    (_IMAGE, "pam sgi rgba bw sun"),
-    # ZSoft PCX and DCX; DirectDraw Surface; Apple icon image; OpenEXR.
-    (_IMAGE, "pcx dcx dds icns exr"),
-    # GIMP XCF; JPEG XR (IANA image/jxr: .jxr, .wdp, .hdp); IFF ILBM.
-    (_IMAGE, "xcf jxr wdp hdp ilbm lbm"),
-    # FITS (RFC 4047, image/fits: .fits, .fit, .fts); DjVu (IANA
-    # image/vnd.djvu); Photoshop PSD and PSB (Adobe Photoshop File Formats
-    # Specification).
-    (_IMAGE, "fit fts djvu djv psd psb"),
-    # Canon CRW (CIFF 1.0r4); JPEG XS (RFC 9134, image/jxs); DPX (SMPTE
-    # 268M, IANA image/dpx); QOI 1.0; JNG 1.0; MODI (IANA image/vnd.ms-modi).
-    (_IMAGE, "crw jxs dpx qoi jng mdi"),
-    # QuickTime image file (Apple QuickTime File Format, image files);
-    # OpenRaster (ora specification).
-    (_IMAGE, "qtif qti ora"),
-    # --- ISO-BMFF image brands (_detect_bmff.py) ---------------------------
-    # ISO/IEC 23008-12 and IANA image/heic-sequence, image/heif-sequence;
-    # .hif as cameras write HEIF; AVIF image sequences (AV1 Image File Format).
-    (_IMAGE, "heics heifs hif avifs"),
-    # --- RAW camera formats (registry.RAW_IMAGE_MIME_TYPES) ----------------
-    # Camera makers' own extensions, as ExifTool and LibRaw document them.
+    (_VIDEO, "avi m1v mov movie mp4 mpa mpe mpeg mpg qt webm"),
+    # --- Rule 1: the registry's own formats --------------------------------
+    # RAW camera extensions (registry.RAW_IMAGE_MIME_TYPES).
     (
         _IMAGE,
         "3fr ari arw cr2 cr3 dcr dng erf k25 kdc mrw nef nrw orf pef raf raw"
         " rw2 rwl sr2 srf srw x3f",
     ),
-    # --- Extension-only formats (registry.EXTENSION_ONLY_FORMATS, #393) ----
-    # Typed by name here; detection still requires the format's marker.
+    # Extension-only formats (registry.EXTENSION_ONLY_FORMATS, #393);
+    # detection still requires the format's marker in readable content.
     (
         _IMAGE,
-        "ag ai dib dwg dxf eps epsf epsi fig fpx pct pic pict sk sk1 tga",
+        "ag ai dib dwg dxf eps epsf epsi fig fpx jxl pct pic pict sk sk1 tga",
     ),
     (_AUDIO, "669 koz"),
     (_VIDEO, "fli flc"),
-    # --- Audio winnow's signature table recognises (_signatures.py) --------
-    # RIFF WAVE, EBU Tech 3285 (BWF) and 3306 (RF64); Sony Wave64.
-    (_AUDIO, "wave bwf rf64 w64"),
-    # Apple Core Audio Format; WavPack; True Audio; Creative Voice.
-    (_AUDIO, "caf wv tta voc"),
-    # Monkey's Audio; Musepack SV7 and SV8.
-    (_AUDIO, "ape mpc mp+"),
-    # Standard MIDI Files 1.0 (and RIFF RMID, karaoke .kar).
-    (_AUDIO, "mid midi kar rmi"),
-    # RFC 4867 (audio/AMR, audio/AMR-WB); RFC 3625 (QCELP, .qcp).
-    (_AUDIO, "amr awb qcp"),
-    # IFF 8SVX; Scream Tracker 2 and 3; FastTracker 2 modules and
-    # instruments; Impulse Tracker; OctaMED; MultiTracker; UltraTracker; MO3.
-    (_AUDIO, "8svx stm s3m xm xi it med mtm ult mo3"),
-    # Extensible Music Format (RFC 4723, audio/mobile-xmf: .mxmf).
-    (_AUDIO, "xmf mxmf"),
-    # MPEG audio (RFC 3003; .mpga as Apache httpd's mime.types lists it);
-    # AC-3 (RFC 4184); E-AC-3 (RFC 4598); DTS (IANA audio/vnd.dts).
-    (_AUDIO, "mp1 mpga ac3 eac3 ec3 dts"),
-    # Ogg audio (RFC 5334: .oga, .spx).
-    (_AUDIO, "oga spx"),
-    # ISO-BMFF audio brands M4B, M4P, F4A, F4B (_detect_bmff.AUDIO_BRANDS).
-    (_AUDIO, "m4b m4p f4a f4b"),
-    # Windows Media Audio in ASF.
-    (_AUDIO, "wma"),
-    # Ogg Media (OGM), a video container in Ogg pages.
-    (_VIDEO, "ogm"),
-    # --- Video winnow's signature table recognises (_signatures.py) --------
-    # ASF specification 3.1; Adobe FLV and F4V (Video File Format
-    # Specification 10.1).
-    (_VIDEO, "asf flv f4v f4p"),
-    # MPEG-2 video and program streams (ISO/IEC 13818-1 and -2), DVD video
-    # objects; MPEG-2 transport streams (IANA video/MP2T; .mts and .m2ts
-    # as AVCHD cameras write them). .ts is left out (EXCLUDED_EXTENSIONS).
-    (_VIDEO, "m2v vob mts m2ts m2t"),
-    # Raw DV (IEC 61834-2); YUV4MPEG2; MNG 1.0, typed video as its content
-    # rule types it. .dif is left out (EXCLUDED_EXTENSIONS).
-    (_VIDEO, "dv y4m mng"),
-    # Bink, Smacker, Nullsoft Streaming Video.
-    (_VIDEO, "bik bk2 smk nsv"),
-    # Motion JPEG 2000 (RFC 3745, video/mj2); Canon CRM movies
-    # (https://github.com/lclevy/canon_cr3).
-    (_VIDEO, "mj2 mjp2 crm"),
 )
+
+HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
+    {
+        # --- Rule 2: audio --------------------------------------------------
+        # FLAC (RFC 9639); content rule: _header_checks.flac.
+        "flac": _AUDIO,
+        # MPEG-4 audio and protected audio; content rule: ISO-BMFF
+        # (_detect_bmff, brands M4A and M4P).
+        "m4a": _AUDIO,
+        "m4p": _AUDIO,
+        # Standard MIDI File and RIFF MIDI; content rules:
+        # _header_checks.midi and the RIFF RMID signature. (.mid is left
+        # out, see EXCLUDED_EXTENSIONS.)
+        "midi": _AUDIO,
+        "rmi": _AUDIO,
+        # Matroska audio and WebM audio; content rule: _matroska.
+        "mka": _AUDIO,
+        "weba": _AUDIO,
+        # MPEG audio (RFC 3003); content rule: consecutive MPEG audio frames.
+        "mpga": _AUDIO,
+        # Ogg audio (RFC 5334: .ogg and .oga); content rule: Ogg streams.
+        "ogg": _AUDIO,
+        "oga": _AUDIO,
+        # Scream Tracker 3 and FastTracker 2 modules; content rules:
+        # _format_checks.scream_tracker_3 and fasttracker.
+        "s3m": _AUDIO,
+        "xm": _AUDIO,
+        # Windows Media Audio; content rule: ASF stream declarations.
+        "wma": _AUDIO,
+        # --- Rule 2: image --------------------------------------------------
+        # DjVu (IANA image/vnd.djvu); content rule: _header_checks.djvu.
+        "djv": _IMAGE,
+        "djvu": _IMAGE,
+        # Enhanced and Windows metafiles (RFC 7903); content rules:
+        # _format_checks.emf and wmf.
+        "emf": _IMAGE,
+        "wmf": _IMAGE,
+        # HEIF and HEIC image sequences (ISO/IEC 23008-12); content rule:
+        # ISO-BMFF image-sequence brands.
+        "heics": _IMAGE,
+        "heifs": _IMAGE,
+        # JPEG 2000 (RFC 3745); content rule: the JP2 signature box.
+        "jp2": _IMAGE,
+        # ZSoft PCX; content rule: _header_checks.pcx.
+        "pcx": _IMAGE,
+        # Adobe Photoshop; content rule: _format_checks.psd.
+        "psd": _IMAGE,
+        # QuickTime image file; content rule: _format_checks.quicktime_image.
+        "qtif": _IMAGE,
+        # SGI image; content rule: _header_checks.sgi.
+        "sgi": _IMAGE,
+        # JPEG XR / HD Photo (IANA image/jxr); content rule: the JPEG XR
+        # signature.
+        "wdp": _IMAGE,
+        # WebP (RFC 9649); content rule: RIFF form type WEBP.
+        "webp": _IMAGE,
+        # --- Rule 2: video --------------------------------------------------
+        # ASF and Windows Media Video; content rule: ASF stream declarations.
+        "asf": _VIDEO,
+        "wmv": _VIDEO,
+        # Raw DV (IEC 61834-2); content rule: _header_checks.dv.
+        "dv": _VIDEO,
+        # Flash video (Adobe FLV and F4V specification 10.1); content rules:
+        # FLV stream declarations and ISO-BMFF.
+        "flv": _VIDEO,
+        "f4v": _VIDEO,
+        # MPEG-2 transport streams as Blu-ray and HDV write them; content
+        # rule: _mpegts. (.ts and .mts are left out, see EXCLUDED_EXTENSIONS.)
+        "m2t": _VIDEO,
+        "m2ts": _VIDEO,
+        # MPEG-2 video elementary stream; content rule:
+        # _header_checks.mpeg_video.
+        "m2v": _VIDEO,
+        # MPEG-4 video; content rule: ISO-BMFF.
+        "m4v": _VIDEO,
+        # Matroska video and 3D video (RFC 9559); content rule: _matroska.
+        "mkv": _VIDEO,
+        "mk3d": _VIDEO,
+        # MNG, typed video as its content rule types it (_format_checks.mng).
+        "mng": _VIDEO,
+        # Ogg video (RFC 5334); content rule: Ogg streams.
+        "ogv": _VIDEO,
+    },
+)
+"""Rule 2 entries: host- or version-dependent names given one answer."""
 
 EXCLUDED_EXTENSIONS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "ass": "Advanced SubStation Alpha subtitles",
-        "dat": "Video CD MPEG or any data file",
-        "dif": "raw DV video or a text diff",
-        "mod": "tracker module audio or JVC camcorder MPEG video",
-        "nif": "Navy Image File Format or NetImmerse 3D model",
-        "psf": "Portable Sound Format audio or PC Screen Font",
-        "rm": "RealMedia, registered only as application/vnd.rn-realmedia",
-        "rmvb": "RealMedia, registered only as application/vnd.rn-realmedia-vbr",
-        "sid": "Commodore 64 SID audio or MrSID image",
+        "caf": "Core Audio Format or a Cal3D animation",
+        "dif": "raw DV video, a text diff or a spreadsheet DIF file",
+        "dts": "DTS audio or Devicetree source",
+        "fits": "FITS also holds tables and other non-image data",
+        "g3": "G3 fax, for which winnow has no content rule",
+        "jpm": "JPEG 2000 compound image in some tables, video/jpm in others",
+        "jpx": "JPEG 2000 extended image or a JBuilder project",
+        "kar": "MIDI karaoke; other uses not ruled out",
+        "mdi": "Microsoft Document Imaging; other uses not ruled out",
+        "mid": "Standard MIDI File or MapInfo Interchange attribute data",
+        "mj2": "Motion JPEG 2000, which the content rule types as an image",
+        "mjp2": "Motion JPEG 2000, which the content rule types as an image",
+        "mts": "AVCHD transport stream or a TypeScript module",
+        "qti": "QuickTime image or a QtiPlot document",
+        "sid": "Commodore 64 SID audio or a MrSID image",
+        "spx": "Ogg Speex audio or an Apple System Profiler report",
+        "t38": "T.38 fax, for which winnow has no content rule",
+        "tfx": "TIFF-FX fax or a Pro Tools plug-in preset",
         "ts": "MPEG transport stream or TypeScript source",
+        "vob": "DVD video object, a Vue object or a Live for Speed asset",
     },
 )
-"""Extensions left out of the table on purpose, and why.
+"""Host- or version-dependent media names rule 2 leaves out, and why.
 
-Each names more than one format, or a format registered under no image,
-audio or video type. A file with one of these extensions is typed only by
-its content.
+A file with one of these extensions is typed only by its content.
 """
 
 
 def _build() -> dict[str, MediaType]:
-    """Merge the groups into one mapping.
+    """Merge the rule 1 groups and the rule 2 additions into one mapping.
 
     Returns:
         Lower-case extension without the dot mapped to its media type.
 
     Raises:
-        ValueError: If an extension appears twice.
+        ValueError: If an extension appears twice or is also excluded.
     """
     table: dict[str, MediaType] = {}
-    for media_type, extensions in _GROUPS:
-        for extension in extensions.split():
-            if extension in table:
-                raise ValueError(f"extension listed twice: {extension}")
-            table[extension] = media_type
+    entries = [
+        (extension, media_type)
+        for media_type, extensions in _STABLE_GROUPS
+        for extension in extensions.split()
+    ]
+    entries.extend(HOST_DEPENDENT_ADDITIONS.items())
+    for extension, media_type in entries:
+        if extension in table or extension in EXCLUDED_EXTENSIONS:
+            raise ValueError(f"extension listed twice or excluded: {extension}")
+        table[extension] = media_type
     return table
 
 
@@ -206,4 +236,5 @@ __all__ = [
     "EXTENSION_MEDIA_TYPES",
     "EXTENSION_TABLE_NAME",
     "EXTENSION_TABLE_VERSION",
+    "HOST_DEPENDENT_ADDITIONS",
 ]

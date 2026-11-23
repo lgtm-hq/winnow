@@ -7,22 +7,29 @@ own, CPython's built-in table alone, an empty table, and a table that gives
 every extension a different media type. Both the process-wide
 ``mimetypes.guess_type`` and the registry's private opt-in table are
 replaced. With the default registry every result must be the same.
+
+The table may only make existing name answers host-independent, never make
+a file media by name that winnow left unknown; the membership tests derive
+what may be in it from that rule.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import mimetypes
 import os
+import struct
 import sys
+import zipfile
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from assertpy import assert_that
 
-from tests.media.library_support import LIBRARY_SAMPLES
 from tests.script_runner import run_script
 from winnow.media import registry as registry_module
 from winnow.media._detect import DetectionResult, detect
@@ -31,6 +38,7 @@ from winnow.media._extension_table import (
     EXTENSION_MEDIA_TYPES,
     EXTENSION_TABLE_NAME,
     EXTENSION_TABLE_VERSION,
+    HOST_DEPENDENT_ADDITIONS,
 )
 from winnow.media._format_checks import PLAYLIST_EXTENSIONS
 from winnow.media.registry import (
@@ -39,11 +47,19 @@ from winnow.media.registry import (
     ExtensionLookup,
     FormatRegistry,
     create_default_format_registry,
+    media_type_for_extension,
 )
+from winnow.models.config import WinnowConfig
 from winnow.models.media import MediaType
+from winnow.models.pipeline import PipelineResult, RunMetadata
+from winnow.pipeline import DiscoveryStep, PipelineContext, RunState
 
 GuessType = Callable[..., tuple[str | None, str | None]]
 DetectUnderEachTable = Callable[[Path], dict[str, DetectionResult]]
+
+IMAGE = MediaType.IMAGE
+AUDIO = MediaType.AUDIO
+VIDEO = MediaType.VIDEO
 
 OPAQUE_BYTES = bytes(range(0x80, 0x100)) * 2
 """256 bytes no content rule recognises and that are not text."""
@@ -63,9 +79,83 @@ HOST_DEPENDENT_EXTENSIONS = (
 )
 """The extensions the issue measured changing between hosts and Pythons."""
 
+RULE_2_ADDITIONS: dict[str, MediaType] = {
+    # Each was media by name only on some hosts or Pythons, names one media
+    # format with no competing use, and has a content rule. Adding an entry
+    # to the table's HOST_DEPENDENT_ADDITIONS needs a matching line here.
+    "flac": AUDIO,
+    "m4a": AUDIO,
+    "m4p": AUDIO,
+    "midi": AUDIO,
+    "rmi": AUDIO,
+    "mka": AUDIO,
+    "weba": AUDIO,
+    "mpga": AUDIO,
+    "ogg": AUDIO,
+    "oga": AUDIO,
+    "s3m": AUDIO,
+    "xm": AUDIO,
+    "wma": AUDIO,
+    "djv": IMAGE,
+    "djvu": IMAGE,
+    "emf": IMAGE,
+    "wmf": IMAGE,
+    "heics": IMAGE,
+    "heifs": IMAGE,
+    "jp2": IMAGE,
+    "pcx": IMAGE,
+    "psd": IMAGE,
+    "qtif": IMAGE,
+    "sgi": IMAGE,
+    "wdp": IMAGE,
+    "webp": IMAGE,
+    "asf": VIDEO,
+    "wmv": VIDEO,
+    "dv": VIDEO,
+    "flv": VIDEO,
+    "f4v": VIDEO,
+    "m2t": VIDEO,
+    "m2ts": VIDEO,
+    "m2v": VIDEO,
+    "m4v": VIDEO,
+    "mkv": VIDEO,
+    "mk3d": VIDEO,
+    "mng": VIDEO,
+    "ogv": VIDEO,
+}
+"""The deliberate rule 2 entries, written out independently of the table."""
+
+REPRESENTATIVE_ANSWERS: dict[str, MediaType | None] = {
+    "jpg": IMAGE,
+    "svgz": IMAGE,
+    "nef": IMAGE,
+    "eps": IMAGE,
+    "mp4": VIDEO,
+    "webm": VIDEO,
+    "mpa": VIDEO,
+    "fli": VIDEO,
+    "mp3": AUDIO,
+    "3gp": AUDIO,
+    "3gpp": AUDIO,
+    "ass": AUDIO,
+    "669": AUDIO,
+    "mkv": VIDEO,
+    "flac": AUDIO,
+    "webp": IMAGE,
+    "fit": None,
+    "bw": None,
+    "ac3": None,
+    "xcf": None,
+    "caf": None,
+    "mts": None,
+    "dds": None,
+}
+"""Expected default answers, written out independently of the table."""
+
 _HOST_GUESS_TYPE: GuessType = mimetypes.guess_type
 _BUILTIN_ONLY = mimetypes.MimeTypes(filenames=())
 _ROTATED_PREFIX = {"audio": "video", "video": "image", "image": "audio"}
+_MEDIA_PREFIXES = {"audio": AUDIO, "image": IMAGE, "video": VIDEO}
 
 
 def _empty_table(url: str, strict: bool = True) -> tuple[str | None, str | None]:
@@ -185,6 +275,19 @@ def _assert_all_equal(results: dict[str, DetectionResult]) -> None:
         assert_that(result).described_as(name).is_equal_to(results["host"])
 
 
+def _builtin_media_type(extension: str) -> MediaType | None:
+    """Type an extension with this Python's built-in MIME table alone.
+
+    Args:
+        extension: Extension without the dot.
+
+    Returns:
+        The media type CPython's built-in table gives, or ``None``.
+    """
+    mime_type, _ = _BUILTIN_ONLY.guess_type(f"file.{extension}")
+    return _MEDIA_PREFIXES.get((mime_type or "").partition("/")[0])
+
+
 @pytest.mark.parametrize("extension", HOST_DEPENDENT_EXTENSIONS)
 def test_default_fallback_ignores_host_mime_table(
     tmp_path: Path,
@@ -215,13 +318,16 @@ def test_every_table_extension_is_host_independent(
     )
 
 
-@pytest.mark.parametrize("extension", [".ktx", ".ass", ".sid", ".ts", ".rm"])
+@pytest.mark.parametrize(
+    "extension",
+    [".ktx", ".sid", ".ts", ".rm", ".caf", ".mts", ".mid", ".fit", ".bw", ".ac3"],
+)
 def test_extension_outside_the_table_is_unknown_on_every_host(
     tmp_path: Path,
     extension: str,
     detect_under_each_table: DetectUnderEachTable,
 ) -> None:
-    """An extension only a host table knows gives no type, and says so."""
+    """An extension the table leaves out gives no type, and says so."""
     results = detect_under_each_table(_opaque(tmp_path, extension))
 
     _assert_all_equal(results)
@@ -231,88 +337,52 @@ def test_extension_outside_the_table_is_unknown_on_every_host(
     )
 
 
-_CONTENT_RULE_EXTENSIONS: dict[str, MediaType] = {
-    # Matroska and WebM (_matroska.py).
-    "mkv": MediaType.VIDEO,
-    "mk3d": MediaType.VIDEO,
-    "webm": MediaType.VIDEO,
-    "mka": MediaType.AUDIO,
-    "weba": MediaType.AUDIO,
-    # ISO-BMFF brands (_detect_bmff.py).
-    "mp4": MediaType.VIDEO,
-    "m4v": MediaType.VIDEO,
-    "mov": MediaType.VIDEO,
-    "3gp": MediaType.VIDEO,
-    "3g2": MediaType.VIDEO,
-    "crm": MediaType.VIDEO,
-    "m4a": MediaType.AUDIO,
-    "m4b": MediaType.AUDIO,
-    "m4p": MediaType.AUDIO,
-    "f4a": MediaType.AUDIO,
-    "f4b": MediaType.AUDIO,
-    "heic": MediaType.IMAGE,
-    "heif": MediaType.IMAGE,
-    "hif": MediaType.IMAGE,
-    "heics": MediaType.IMAGE,
-    "avif": MediaType.IMAGE,
-    "avifs": MediaType.IMAGE,
-    "cr3": MediaType.IMAGE,
-    # Audio format names ffprobe facts are accepted for (_audio_rules.py).
-    "mp3": MediaType.AUDIO,
-    "aac": MediaType.AUDIO,
-    "ac3": MediaType.AUDIO,
-    "eac3": MediaType.AUDIO,
-    "flac": MediaType.AUDIO,
-    "wv": MediaType.AUDIO,
-    "tta": MediaType.AUDIO,
-    "wav": MediaType.AUDIO,
-    "aiff": MediaType.AUDIO,
-    "ogg": MediaType.AUDIO,
-    "wma": MediaType.AUDIO,
-    "asf": MediaType.VIDEO,
-    "avi": MediaType.VIDEO,
-    "m2ts": MediaType.VIDEO,
-    "mpg": MediaType.VIDEO,
-    "flv": MediaType.VIDEO,
-    "mj2": MediaType.VIDEO,
-    # Signature formats with no library sample (_signatures.py).
-    "jpg": MediaType.IMAGE,
-    "png": MediaType.IMAGE,
-    "gif": MediaType.IMAGE,
-    "bmp": MediaType.IMAGE,
-    "tif": MediaType.IMAGE,
-    "webp": MediaType.IMAGE,
-    "ico": MediaType.IMAGE,
-    "jp2": MediaType.IMAGE,
-    "svg": MediaType.IMAGE,
-    "caf": MediaType.AUDIO,
-    "au": MediaType.AUDIO,
-    "opus": MediaType.AUDIO,
-    "dts": MediaType.AUDIO,
-}
-"""Extensions of formats the content rules recognise, with their types."""
-
-_NO_CONVENTIONAL_EXTENSION = frozenset({"xcur"})
-"""Library sample extensions no format convention uses (X cursors have none)."""
+def test_table_entries_follow_the_membership_rule() -> None:
+    """Each entry is a stable built-in answer, a registry format or rule 2."""
+    for extension, media_type in EXTENSION_MEDIA_TYPES.items():
+        expected: MediaType | None
+        if extension in RULE_2_ADDITIONS:
+            expected = RULE_2_ADDITIONS[extension]
+        elif extension in DEFAULT_FORMATS:
+            expected = DEFAULT_FORMATS[extension]
+        else:
+            expected = _builtin_media_type(extension)
+        assert_that(media_type).described_as(extension).is_equal_to(expected)
 
 
-def test_extension_table_matches_documented_formats() -> None:
-    """Every format the content rules recognise has its extension typed."""
-    expected = dict(_CONTENT_RULE_EXTENSIONS)
-    for _, extension, _, _, media_type in LIBRARY_SAMPLES:
-        if extension in EXCLUDED_EXTENSIONS or extension in _NO_CONVENTIONAL_EXTENSION:
+def test_builtin_media_names_are_in_the_table_or_excluded() -> None:
+    """Every name this Python's built-in table types as media is accounted for."""
+    builtin_extensions = {
+        extension.lstrip(".") for extension in _BUILTIN_ONLY.types_map[True]
+    }
+    for extension in sorted(builtin_extensions):
+        media_type = _builtin_media_type(extension)
+        if media_type is None or extension in EXCLUDED_EXTENSIONS:
             continue
-        expected[extension] = media_type
-    expected.update(DEFAULT_FORMATS)
-
-    for extension, media_type in expected.items():
         assert_that(EXTENSION_MEDIA_TYPES.get(extension)).described_as(
             extension,
         ).is_equal_to(media_type)
 
 
+def test_host_dependent_additions_are_deliberate() -> None:
+    """The table's rule 2 entries are exactly the ones this test lists."""
+    assert_that(dict(HOST_DEPENDENT_ADDITIONS)).is_equal_to(RULE_2_ADDITIONS)
+
+
+@pytest.mark.parametrize(
+    ("extension", "expected"),
+    list(REPRESENTATIVE_ANSWERS.items()),
+)
+def test_representative_default_answers(
+    extension: str,
+    expected: MediaType | None,
+) -> None:
+    """Representative names get the answer main gave on a stable host."""
+    assert_that(media_type_for_extension(extension)).is_equal_to(expected)
+
+
 def test_extension_table_leaves_out_excluded_and_playlist_extensions() -> None:
-    """Ambiguous and playlist extensions are not in the table."""
+    """Excluded and playlist extensions are not in the table."""
     assert_that(EXTENSION_MEDIA_TYPES).does_not_contain_key(*EXCLUDED_EXTENSIONS)
     assert_that(EXTENSION_MEDIA_TYPES).does_not_contain_key(*PLAYLIST_EXTENSIONS)
     assert_that(EXTENSION_TABLE_NAME).is_equal_to(
@@ -334,6 +404,127 @@ def test_playlist_extensions_stay_non_media(
     assert_that(results["host"].container).is_equal_to("playlist")
 
 
+# --- Real non-media files that share a media name ---------------------------
+
+
+def _fit_activity() -> bytes:
+    """Build a Garmin FIT file: its 14-byte header, then binary records.
+
+    Returns:
+        The file.
+    """
+    records = bytes(range(0x40, 0x80)) * 4
+    header = struct.pack("<BBHI4sH", 14, 0x20, 2132, len(records), b".FIT", 0)
+    return header + records + b"\x00\x00"
+
+
+def _bigwig() -> bytes:
+    """Build the start of a BigWig file: its magic and header fields.
+
+    Returns:
+        The file.
+    """
+    header = struct.pack(
+        "<IHHQQQHHQQIQ",
+        0x888FFC26,
+        4,
+        1,
+        64,
+        128,
+        256,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    return header + bytes(range(0x80, 0x100)) * 2
+
+
+def _ole_word_document() -> bytes:
+    """Build a legacy OLE compound file header as Word 97 to 2003 writes it.
+
+    Returns:
+        One header sector and one empty sector.
+    """
+    header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 16
+    header += struct.pack("<HHHHH", 0x003E, 0x0003, 0xFFFE, 9, 6)
+    header += b"\x00" * 6 + struct.pack("<IIIIIIII", 0, 1, 1, 0, 4096, 2, 1, 0)
+    header = header.ljust(512, b"\xff")
+    return header + b"\x00" * 512
+
+
+def _ooxml_document() -> bytes:
+    """Build a minimal OOXML word-processing package.
+
+    Returns:
+        The ZIP package.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+        package.writestr("word/document.xml", '<?xml version="1.0"?><document/>')
+    return buffer.getvalue()
+
+
+NON_MEDIA_SAMPLES: dict[str, bytes] = {
+    "activity.fit": _fit_activity(),
+    "signal.bw": _bigwig(),
+    "legacy-word.dds": _ole_word_document(),
+    "ooxml-word.dds": _ooxml_document(),
+}
+"""Non-media files named with extensions a media format also uses."""
+
+
+@pytest.mark.parametrize("file_name", sorted(NON_MEDIA_SAMPLES))
+def test_non_media_file_with_a_media_name_stays_unknown(
+    tmp_path: Path,
+    file_name: str,
+) -> None:
+    """A FIT, BigWig or Word file keeps no media type by name."""
+    path = tmp_path / file_name
+    path.write_bytes(NON_MEDIA_SAMPLES[file_name])
+
+    result = detect(path)
+
+    assert_that(result.media_type).is_none()
+    assert_that(result.extension_media_type).is_none()
+    assert_that(media_type_for_extension(file_name)).is_none()
+
+
+def test_ooxml_named_dds_is_non_media_by_signature(tmp_path: Path) -> None:
+    """An OOXML package named .dds is decided non-media by its ZIP signature."""
+    path = tmp_path / "ooxml-word.dds"
+    path.write_bytes(NON_MEDIA_SAMPLES["ooxml-word.dds"])
+
+    result = detect(path)
+
+    assert_that(result.container).is_equal_to("zip")
+    assert_that(_decisions(result)).is_equal_to(
+        ["decision=zip non-media signature"],
+    )
+
+
+def test_non_media_files_with_media_names_do_not_enter_discovery(
+    tmp_path: Path,
+) -> None:
+    """Discovery admits none of the non-media samples."""
+    for file_name, data in NON_MEDIA_SAMPLES.items():
+        (tmp_path / file_name).write_bytes(data)
+    result = PipelineResult(
+        run=RunMetadata(started_at=datetime.now(tz=UTC), winnow_version="0.0.0"),
+    )
+    state = RunState(source=tmp_path, destination=tmp_path / "out", result=result)
+
+    DiscoveryStep().run(state, context=PipelineContext.from_config(WinnowConfig()))
+
+    assert_that(state.files).is_empty()
+
+
+# --- Registry behaviour -----------------------------------------------------
+
+
 def test_default_is_switchable_in_one_place() -> None:
     """Every way to build a registry takes the one default for the host table."""
     assert_that(DEFAULT_USE_MIME_FALLBACK).is_false()
@@ -343,20 +534,32 @@ def test_default_is_switchable_in_one_place() -> None:
     assert_that(registry_module.DEFAULT_FORMAT_REGISTRY.use_mime_fallback).is_false()
 
 
+def _stub_host_table(monkeypatch: pytest.MonkeyPatch, **types: str) -> None:
+    """Replace the opt-in host table with one that knows only ``types``.
+
+    Args:
+        monkeypatch: Applies the replacement.
+        **types: MIME type by extension without the dot.
+    """
+    host_table = mimetypes.MimeTypes(filenames=())
+    host_table.types_map = ({}, {})
+    for extension, mime_type in types.items():
+        host_table.add_type(mime_type, f".{extension}")
+    monkeypatch.setattr(registry_module, "_host_mime_types", lambda: host_table)
+
+
 def test_mime_fallback_opt_in_uses_host_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only a registry built with use_mime_fallback=True asks the host table."""
-    host_table = mimetypes.MimeTypes(filenames=())
-    host_table.add_type("video/x-winnow-test", ".zzq")
-    monkeypatch.setattr(registry_module, "_host_mime_types", lambda: host_table)
+    _stub_host_table(monkeypatch, zzq="video/x-winnow-test")
     opaque = _opaque(tmp_path, ".zzq")
 
     opted_in = detect(opaque, registry=FormatRegistry(use_mime_fallback=True))
     default = detect(opaque)
 
-    assert_that(opted_in.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(opted_in.media_type).is_equal_to(VIDEO)
     assert_that(opted_in.signals[-1].detail).is_equal_to(
         "suffix=.zzq table=host-mime",
     )
@@ -364,16 +567,84 @@ def test_mime_fallback_opt_in_uses_host_table(
     assert_that(default.signals[-1].detail).is_equal_to("suffix=.zzq table=none")
 
 
+def test_winnow_table_outranks_opted_in_host_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With defaults on, a conflicting host entry never replaces the table's."""
+    _stub_host_table(monkeypatch, mkv="audio/x-winnow-test", mp4="image/x-test")
+    registry = FormatRegistry(use_mime_fallback=True)
+
+    assert_that(registry.lookup_with_table("clip.mkv")).is_equal_to(
+        ExtensionLookup(media_type=VIDEO, table=EXTENSION_TABLE_NAME),
+    )
+    assert_that(registry.lookup_with_table("clip.mp4")).is_equal_to(
+        ExtensionLookup(media_type=VIDEO, table=EXTENSION_TABLE_NAME),
+    )
+
+
 def test_mime_fallback_opt_in_reads_the_real_host_table() -> None:
     """The opt-in path reaches the host's own table, not only a stub."""
     registry = FormatRegistry(include_defaults=False, use_mime_fallback=True)
 
     assert_that(registry.lookup_with_table("photo.JPG")).is_equal_to(
-        ExtensionLookup(media_type=MediaType.IMAGE, table="host-mime"),
+        ExtensionLookup(media_type=IMAGE, table="host-mime"),
     )
     assert_that(registry.lookup_with_table("photo.dcr")).is_equal_to(
-        ExtensionLookup(media_type=MediaType.IMAGE, table="host-mime"),
+        ExtensionLookup(media_type=IMAGE, table="host-mime"),
     )
+
+
+class _ActivityAudioRegistry(FormatRegistry):
+    """A registry subclass that types ``.fit`` as audio and ``.mp3`` as nothing."""
+
+    __slots__ = ()
+
+    def lookup(self, extension: str) -> MediaType | None:
+        """Type ``.fit`` as audio, ``.mp3`` as unknown, and defer the rest.
+
+        Args:
+            extension: Extension, file name or path.
+
+        Returns:
+            Audio for ``.fit``, ``None`` for ``.mp3``; otherwise the base
+            registry's answer.
+        """
+        if extension.casefold().endswith("fit"):
+            return AUDIO
+        if extension.casefold().endswith("mp3"):
+            return None
+        return super().lookup(extension)
+
+
+@pytest.mark.parametrize(
+    ("file_name", "expected_type", "expected_detail"),
+    [
+        pytest.param("opaque.fit", AUDIO, "suffix=.fit table=registry", id="own"),
+        pytest.param(
+            "opaque.mkv",
+            VIDEO,
+            f"suffix=.mkv table={EXTENSION_TABLE_NAME}",
+            id="deferred",
+        ),
+        pytest.param("opaque.zzq", None, "suffix=.zzq table=none", id="unknown"),
+        pytest.param("opaque.mp3", None, "suffix=.mp3 table=none", id="suppressed"),
+    ],
+)
+def test_subclass_lookup_still_types_detection(
+    tmp_path: Path,
+    file_name: str,
+    expected_type: MediaType | None,
+    expected_detail: str,
+) -> None:
+    """Detection honours a subclass's overridden lookup, as on main."""
+    path = tmp_path / file_name
+    path.write_bytes(OPAQUE_BYTES)
+
+    result = detect(path, registry=_ActivityAudioRegistry())
+
+    assert_that(result.media_type).is_equal_to(expected_type)
+    assert_that(result.extension_media_type).is_equal_to(expected_type)
+    assert_that(result.signals[-1].detail).is_equal_to(expected_detail)
 
 
 @pytest.mark.parametrize(
@@ -383,21 +654,21 @@ def test_mime_fallback_opt_in_reads_the_real_host_table() -> None:
             "opaque.MKV",
             FormatRegistry,
             f"suffix=.mkv table={EXTENSION_TABLE_NAME}",
-            MediaType.VIDEO,
+            VIDEO,
             id="winnow-table",
         ),
         pytest.param(
             "opaque.nef",
             FormatRegistry,
             "suffix=.nef table=registry",
-            MediaType.IMAGE,
+            IMAGE,
             id="registry-default",
         ),
         pytest.param(
             "opaque.clip",
             lambda: FormatRegistry(formats={"clip": "video"}),
             "suffix=.clip table=registry",
-            MediaType.VIDEO,
+            VIDEO,
             id="user-registration",
         ),
         pytest.param(
@@ -413,6 +684,13 @@ def test_mime_fallback_opt_in_reads_the_real_host_table() -> None:
             "suffix=(none)",
             None,
             id="no-suffix",
+        ),
+        pytest.param(
+            "taildot.",
+            FormatRegistry,
+            "suffix=(none)",
+            None,
+            id="trailing-dot",
         ),
     ],
 )
@@ -434,6 +712,16 @@ def test_extension_signal_names_table(
     assert_that(extension_signal.detail).is_equal_to(expected_detail)
     assert_that(extension_signal.media_type).is_equal_to(expected_type)
     assert_that(result.extension_media_type).is_equal_to(expected_type)
+
+
+def test_trailing_dot_name_matches_a_name_without_extension(tmp_path: Path) -> None:
+    """``name.`` and ``name`` give the same result on every Python version."""
+    with_dot = tmp_path / "taildot."
+    without = tmp_path / "taildot"
+    with_dot.write_bytes(OPAQUE_BYTES)
+    without.write_bytes(OPAQUE_BYTES)
+
+    assert_that(detect(with_dot)).is_equal_to(detect(without))
 
 
 def test_import_does_not_mutate_global_mimetypes() -> None:

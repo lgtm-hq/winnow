@@ -333,7 +333,7 @@ class FormatRegistry:
             the host MIME table's type when enabled, or ``None`` for unknown
             extensions.
         """
-        return self.lookup_with_table(extension).media_type
+        return self._resolve(extension).media_type
 
     def lookup_with_table(self, extension: str) -> ExtensionLookup:
         """Look up a media type by extension and say which table answered.
@@ -342,9 +342,33 @@ class FormatRegistry:
         table (with ``include_defaults``), then the host's ``mimetypes``
         table (only with ``use_mime_fallback``).
 
+        A subclass that overrides :meth:`lookup` still decides the answer,
+        as it did before this method existed: its type is returned with the
+        table that gave the same type here, or :data:`REGISTRY_TABLE` when
+        the subclass supplied a different one.
+
         Args:
             extension: File extension, with or without a leading dot. File names
                 and paths are also accepted; only the final suffix is used.
+
+        Returns:
+            The media type and the table that gave it.
+        """
+        resolved = self._resolve(extension)
+        if type(self).lookup is FormatRegistry.lookup:
+            return resolved
+        media_type = self.lookup(extension)
+        if media_type == resolved.media_type:
+            return resolved
+        if media_type is None:
+            return ExtensionLookup(media_type=None, table=NO_TABLE)
+        return ExtensionLookup(media_type=media_type, table=REGISTRY_TABLE)
+
+    def _resolve(self, extension: str) -> ExtensionLookup:
+        """Answer :meth:`lookup_with_table` from the registry's own tables.
+
+        Args:
+            extension: File extension, file name or path.
 
         Returns:
             The media type and the table that gave it.

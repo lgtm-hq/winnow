@@ -24,11 +24,13 @@
    lookup answers from the registry's own formats, then winnow's versioned
    extension table (:mod:`winnow.media._extension_table`), so with the
    default registry the answer is the same on every host and Python
-   version. The host's ``mimetypes`` table is asked only by a registry
-   built with ``use_mime_fallback=True`` (#464). The extension signal
-   names the table that answered: ``suffix=.mkv table=winnow/1``,
-   ``table=registry``, ``table=host-mime``, or ``table=none`` when no table
-   knows the extension (its media type is then ``None``).
+   version. That table holds only names winnow already typed by name; it
+   makes no new extension media. The host's ``mimetypes`` table is asked
+   only by a registry built with ``use_mime_fallback=True`` (#464). The
+   extension signal names the table that answered:
+   ``suffix=.mkv table=winnow/1``, ``table=registry``, ``table=host-mime``,
+   or ``table=none`` when no table knows the extension (its media type is
+   then ``None``).
 
 Two checks come before rule 5, for content rules 2 to 4 did not
 recognise:
@@ -147,11 +149,12 @@ def detect(
         The decision with its signals.
     """
     active = registry if registry is not None else _registry.DEFAULT_FORMAT_REGISTRY
-    named = active.lookup_with_table(path.suffix)
+    suffix = _suffix(path)
+    named = active.lookup_with_table(suffix)
     extension_type = named.media_type
     extension_signal = TypeSignal(
         source="extension",
-        detail=_extension_detail(path.suffix, named.table),
+        detail=_extension_detail(suffix, named.table),
         media_type=extension_type,
     )
     try:
@@ -161,7 +164,7 @@ def detect(
         outcome = _override(active, path) or _by_extension(
             extension_type,
             (),
-            suffix=path.suffix,
+            suffix=suffix,
         )
         return _result(
             outcome,
@@ -175,9 +178,25 @@ def detect(
             handle=handle,
             matches=matches,
             extension_type=extension_type,
-            suffix=path.suffix,
+            suffix=suffix,
         )
     return _result(outcome, advisory=advisory, extension_type=extension_type)
+
+
+def _suffix(path: Path) -> str:
+    """Return the file's extension, with a lone trailing dot as none.
+
+    ``Path("name.").suffix`` is ``""`` before Python 3.14 and ``"."`` from
+    3.14 on; both mean the name has no extension.
+
+    Args:
+        path: File being classified.
+
+    Returns:
+        The extension, dot included, or ``""``.
+    """
+    suffix = path.suffix
+    return "" if suffix == "." else suffix
 
 
 def _extension_detail(suffix: str, table: str) -> str:
