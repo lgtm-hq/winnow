@@ -22,41 +22,21 @@ from typing import Final
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, merge_attrib
 from ruamel.yaml.error import YAMLError
-from ruamel.yaml.nodes import ScalarNode
-from ruamel.yaml.representer import RoundTripRepresenter
 
+from winnow.config._comments import replace_keeping_comments
 from winnow.config._files import ConfigFormat, config_format
 from winnow.config._markers import cast_marker
+from winnow.config._yaml_style import round_trip_yaml
 from winnow.config.schema import render_config_yaml
 from winnow.exceptions import ConfigError
 
-_DEFAULT_MAPPING_INDENT: Final = 2
-_DEFAULT_SEQUENCE_INDENT: Final = 4
-_DEFAULT_SEQUENCE_OFFSET: Final = 2
 _DEFAULT_JSON_INDENT: Final = 2
-_YAML_WIDTH: Final = 4096
-"""Wide enough that the dump never folds a long value onto a new line."""
 _CRLF: Final = "\r\n"
 _BOM: Final = "\ufeff"
 _DOCUMENT_START: Final = re.compile(r"---(\s+#.*)?\s*")
 """A YAML document start marker alone on its line, perhaps with a comment."""
 _DOCUMENT_MARKER: Final = re.compile(r"^(%|---(?=\s|$)|\.\.\.(?=\s|$))", re.MULTILINE)
 """A directive, document start or document end at the start of a line."""
-_INLINE_COMMENT: Final = re.compile(r"\s+#.*$")
-"""A YAML comment after content on the same line."""
-_BLOCK_SCALAR: Final = re.compile(r"(?:^|\s)[|>][-+1-9]{0,2}$")
-"""A literal or folded block scalar header at the end of a line."""
-_NODE_PROPERTIES: Final = re.compile(r"(?:\s+[&!]\S*)+$")
-"""Anchors and tags after a key, before the value on the next lines."""
-_SEQUENCE_LOOKAHEAD: Final = 64
-"""How many lines past a key the sequence indent guess reads."""
-_NULL_TAG: Final = "tag:yaml.org,2002:null"
-_EXPLICIT_NULL: Final = re.compile(
-    r"(?:^|:\s|-\s|[\[{,])\s*(null|Null|NULL|~)\s*(?=[,\]}]|$)",
-)
-"""A null spelled out as a value, item or flow collection entry."""
-_BLANK: Final = " \t\n"
-"""The characters a blank YAML line holds."""
 
 
 def writable_format(path: Path) -> ConfigFormat:
@@ -249,7 +229,7 @@ def dump_document(
     else:
         preamble, body = _split_preamble(original)
         stream = io.StringIO()
-        _round_trip_yaml(body).dump(document, stream)
+        round_trip_yaml(body).dump(document, stream)
         text = stream.getvalue()
         last_line = preamble.splitlines(keepends=True)[-1] if preamble else ""
         if last_line and last_line.splitlines()[0] == last_line:
@@ -398,11 +378,12 @@ def set_in_document(
         entry_path = _entry_path(str(raw_key))
         if entry_path != wanted[: len(entry_path)]:
             continue
-        if len(entry_path) == len(wanted):
-            _replace(document, raw_key, value, key_parts, shared)
+        rest = key_parts[len(entry_path) :]
+        if not rest or document[raw_key] is None:
+            _replace(document, raw_key, _nest(rest, value), key_parts, shared)
             return
         child = _child_mapping(document, raw_key, key_parts, shared)
-        _set_nested(child, key_parts[len(entry_path) :], value, key_parts, shared)
+        _set_nested(child, rest, value, key_parts, shared)
         return
     _set_nested(document, key_parts, value, key_parts, shared)
 
@@ -439,8 +420,9 @@ def _shared_nodes(document: object) -> set[int]:
     A YAML alias loads as the very object its anchor names, so changing it in
     place, or replacing it, changes every place that shares it. That holds
     for mappings, lists and anchored scalars; an unanchored scalar is never
-    shared, whatever its id. A mapping merged into another with a ``<<``
-    merge key is shared too: ``ruamel.yaml`` keeps it in the merging
+    shared, whatever its id. Mapping keys count as well, as an alias may
+    name an anchored value as a key. A mapping merged into another with a
+    ``<<`` merge key is shared too: ``ruamel.yaml`` keeps it in the merging
     mapping's merge list, and changing it changes that mapping.
     """
     seen: set[int] = set()
@@ -450,7 +432,7 @@ def _shared_nodes(document: object) -> set[int]:
         merged: list[object] = []
         children: list[object] = []
         if isinstance(node, Mapping):
-            children = list(node.values())
+            children = [*node.keys(), *node.values()]
             merged = list(getattr(node, merge_attrib, ()))
         elif isinstance(node, list):
             children = list(node)
@@ -526,13 +508,28 @@ def _replace(
 ) -> None:
     """Set ``key`` of ``mapping`` to ``value``, unless an alias shares the old one.
 
+    The comments and blank lines that follow the old value, or follow the
+    mapping's last entry when ``key`` is new, are moved to follow the new
+    value, so they stay where they were in the file rather than being
+    dropped or pulled inside the key.
+
     Raises:
         ConfigError: If the value ``key`` holds carries an anchor something
             else refers to, as replacing it would rewrite that alias.
     """
     if key in mapping and _holds_shared(mapping[key], shared):
         raise _shared_error(".".join(key_parts), key)
-    mapping[key] = value
+    if isinstance(mapping, CommentedMap):
+        replace_keeping_comments(mapping, key, value)
+    else:
+        mapping[key] = value
+
+
+def _nest(parts: list[str], value: object) -> object:
+    """Return ``value`` nested in one mapping per part, outermost first."""
+    for part in reversed(parts):
+        value = {part: value}
+    return value
 
 
 def _shared_error(dotted: str, key: str) -> ConfigError:
@@ -563,10 +560,12 @@ def _set_nested(
         shared: Ids of values a YAML anchor shares.
     """
     current = mapping
-    for part in parts[:-1]:
+    for index, part in enumerate(parts[:-1]):
         slot = _matching_key(current, part)
-        if slot not in current:
-            current[slot] = {}
+        if slot not in current or current[slot] is None:
+            nested = _nest(parts[index + 1 :], value)
+            _replace(current, slot, nested, key_parts, shared)
+            return
         current = _child_mapping(current, slot, key_parts, shared)
     _replace(current, _matching_key(current, parts[-1]), value, key_parts, shared)
 
@@ -583,15 +582,13 @@ def _child_mapping(
     key_parts: list[str],
     shared: set[int],
 ) -> MutableMapping[str, object]:
-    """Return the mapping under ``key``, replacing a ``null`` with a new one.
+    """Return the mapping under ``key``; a ``null`` there is replaced by the caller.
 
     Raises:
         ConfigError: If the value under ``key`` is a cast string, a mapping a
-            YAML anchor shares, or neither a mapping nor null.
+            YAML anchor shares, or not a mapping.
     """
     child = mapping[key]
-    if child is None:
-        child = mapping[key] = {}
     dotted = ".".join(key_parts)
     if id(child) in shared:
         raise _shared_error(dotted, key)
@@ -616,150 +613,6 @@ def _entry_path(key: str) -> list[str]:
     """Return the lowercase setting path a top-level key sets, as the reader does."""
     parts = key.replace("__", ".").split(".")
     return [parts[0].strip().lower(), *(part.lower() for part in parts[1:])]
-
-
-def _round_trip_yaml(text: str) -> YAML:
-    """Return a round-trip YAML instance indented like ``text``."""
-    yaml = YAML()
-    yaml.preserve_quotes = True
-    yaml.width = _YAML_WIDTH
-    yaml.default_flow_style = False
-    lines = _structure_lines(text)
-    yaml.Representer = _SpelledNullRepresenter
-    yaml.representer.null_spelling = _guess_null_spelling(lines)
-    sequence_indent, sequence_offset = _guess_sequence_indent(lines)
-    yaml.indent(
-        mapping=_guess_mapping_indent(lines),
-        sequence=sequence_indent,
-        offset=sequence_offset,
-    )
-    return yaml
-
-
-class _SpelledNullRepresenter(RoundTripRepresenter):
-    """A round-trip representer that writes ``None`` as the file spells it."""
-
-    null_spelling: str = ""
-    """How the file writes a null; empty keeps ``ruamel.yaml``'s own form."""
-
-    def represent_none(self, data: None) -> ScalarNode:
-        """Represent ``None`` with the file's spelling of null."""
-        if not self.null_spelling:
-            return super().represent_none(data)
-        return self.represent_scalar(_NULL_TAG, self.null_spelling)
-
-
-_SpelledNullRepresenter.add_representer(
-    type(None),
-    _SpelledNullRepresenter.represent_none,
-)
-
-
-def _guess_null_spelling(lines: list[tuple[int, str]]) -> str:
-    """Return how the lines spell a null value.
-
-    Returns:
-        The one spelling (``null``, ``Null``, ``NULL`` or ``~``) the lines
-        use; empty, ``ruamel.yaml``'s own form, when they spell none or more
-        than one. A file that mixes spellings, empty values included, then
-        comes back changed, and the round-trip check refuses it.
-    """
-    spellings = {
-        match.group(1)
-        for _, content in lines
-        for match in _EXPLICIT_NULL.finditer(content)
-    }
-    return spellings.pop() if len(spellings) == 1 else ""
-
-
-def _structure_lines(text: str) -> list[tuple[int, str]]:
-    """Return the lines of ``text`` that show its block structure.
-
-    Blank lines, comment lines and the content of block scalars are left
-    out, and inline comments are cut off. Lines end where the YAML parser
-    ends them.
-
-    Returns:
-        Each line's indent and its content without the indent.
-    """
-    found: list[tuple[int, str]] = []
-    block_depth: int | None = None
-    for line in text.splitlines():
-        content = line.lstrip(" ")
-        depth = len(line) - len(content)
-        blank = not content.strip(_BLANK)
-        if block_depth is not None and (blank or depth > block_depth):
-            continue
-        block_depth = None
-        if blank or content.startswith("#"):
-            continue
-        content = _INLINE_COMMENT.sub("", content).rstrip(_BLANK)
-        found.append((depth, content))
-        if _BLOCK_SCALAR.search(content):
-            block_depth = depth
-    return found
-
-
-def _key_column(depth: int, content: str) -> tuple[int, str]:
-    """Return where the node on a line starts, past any sequence dashes."""
-    rest = _dash_rest(content)
-    while rest is not None:
-        depth += len(content) - len(rest)
-        content = rest
-        rest = _dash_rest(content)
-    return depth, content
-
-
-def _opens_block(content: str) -> bool:
-    """Return whether a line ends in a key whose value starts on the next line."""
-    return _NODE_PROPERTIES.sub("", content).endswith(":")
-
-
-def _guess_mapping_indent(lines: list[tuple[int, str]]) -> int:
-    """Return how far the lines indent a nested mapping under its key."""
-    for (depth, content), (nested_depth, nested) in zip(
-        lines,
-        lines[1:],
-        strict=False,
-    ):
-        column, key = _key_column(depth, content)
-        if _opens_block(key) and nested_depth > column and not nested.startswith("-"):
-            return nested_depth - column
-    return _DEFAULT_MAPPING_INDENT
-
-
-def _guess_sequence_indent(lines: list[tuple[int, str]]) -> tuple[int, int]:
-    """Return how the lines indent a block sequence under its key.
-
-    The first sequence decides: its first dash gives the offset, and its
-    first item with content on the dash line gives the indent, looking at
-    most :data:`_SEQUENCE_LOOKAHEAD` lines past the key.
-
-    Returns:
-        The column of an item's content and of its dash, both counted from
-        the key's column; ``ruamel.yaml``'s defaults when no item tells. The
-        content always lies at least two columns past the dash.
-    """
-    for index, (depth, content) in enumerate(lines[:-1]):
-        column, key = _key_column(depth, content)
-        dash_depth, item = lines[index + 1]
-        offset = dash_depth - column
-        if not _opens_block(key) or _dash_rest(item) is None or offset < 0:
-            continue
-        for later_depth, later in lines[index + 1 : index + 1 + _SEQUENCE_LOOKAHEAD]:
-            rest = _dash_rest(later)
-            if later_depth < dash_depth or rest is None and later_depth == dash_depth:
-                break
-            if later_depth == dash_depth and rest:
-                return offset + len(later) - len(rest), offset
-    return _DEFAULT_SEQUENCE_INDENT, _DEFAULT_SEQUENCE_OFFSET
-
-
-def _dash_rest(content: str) -> str | None:
-    """Return what follows a sequence item's dash, or ``None`` for no dash."""
-    if content != "-" and not content.startswith("- "):
-        return None
-    return content[1:].lstrip(" ")
 
 
 def _guess_json_indent(text: str) -> str | None:

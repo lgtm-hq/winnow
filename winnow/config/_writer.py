@@ -11,6 +11,7 @@ from typing import Final
 from pydantic import TypeAdapter, ValidationError
 from ruamel.yaml.error import YAMLError
 
+from winnow.config._comments import edit_stays_in_place
 from winnow.config._editor import (
     TextLayout,
     check_finite,
@@ -26,7 +27,12 @@ from winnow.config._env import (
     _SYMLINK_POLICY_KEY,
     _sync_symlink_settings,
 )
-from winnow.config._files import read_config_layers, read_config_text, read_value
+from winnow.config._files import (
+    ConfigFormat,
+    read_config_layers,
+    read_config_text,
+    read_value,
+)
 from winnow.config._paths import _resolve_write_path
 from winnow.config._reader import (
     _CONFIG_LOAD_ERRORS,
@@ -161,12 +167,7 @@ def set_config_value(
     for update_key, update_value in updates.items():
         set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
     try:
-        new_text = dump_document(
-            document,
-            file_format,
-            original=original,
-            layout=layout,
-        )
+        edited = dump_document(document, file_format, original=original)
     except (ValueError, TypeError, YAMLError) as exc:
         raise ConfigError(
             f"config set cannot write this value in a {file_format.upper()} file",
@@ -175,16 +176,23 @@ def set_config_value(
             details={"key": key, "error": str(exc)},
         ) from exc
 
+    new_text = layout.apply(edited)
     updated_config = _validate_new_text(
         new_text,
         target_path=target_path,
         updates=updates,
     )
-    if not faithful:
+    in_place = (
+        file_format is not ConfigFormat.YAML
+        or original is None
+        or edit_stays_in_place(original, edited, blocks=len(updates))
+    )
+    if not (faithful and in_place):
         raise ConfigError(
             "config set cannot rewrite this file without changing its layout "
             "outside the key, such as a bare '-' item, a block scalar's indent "
-            "or chomping, or extra spaces; edit the file by hand",
+            "or chomping, extra spaces, or a comment or blank line next to "
+            "the key; edit the file by hand",
             operation="set_config",
             file_path=target_path,
             details={"key": key},
