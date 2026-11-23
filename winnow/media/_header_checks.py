@@ -178,16 +178,19 @@ def netpbm(content: Content) -> bool:
 
 
 _XBM: Final[re.Pattern[bytes]] = re.compile(
-    rb"#define[ \t]+(\w*)_width[ \t]+[0-9]{1,10}[ \t]*\r?\n"
+    rb"#define[ \t]+(\w*)_width[ \t]+[0-9]{1,10}"
+    rb"(?:\s|/\*.*?\*/)+"
     rb"#define[ \t]+(\w*)_height[ \t]+[0-9]{1,10}",
+    re.DOTALL,
 )
 
 
 def xbm(content: Content) -> bool:
     """X11 bitmap (X Window System, Xlib ``XReadBitmapFile`` format).
 
-    The file starts with ``#define <name>_width <n>`` and
-    ``#define <name>_height <n>``, and holds a ``<name>_bits[]`` array.
+    The file starts with ``#define <name>_width <n>`` and, after blank
+    lines or comments, ``#define <name>_height <n>``, and holds a
+    ``<name>_bits[]`` array.
 
     Args:
         content: File content.

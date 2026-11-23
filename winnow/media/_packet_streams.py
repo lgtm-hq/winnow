@@ -268,6 +268,10 @@ OGG_CODECS: Final[tuple[tuple[bytes, str], ...]] = (
     (b"OVP80", VIDEO),  # VP8-in-Ogg mapping (Xiph wiki OggVP8)
     (b"BBCD\x00", VIDEO),  # Dirac-in-Ogg mapping
     (b"fishead\x00", DATA),  # Ogg Skeleton 3/4: an index, not media
+    # OGM (DirectShow Ogg) stream headers: packet type 1 and the stream type.
+    (b"\x01video\x00\x00\x00", VIDEO),
+    (b"\x01audio\x00\x00\x00", AUDIO),
+    (b"\x01text\x00\x00\x00\x00", DATA),
 )
 """First-packet prefixes of the Ogg codec mappings."""
 

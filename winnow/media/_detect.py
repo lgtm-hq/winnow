@@ -22,6 +22,12 @@
    recognised the content. Content recognised as non-media (a signature in
    the table, or plain text) is not overridden by the extension.
 
+Playlists (``.m3u``, ``.pls``, ``.asx`` and the others in
+:data:`~winnow.media._format_checks.PLAYLIST_EXTENSIONS`) are not media
+under any name: a playlist's content is non-media in rule 4, and a
+playlist extension is non-media wherever rules 5 and 6 would otherwise use
+the extension, even where the host's MIME table calls it audio or video.
+
 Only regular files are read. A FIFO, socket or device is opened
 non-blocking, or not at all, and gets the extension answer with a signal
 saying its content was not read; ``detect`` never blocks on it. The file is
@@ -81,6 +87,7 @@ from winnow.media._detect_bmff import (
     TRACK_BOX,
     inspect_bmff,
 )
+from winnow.media._format_checks import PLAYLIST_EXTENSIONS
 from winnow.media._header_checks import is_text
 from winnow.media._matroska import inspect_matroska
 from winnow.media._signatures import HEAD_BYTES, TAIL_BYTES, match_signature
@@ -127,7 +134,11 @@ def detect(
         handle = _open_regular(path)
     except OSError as exc:
         unavailable = evidence(_unavailable_detail(exc))
-        outcome = _override(active, path) or _by_extension(extension_type, ())
+        outcome = _override(active, path) or _by_extension(
+            extension_type,
+            (),
+            suffix=path.suffix,
+        )
         return _result(
             outcome,
             advisory=(unavailable, extension_signal),
@@ -140,6 +151,7 @@ def detect(
             handle=handle,
             matches=matches,
             extension_type=extension_type,
+            suffix=path.suffix,
         )
     return _result(outcome, advisory=advisory, extension_type=extension_type)
 
@@ -250,6 +262,7 @@ def _inspect_content(
     handle: BinaryIO,
     matches: list[puremagic.PureMagicWithConfidence],
     extension_type: MediaType | None,
+    suffix: str,
 ) -> Outcome:
     """Apply rules 2 to 6 to the file's content.
 
@@ -257,6 +270,7 @@ def _inspect_content(
         handle: The open regular file.
         matches: ``puremagic`` matches, possibly empty.
         extension_type: Media type the extension gives.
+        suffix: The file's extension, dot included.
 
     Returns:
         The deciding rule's outcome.
@@ -269,16 +283,69 @@ def _inspect_content(
         content = _read_content(handle, size)
         decided = inspect_matroska(content) or match_signature(content)
     except OSError as exc:
-        return _by_extension(extension_type, (evidence(_unavailable_detail(exc)),))
+        unavailable = (evidence(_unavailable_detail(exc)),)
+        return _by_extension(extension_type, unavailable, suffix=suffix)
     if decided is not None:
         return decided
+    return _unrecognised_content(content, matches, extension_type, suffix)
+
+
+def _unrecognised_content(
+    content: Content,
+    matches: list[puremagic.PureMagicWithConfidence],
+    extension_type: MediaType | None,
+    suffix: str,
+) -> Outcome:
+    """Apply the playlist rule, rule 5, the text check and rule 6.
+
+    Args:
+        content: The bytes rules 3 and 4 read and found nothing in.
+        matches: ``puremagic`` matches, possibly empty.
+        extension_type: Media type the extension gives.
+        suffix: The file's extension, dot included.
+
+    Returns:
+        The deciding outcome.
+    """
     hints = tuple(content.hints)
+    if _is_playlist_extension(suffix):
+        return _playlist(hints)
     agreeing = _agreeing_puremagic_match(matches, extension_type, hints)
     if agreeing is not None:
         return agreeing
-    if is_text(content.head, size=size):
+    if is_text(content.head, size=content.size):
         return decide("text", None, "non-media plain text", evidence=hints)
-    return _by_extension(extension_type, hints)
+    return _by_extension(extension_type, hints, suffix=suffix)
+
+
+def _is_playlist_extension(suffix: str) -> bool:
+    """Report whether ``suffix`` names a playlist.
+
+    Args:
+        suffix: The file's extension, dot included.
+
+    Returns:
+        ``True`` for a playlist extension.
+    """
+    return suffix.lstrip(".").casefold() in PLAYLIST_EXTENSIONS
+
+
+def _playlist(signals: tuple[TypeSignal, ...]) -> Outcome:
+    """Decide a playlist extension: a playlist is not media.
+
+    Args:
+        signals: Signals gathered before.
+
+    Returns:
+        A non-media outcome with container ``playlist``.
+    """
+    return decide(
+        "playlist",
+        None,
+        "non-media: playlist extension, a playlist is not media",
+        evidence=signals,
+        source="extension",
+    )
 
 
 def _read_content(handle: BinaryIO, size: int) -> Content:
@@ -310,16 +377,21 @@ def _read_content(handle: BinaryIO, size: int) -> Content:
 def _by_extension(
     extension_type: MediaType | None,
     signals: tuple[TypeSignal, ...],
+    *,
+    suffix: str,
 ) -> Outcome:
     """Apply rule 6, the extension fallback.
 
     Args:
         extension_type: Media type the extension gives.
         signals: Signals gathered before falling back.
+        suffix: The file's extension, dot included.
 
     Returns:
-        The extension's outcome.
+        The extension's outcome; non-media for a playlist extension.
     """
+    if _is_playlist_extension(suffix):
+        return _playlist(signals)
     decision = TypeSignal(
         source="extension",
         detail=f"{DECISION_PREFIX}extension fallback",

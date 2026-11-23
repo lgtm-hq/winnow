@@ -132,15 +132,19 @@ class _Tables:
     Args:
         programs: Programs the PAT names, as ``(program_number, PMT PID)``;
             several programs may share one PMT PID.
-        pmts: Streams of each program whose PMT has been read, as
-            ``(stream_type, kind)``.
+        pmts: Streams of each program's current PMT, as
+            ``(stream_type, kind)``, with the PMT's ``version_number``.
+        video_seen: Whether any current PMT read listed a video stream.
         buffers: Partly assembled sections by PID.
         pat_sections: PAT ``section_number`` values read.
         pat_last: The PAT's ``last_section_number``, once a section is read.
     """
 
     programs: set[Program] = field(default_factory=set)
-    pmts: dict[Program, list[tuple[int, str | None]]] = field(default_factory=dict)
+    pmts: dict[Program, tuple[int, list[tuple[int, str | None]]]] = field(
+        default_factory=dict,
+    )
+    video_seen: bool = False
     buffers: dict[int, bytes] = field(default_factory=dict)
     pat_sections: set[int] = field(default_factory=set)
     pat_last: int | None = None
@@ -164,7 +168,7 @@ class _Tables:
         return [
             stream
             for program in sorted(self.programs)
-            for stream in self.pmts.get(program, [])
+            for stream in self.pmts.get(program, (0, []))[1]
         ]
 
     @property
@@ -230,7 +234,7 @@ def inspect_transport_stream(content: Content) -> Outcome | None:
     tables = _read_tables(content.head, start=start, stride=stride)
     signals: tuple[TypeSignal, ...] = (sync, *_stream_signals(tables))
     kinds = [kind for _, kind in tables.streams]
-    if _VIDEO in kinds:
+    if _VIDEO in kinds or tables.video_seen:
         return decide(container, MediaType.VIDEO, "pmt video stream", evidence=signals)
     recognised = bool(kinds) and None not in kinds
     if tables.complete and recognised and _AUDIO in kinds:
@@ -373,7 +377,9 @@ def _handle_section(tables: _Tables, pid: int, section: bytes) -> None:
     """Read one whole PAT or PMT section.
 
     Sections with ``current_next_indicator`` 0 describe a future table and
-    are ignored (13818-1, 2.4.4.5).
+    are ignored (13818-1, 2.4.4.5). A PMT with a new ``version_number``
+    replaces the program's earlier one; a video stream seen in any current
+    PMT is kept.
 
     Args:
         tables: Tables being assembled.
@@ -386,8 +392,12 @@ def _handle_section(tables: _Tables, pid: int, section: bytes) -> None:
         _read_pat(tables, section)
     elif section[0] == _PMT_TABLE:
         program = ((section[3] << 8) | section[4], pid)
-        if program in tables.programs and program not in tables.pmts:
-            tables.pmts[program] = _read_pmt(section)
+        version = (section[5] >> 1) & 0x1F
+        known = tables.pmts.get(program)
+        if program in tables.programs and (known is None or known[0] != version):
+            streams = _read_pmt(section)
+            tables.pmts[program] = (version, streams)
+            tables.video_seen |= any(kind == _VIDEO for _, kind in streams)
 
 
 def _read_pat(tables: _Tables, section: bytes) -> None:

@@ -37,6 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
+from winnow.media import _format_checks as more
 from winnow.media import _header_checks as checks
 from winnow.media._audio_frames import (
     MAX_ID3_TAGS,
@@ -148,6 +149,8 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature(
         "zip", _starts(b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"), non_media=True
     ),
+    # Playlists point at media and are not media (the issue's ruling).
+    Signature("playlist", more.playlist, non_media=True),
     # Images.
     # ITU-T T.81, B.1.1.3 and B.2.1: SOI then the next marker's FF.
     Signature("jpeg", _starts(b"\xff\xd8\xff"), MediaType.IMAGE),
@@ -215,6 +218,17 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("ilbm", _form(b"FORM", b"ILBM", b"PBM "), MediaType.IMAGE),
     Signature("fits", checks.fits, MediaType.IMAGE),
     Signature("djvu", checks.djvu, MediaType.IMAGE),
+    Signature("psd", more.psd, MediaType.IMAGE),
+    Signature("canon-crw", more.canon_crw, MediaType.IMAGE),
+    Signature("jpeg-xl", more.jpeg_xl, MediaType.IMAGE),
+    Signature("jpeg-xs", more.jpeg_xs, MediaType.IMAGE),
+    Signature("dpx", more.dpx, MediaType.IMAGE),
+    Signature("dcx", more.dcx, MediaType.IMAGE),
+    Signature("niff", more.niff, MediaType.IMAGE),
+    Signature("xcursor", more.xcursor, MediaType.IMAGE),
+    Signature("emf", more.emf, MediaType.IMAGE),
+    Signature("quicktime-image", more.quicktime_image, MediaType.IMAGE),
+    Signature("kodak-kdc", more.kodak_kdc, MediaType.IMAGE),
     Signature("svg", checks.svg, MediaType.IMAGE),
     Signature("tga", checks.tga, MediaType.IMAGE),
     # Audio.
@@ -235,6 +249,19 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("monkeys-audio", checks.monkeys_audio, MediaType.AUDIO),
     Signature("musepack", checks.musepack, MediaType.AUDIO),
     Signature("midi", checks.midi, MediaType.AUDIO),
+    Signature("amr", more.amr, MediaType.AUDIO),
+    # RFC 3625, 3: RIFF form type "QLCM" (QCELP speech).
+    Signature("qcelp", _form(b"RIFF", b"QLCM"), MediaType.AUDIO),
+    # EA IFF 8SVX specification: FORM type "8SVX" (8-bit sampled voice).
+    Signature("8svx", _form(b"FORM", b"8SVX"), MediaType.AUDIO),
+    Signature("mod", more.mod, MediaType.AUDIO),
+    Signature("s3m", more.scream_tracker_3, MediaType.AUDIO),
+    Signature("stm", more.scream_tracker_2, MediaType.AUDIO),
+    Signature("fasttracker", more.fasttracker, MediaType.AUDIO),
+    Signature("tracker", more.tracker_magic, MediaType.AUDIO),
+    Signature("sid", more.sid, MediaType.AUDIO),
+    Signature("psf", more.psf, MediaType.AUDIO),
+    Signature("xmf", more.xmf, MediaType.AUDIO),
     # Microsoft RIFF MIDI: RIFF form type "RMID" around a Standard MIDI File.
     Signature("midi", _form(b"RIFF", b"RMID"), MediaType.AUDIO),
     # Containers whose streams decide.
@@ -254,6 +281,14 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     # YUV4MPEG2 stream header "YUV4MPEG2 " (mjpegtools yuv4mpeg(5)).
     Signature("yuv4mpeg", _starts(b"YUV4MPEG2 "), MediaType.VIDEO),
     Signature("dv", checks.dv, MediaType.VIDEO),
+    # MNG 1.0: a multiple-image (animation) format, typed video as MIME does.
+    Signature("mng", more.mng, MediaType.VIDEO),
+    Signature("bink", more.bink, MediaType.VIDEO),
+    Signature("smacker", more.smacker, MediaType.VIDEO),
+    Signature("nsv", more.nsv, MediaType.VIDEO),
+    Signature("sgi-movie", more.sgi_movie, MediaType.VIDEO),
+    # WMF last: its non-placeable header is six bytes of small fields.
+    Signature("wmf", more.wmf, MediaType.IMAGE),
 )
 """winnow's signature table, tried in order; the first match decides."""
 

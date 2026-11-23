@@ -28,6 +28,7 @@ from tests.media.ebml_support import (
     tracks,
     tracks_after_cluster,
 )
+from tests.media.library_support import LIBRARY_SAMPLES, PLAYLIST_SAMPLES
 from tests.media.signature_support import (
     OPUS_HEAD,
     THEORA_ID,
@@ -312,6 +313,8 @@ _SMALL_FILES: dict[str, bytes] = {
     "matroska-live": matroska(
         tracks(MKV_AUDIO), cluster(8, unknown=True), unknown=True
     ),
+    **{f"library-{name}": data for name, _, data, _, _ in LIBRARY_SAMPLES},
+    **{f"playlist-{name}": data for name, _, data in PLAYLIST_SAMPLES},
 }
 
 

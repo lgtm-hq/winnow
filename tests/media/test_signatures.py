@@ -22,6 +22,7 @@ from tests.media.detect_support import (
     needs_ffprobe,
     record_dispatch,
 )
+from tests.media.library_support import LIBRARY_SAMPLES
 from tests.media.signature_support import (
     KATE_ID,
     OPUS_HEAD,
@@ -209,6 +210,7 @@ def test_signature_table_entry(
 def test_every_table_entry_is_tested() -> None:
     """Every container the table names has a header-only test row."""
     tested = {container for _, _, container, _ in _HEADERS}
+    tested |= {container for _, _, _, container, _ in LIBRARY_SAMPLES}
     named = {s.container for s in SIGNATURES if not s.non_media and s.streams is None}
 
     assert_that(sorted(named - tested)).is_empty()
@@ -474,9 +476,9 @@ def test_two_byte_ac3_sync_alone_is_not_audio(tmp_path: Path) -> None:
     [
         (riff(b"RIFF", b"CDXA", b"data"), "riff"),
         (riff(b"BW64", b"XXXX", b"data"), "riff"),
-        (b"FORM\x00\x00\x00\x048SVX", "iff"),
+        (b"FORM\x00\x00\x00\x04FTXT", "iff"),
     ],
-    ids=["riff-cdxa", "bw64-other", "form-8svx"],
+    ids=["riff-cdxa", "bw64-other", "form-ftxt"],
 )
 def test_unlisted_form_type_is_unknown(
     tmp_path: Path, data: bytes, container: str
