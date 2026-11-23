@@ -21,6 +21,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.14] - 2026-11-23
+
+### Changed
+
+- **deps**: lock file maintenance (#439) (d333756)
+- **deps**: update docker/dockerfile:1 docker digest to 572cebb (#438) (fdb5498)
+
+### Fixed
+
+- **media**: read audio facts with guarded ffprobe and remove mutagen and tinytag (#436)
+  (7990119)
+
 ## [0.37.13] - 2026-11-17
 
 ### Changed
