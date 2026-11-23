@@ -200,6 +200,8 @@ Known limits (not worked around):
   HE-AACv2 declare a duration 108 to 312 ms past the audio, more than a
   codec frame. The measured span is further over: 145 to 166 ms at 44.1
   and 48 kHz, up to 444 ms at 16 kHz.
+* HE-AAC's channel count is unknown: ffprobe reports 2 channels for mono
+  HE-AAC as well as stereo, so the count is not established.
 * In MP4, a first packet longer than the median packet by more than the
   A5 tolerance makes the duration ``estimated`` (A15b). Without an edit
   list, an MP4 muxer stretches the first audio packet across the delay
@@ -264,6 +266,7 @@ from winnow.media._audio_rules import (
     declared_duration,
     header_from_json,
     interpret_header,
+    is_he_aac,
     load_probe_json,
     parse_decimal,
     parse_positive_decimal,
@@ -475,7 +478,7 @@ def _probe(
         container=header.container,
         codec=header.codec,
         sample_rate=header.sample_rate,
-        channels=header.channels,
+        channels=None if is_he_aac(header) else header.channels,
         bit_depth=header.bit_depth,
         bitrate=header.bitrate if bitrate_known else None,
         duration_seconds=(

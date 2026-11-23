@@ -667,7 +667,7 @@ def test_he_aac_is_estimated() -> None:
     assert_that(metadata.container).is_equal_to(fixture.format_name)
     assert_that(metadata.codec).is_equal_to(fixture.codec)
     assert_that(metadata.sample_rate).is_equal_to(fixture.sample_rate)
-    assert_that(metadata.channels).is_equal_to(fixture.channels)
+    assert_that(metadata.channels).is_none()  # mono HE-AAC also reads as 2
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
     assert_that(metadata.truncated).is_none()
     assert_that(metadata.bitrate).is_none()

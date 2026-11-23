@@ -581,6 +581,8 @@ def test_replay_he_aac_is_estimated(
     metadata = _replay(monkeypatch, tmp_path, "heaac")
 
     assert_that(metadata.codec).is_equal_to("aac")
+    # ffprobe reports 2 channels for mono HE-AAC too, so the count is unknown.
+    assert_that(metadata.channels).is_none()
     assert_that(metadata.sample_rate).is_equal_to(48000)
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
     assert_that(metadata.truncated).is_none()
