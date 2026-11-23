@@ -382,13 +382,10 @@ def test_null_by_tag_is_replaced_by_a_mapping() -> None:
     assert_that(after).is_equal_to("cache:\n  enabled: false\nworkers: 2\n")
 
 
-def test_flow_key_without_a_colon_takes_a_sibling() -> None:
-    """A flow mapping entry with no ``:`` keeps its text when a key follows it."""
-    original = "routing: {review}\n"
-
-    after = plan_edit(original, ["routing", "graphics"], "G").apply(original)
-
-    assert_that(after).is_equal_to("routing: {review, graphics: G}\n")
+def test_flow_key_without_a_colon_is_refused() -> None:
+    """A flow mapping entry with no ``:`` makes the mapping refuse edits."""
+    with pytest.raises(ConfigError, match="explicit '\\?' key or a key without"):
+        plan_edit("routing: {review}\n", ["routing", "graphics"], "G")
 
 
 def test_comment_the_scanner_misplaces_is_a_value_error() -> None:

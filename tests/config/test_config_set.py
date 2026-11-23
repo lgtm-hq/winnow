@@ -19,7 +19,7 @@ from winnow.cli import main
 from winnow.cli.errors import ExitCode
 from winnow.config import CONFIG_FILE_NAME, load_config, set_config_value
 from winnow.config._editor import load_json, set_in_document
-from winnow.config._writer import _refuse_other_changes
+from winnow.config._writer import _parse_new_text, _refuse_other_changes
 from winnow.exceptions import ConfigError
 from winnow.models.enums import SymlinkPolicy
 
@@ -459,8 +459,8 @@ def test_change_to_another_setting_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError) as error:
         _refuse_other_changes(
-            "workers: 2\ndry_run: true\n",
-            "workers: 3\ndry_run: false\n",
+            {"workers": 2, "dry_run": True},
+            {"workers": 3, "dry_run": False},
             config_path,
             {"workers": 3},
         )
@@ -468,9 +468,10 @@ def test_change_to_another_setting_is_refused(tmp_path: Path) -> None:
     assert_that(str(error.value)).contains("other settings")
 
 
-def test_unreadable_new_content_is_a_load_error(tmp_path: Path) -> None:
-    """The structural check fails closed on content it cannot read."""
+def test_unreadable_new_content_is_an_unsafe_edit(tmp_path: Path) -> None:
+    """New content that does not parse is the edit's failure, not the file's."""
     with pytest.raises(ConfigError) as error:
-        _refuse_other_changes("workers: 2\n", "workers: [\n", tmp_path / "c.yaml", {})
+        _parse_new_text("workers: [\n", target_path=tmp_path / "c.yaml")
 
-    assert_that(error.value.context.operation).is_equal_to("load_config")
+    assert_that(error.value.message).contains("could not make this edit safely")
+    assert_that(error.value.message).does_not_contain("Unable to load")

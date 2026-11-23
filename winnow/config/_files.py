@@ -21,6 +21,9 @@ behaviour beyond plain YAML that users may rely on. This module keeps it:
 - **Formats.** ``.toml``/``.tml`` files are TOML 1.0, ``.json`` is JSON, and
   every other file YAML 1.2. Dynaconf ignored files with other extensions
   without a word; winnow reads them as YAML.
+- **Shape.** A file that nests collections more than :data:`MAX_DEPTH`
+  deep, or holds a value that contains itself through a recursive YAML
+  anchor, is refused with a ``ConfigError`` naming the file (#451).
 
 Dynaconf features winnow does not keep raise ``ConfigError`` naming the key
 instead of being ignored: ``dynaconf_include``, ``includes_for_dynaconf`` and
@@ -33,13 +36,14 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Final
 
 import tomli
 from ruamel.yaml import YAML
+from ruamel.yaml.composer import MaxDepthExceededError
 
 from winnow.config._markers import cast_markers_in
 from winnow.exceptions import ConfigError
@@ -63,6 +67,8 @@ _FILE_LEVEL_KEYS: Final = frozenset(
 _MERGE_TOKENS: Final = frozenset({"dynaconf_merge", "dynaconf_merge_unique"})
 """Keys or list items that changed how Dynaconf merged a value."""
 _FOR_DYNACONF_SUFFIX: Final = "_for_dynaconf"
+MAX_DEPTH: Final = 100
+"""How many collections deep a config file, or a value set in one, may nest."""
 
 
 class ConfigFormat(StrEnum):
@@ -123,14 +129,15 @@ def companion_path(config_path: Path) -> Path | None:
 def read_config_layers(
     config_path: Path,
     *,
-    main_text: str | None = None,
+    main_document: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Read a config file and its ``.local`` companion into one mapping.
 
     Args:
         config_path: The config file.
-        main_text: Content to read in place of ``config_path``'s, which then
-            need not exist; used to check a change before writing it.
+        main_document: Parsed content to read in place of
+            ``config_path``'s, which then need not exist; used to check a
+            change before writing it without parsing the content again.
 
     Returns:
         The merged settings, all mapping keys lowercase.
@@ -147,38 +154,37 @@ def read_config_layers(
         if path is None or (path is companion and not path.is_file()):
             continue
         document = (
-            _parse_document(main_text, path)
-            if path is config_path and main_text is not None
+            main_document
+            if path is config_path and main_document is not None
             else _read_document(path)
         )
         _apply_file(store, document, path=path)
     return store
 
 
-def read_config_text(
-    text: str,
+def settings_of(
+    document: Mapping[str, object],
     path: Path,
     *,
     cast: bool = True,
 ) -> dict[str, object]:
-    """Read one config file's content on its own, without its companion.
+    """Read one parsed config file's settings, without its companion.
 
     Args:
-        text: The content, in the format ``path``'s suffix names.
-        path: The file the content belongs to.
-        cast: Whether to apply cast markers; without them the settings hold
-            the values as written.
+        document: The file's top-level mapping, from :func:`parse_document`.
+        path: The file it belongs to.
+        cast: Whether to apply cast markers.
 
     Returns:
         The file's settings, read as :func:`read_config_layers` reads them.
 
     Raises:
         ConfigError: If the content uses a Dynaconf feature winnow does not
-            keep, or ``path`` names a format winnow does not read.
-        ValueError: If the content is invalid or not a mapping.
+            keep.
+        ValueError: If a value uses a cast marker winnow does not support.
     """
     store: dict[str, object] = {}
-    _apply_file(store, _parse_document(text, path), path=path, cast=cast)
+    _apply_file(store, document, path=path, cast=cast)
     return store
 
 
@@ -213,11 +219,11 @@ def _read_document(path: Path) -> Mapping[str, object]:
         ValueError: If the content is invalid or not a mapping.
     """
     if config_format(path) is ConfigFormat.TOML:
-        return _parse_document(path.read_bytes().decode("utf-8"), path)
-    return _parse_document(path.read_text(encoding="utf-8"), path)
+        return parse_document(path.read_bytes().decode("utf-8"), path)
+    return parse_document(path.read_text(encoding="utf-8"), path)
 
 
-def _parse_document(text: str, path: Path) -> Mapping[str, object]:
+def parse_document(text: str, path: Path) -> Mapping[str, object]:
     """Parse config file content in the format ``path``'s extension names.
 
     Args:
@@ -228,19 +234,29 @@ def _parse_document(text: str, path: Path) -> Mapping[str, object]:
         Its top-level mapping; an empty document reads as an empty mapping.
 
     Raises:
-        ConfigError: If the extension names a format winnow does not read.
+        ConfigError: If the extension names a format winnow does not read,
+            or the content nests too deeply or holds a value that contains
+            itself.
         ValueError: If the content is invalid or not a mapping.
     """
     file_format = config_format(path)
     document: object
-    if file_format is ConfigFormat.TOML:
-        document = tomli.loads(text)
-    elif file_format is ConfigFormat.JSON:
-        document = json.loads(text)
-    else:
-        stream = io.StringIO(text)
-        stream.name = str(path)
-        document = YAML(typ="safe", pure=True).load(stream)
+    try:
+        if file_format is ConfigFormat.TOML:
+            document = tomli.loads(text)
+        elif file_format is ConfigFormat.JSON:
+            document = json.loads(text)
+        else:
+            stream = io.StringIO(text)
+            stream.name = str(path)
+            yaml = YAML(typ="safe", pure=True)
+            yaml.max_depth = MAX_DEPTH + 1
+            document = yaml.load(stream)
+    except (MaxDepthExceededError, RecursionError) as exc:
+        raise _shape_error(path, too_deep=True) from exc
+    depth = nesting_depth(document)
+    if depth is None or depth > MAX_DEPTH:
+        raise _shape_error(path, too_deep=depth is not None)
     if document is None:
         return {}
     if not isinstance(document, Mapping):
@@ -250,6 +266,62 @@ def _parse_document(text: str, path: Path) -> Mapping[str, object]:
         )
         raise ValueError(message)
     return document
+
+
+def nesting_depth(value: object) -> int | None:
+    """Return how many collections deep a value nests, without recursing.
+
+    A scalar is 0 deep and a collection one more than its deepest item. A
+    value reached twice through an alias is measured once.
+
+    Returns:
+        The depth, or ``None`` when the value contains itself.
+    """
+    depths: dict[int, int] = {}
+    open_ids: set[int] = set()
+    pending: list[tuple[object, bool]] = [(value, False)]
+    while pending:
+        item, finished = pending.pop()
+        children = _children(item)
+        if children is None:
+            continue
+        key = id(item)
+        if finished:
+            open_ids.discard(key)
+            depths[key] = 1 + max(
+                (depths.get(id(child), 0) for child in children),
+                default=0,
+            )
+        elif key in open_ids:
+            return None
+        elif key not in depths:
+            open_ids.add(key)
+            pending.append((item, True))
+            pending.extend((child, False) for child in children)
+    return depths.get(id(value), 0)
+
+
+def _children(value: object) -> list[object] | None:
+    """Return a collection's keys and items, or ``None`` for a scalar."""
+    if isinstance(value, Mapping):
+        return [*value.keys(), *value.values()]
+    if isinstance(value, list | tuple | Set):
+        return list(value)
+    return None
+
+
+def _shape_error(path: Path, *, too_deep: bool) -> ConfigError:
+    """Build the error for a file nested too deeply or holding a cycle."""
+    reason = (
+        f"it nests values more than {MAX_DEPTH} levels deep"
+        if too_deep
+        else "it holds a value that contains itself, such as a recursive " "YAML anchor"
+    )
+    return ConfigError(
+        f"Unable to load Winnow configuration: {reason}",
+        operation="load_config",
+        file_path=path,
+    )
 
 
 def _apply_file(

@@ -58,9 +58,9 @@ def file_style(tree: YamlTree) -> YamlStyle:
             value = pair.value
             if value.flow or value.kind is NodeKind.SCALAR:
                 continue
-            key_column = tree.column_of(pair.key.start)
+            key_column = pair.key.column
             if value.pairs and mapping is None:
-                indent = tree.column_of(value.pairs[0].key.start) - key_column
+                indent = value.pairs[0].key.column - key_column
                 mapping = indent if indent > 0 else None
             elif value.items and sequence is None:
                 sequence = _sequence_indent(tree, value, key_column)

@@ -290,15 +290,15 @@ def test_mixed_line_endings_are_refused(
     assert_that(config_path.read_bytes()).is_equal_to(original)
 
 
-def test_next_line_character_ends_a_line_as_the_parser_reads_it(
-    tmp_path: Path,
-) -> None:
-    """U+0085 ends a comment line, so the key after it is set in place."""
+@pytest.mark.parametrize("separator", ["\x85", "\u2028", "\u2029"])
+def test_unicode_line_break_is_refused(tmp_path: Path, separator: str) -> None:
+    """Finding 7: a file holding U+0085, U+2028 or U+2029 is not edited."""
+    original = f"# c{separator}workers: 2\n"
     config_path = tmp_path / "c.yaml"
-    config_path.write_text("# c\x85workers: 2\n", encoding="utf-8")
+    config_path.write_text(original, encoding="utf-8")
 
-    set_config_value("workers", 3, config_path=config_path)
+    with pytest.raises(ConfigError) as error:
+        set_config_value("dry_run", True, config_path=config_path)
 
-    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(
-        "# c\x85workers: 3\n",
-    )
+    assert_that(error.value.message).contains("U+0085, U+2028 or U+2029")
+    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(original)

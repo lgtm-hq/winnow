@@ -26,10 +26,13 @@ from winnow.config._env import (
     _sync_symlink_settings,
 )
 from winnow.config._files import (
+    MAX_DEPTH,
     ConfigFormat,
+    nesting_depth,
+    parse_document,
     read_config_layers,
-    read_config_text,
     read_value,
+    settings_of,
 )
 from winnow.config._paths import _resolve_write_path
 from winnow.config._reader import (
@@ -107,7 +110,8 @@ def set_config_value(
     the file keeps its permission bits but not setuid, setgid or sticky
     bits. Edits that cannot be made that way are refused and the file is
     left untouched: TOML files, files the user cannot write, symlink loops,
-    mixed line ends, non-finite numbers, values the format cannot hold,
+    mixed line ends, non-finite numbers, values that contain themselves or
+    nest more than ``MAX_DEPTH`` deep, values the format cannot hold,
     several YAML documents, keys an alias or merge key shares, values that
     hold an anchor used elsewhere, comments a replaced value would drop or
     move, and keys a cast string or a flat key holds.
@@ -133,7 +137,7 @@ def set_config_value(
         home_config_dir=home_config_dir,
     )
     file_format = writable_format(target_path)
-    _key_parts(key)
+    _check_value_shape(value, key=key)
     value = _tuples_as_lists(value)
     check_finite(value, key=key)
     _refuse_unresolvable_link(target_path)
@@ -149,22 +153,27 @@ def set_config_value(
     )
     as_read = None if original is None else layout.apply(original)
     try:
+        old_document = None if as_read is None else parse_document(as_read, target_path)
         document = load_json(original) if file_format is ConfigFormat.JSON else {}
-        current = {} if as_read is None else read_config_text(as_read, target_path)
+        current = {} if old_document is None else settings_of(old_document, target_path)
         as_written = (
             {}
-            if as_read is None
-            else read_config_text(as_read, target_path, cast=False)
+            if old_document is None
+            else settings_of(old_document, target_path, cast=False)
         )
     except _CONFIG_LOAD_ERRORS as exc:
         raise _load_error(target_path, exc) from exc
 
     updates = _updates_for(key=key, value=value, current=current)
-    if raw is not None and all(
+    if old_document is not None and all(
         _already_set(as_written, update_key, update_value)
         for update_key, update_value in updates.items()
     ):
-        return _validate_new_text(raw, target_path=target_path, updates=updates)
+        return _validate_new_text(
+            old_document,
+            target_path=target_path,
+            updates=updates,
+        )
     edited = _edited_text(
         original,
         document,
@@ -173,13 +182,14 @@ def set_config_value(
         target_path=target_path,
     )
     new_text = layout.apply(edited)
+    new_document = _parse_new_text(new_text, target_path=target_path)
     updated_config = _validate_new_text(
-        new_text,
+        new_document,
         target_path=target_path,
         updates=updates,
     )
-    if as_read is not None:
-        _refuse_other_changes(as_read, new_text, target_path, updates)
+    if old_document is not None:
+        _refuse_other_changes(old_document, new_document, target_path, updates)
     _write_text(new_text, config_path=write_path, mode=mode, newline="")
     return updated_config
 
@@ -213,11 +223,16 @@ def _edited_text(
         if file_format is ConfigFormat.YAML and original is not None:
             edited = original
             for update_key, update_value in updates.items():
-                splice = plan_edit(
-                    edited,
-                    _key_parts(update_key),
-                    _yaml_safe(update_value),
-                )
+                try:
+                    splice = plan_edit(
+                        edited,
+                        _key_parts(update_key),
+                        _yaml_safe(update_value),
+                    )
+                except YAMLError as exc:
+                    if edited is original:
+                        raise
+                    raise _unsafe_edit_error(target_path, exc) from exc
                 edited = splice.apply(edited)
             return edited
         for update_key, update_value in updates.items():
@@ -232,9 +247,56 @@ def _edited_text(
         ) from exc
 
 
+def _parse_new_text(new_text: str, *, target_path: Path) -> Mapping[str, object]:
+    """Parse content ``config set`` made, once, for every check that reads it.
+
+    Raises:
+        ConfigError: If the content does not parse: the edit went wrong, not
+            the user's file, and the file is left as it was.
+    """
+    try:
+        return parse_document(new_text, target_path)
+    except (ValueError, YAMLError) as exc:
+        raise _unsafe_edit_error(target_path, exc) from exc
+
+
+def _unsafe_edit_error(path: Path, exc: Exception) -> ConfigError:
+    """Return the error for an edit whose result does not parse."""
+    return ConfigError(
+        "config set could not make this edit safely; the file is unchanged, "
+        "edit it by hand",
+        operation="set_config",
+        file_path=path,
+        details={"error": str(exc)},
+    )
+
+
+def _check_value_shape(value: object, *, key: str) -> None:
+    """Refuse a value that contains itself or would nest too deeply.
+
+    Raises:
+        ConfigError: If ``value`` contains itself, or the key's parts and
+            the value nest more than ``MAX_DEPTH`` collections deep.
+    """
+    parts = _key_parts(key)
+    depth = nesting_depth(value)
+    if depth is not None and depth + len(parts) <= MAX_DEPTH:
+        return
+    reason = (
+        "the value contains itself"
+        if depth is None
+        else f"the key and value nest more than {MAX_DEPTH} levels deep"
+    )
+    raise ConfigError(
+        f"config set cannot write {key}: {reason}",
+        operation="set_config",
+        details={"key": key},
+    )
+
+
 def _refuse_other_changes(
-    old_text: str,
-    new_text: str,
+    old_document: Mapping[str, object],
+    new_document: Mapping[str, object],
     target_path: Path,
     updates: Mapping[str, object],
 ) -> None:
@@ -242,26 +304,31 @@ def _refuse_other_changes(
 
     Read alone, with and without casts, and with the companion file, every
     setting outside the updated keys must read back as it did before.
+    :func:`_validate_new_text` has read both documents the same ways, so
+    reading them again here cannot fail.
+
+    Args:
+        old_document: The file's content before the edit, parsed.
+        new_document: The content after it, parsed.
+        target_path: The file.
+        updates: The keys set.
 
     Raises:
-        ConfigError: If another setting changed or the content cannot be read.
+        ConfigError: If another setting changed.
     """
-    try:
-        readings = [
-            (
-                read_config_text(old_text, target_path, cast=cast),
-                read_config_text(new_text, target_path, cast=cast),
-            )
-            for cast in (False, True)
-        ]
-        readings.append(
-            (
-                read_config_layers(target_path, main_text=old_text),
-                read_config_layers(target_path, main_text=new_text),
-            ),
+    readings = [
+        (
+            settings_of(old_document, target_path, cast=cast),
+            settings_of(new_document, target_path, cast=cast),
         )
-    except _CONFIG_LOAD_ERRORS as exc:
-        raise _load_error(target_path, exc) from exc
+        for cast in (False, True)
+    ]
+    readings.append(
+        (
+            read_config_layers(target_path, main_document=old_document),
+            read_config_layers(target_path, main_document=new_document),
+        ),
+    )
     for before, after in readings:
         for update_key in updates:
             _drop_setting(before, _key_parts(update_key.lower()))
@@ -439,12 +506,12 @@ def _as_model_reads(key: str, value: object) -> object:
 
 
 def _validate_new_text(
-    new_text: str,
+    new_document: Mapping[str, object],
     *,
     target_path: Path,
     updates: Mapping[str, object],
 ) -> WinnowConfig:
-    """Check new file content before it is written.
+    """Check new file content, parsed, before it is written.
 
     Read on its own, the content must set each updated key to exactly its
     value, compared as :func:`_already_set` compares, both as written and
@@ -452,7 +519,7 @@ def _validate_new_text(
     must also give a valid configuration together with the companion file.
 
     Args:
-        new_text: The content about to be written.
+        new_document: The content about to be written, parsed.
         target_path: The file it will be written to.
         updates: The keys set, with their values.
 
@@ -464,9 +531,9 @@ def _validate_new_text(
             configuration is invalid.
     """
     try:
-        written = read_config_text(new_text, target_path, cast=False)
-        cast_read = read_config_text(new_text, target_path)
-        layered = read_config_layers(target_path, main_text=new_text)
+        written = settings_of(new_document, target_path, cast=False)
+        cast_read = settings_of(new_document, target_path)
+        layered = read_config_layers(target_path, main_document=new_document)
         for update_key, update_value in updates.items():
             if not (
                 _already_set(written, update_key, update_value)

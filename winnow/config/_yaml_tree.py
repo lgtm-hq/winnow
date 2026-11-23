@@ -29,9 +29,11 @@ from ruamel.yaml.events import (
     ScalarEvent,
     SequenceEndEvent,
 )
+from ruamel.yaml.scanner import RoundTripScanner
 from ruamel.yaml.tokens import (
     AnchorToken,
     CommentToken,
+    KeyToken,
     ScalarToken,
     TagToken,
     Token,
@@ -64,6 +66,10 @@ class YamlNode:
     start: int
     """Where the node starts, its anchor and tag included."""
     end: int
+    column: int
+    """The column the parser gives the node's start, kept apart from
+    ``start`` so a misplaced start cannot also misplace the column it is
+    checked against."""
     """Where the parser ends the node; a block collection ends after the
     comments that follow it, so the editor uses :meth:`YamlTree.leaf_end`."""
     anchor: str | None = None
@@ -78,6 +84,8 @@ class YamlNode:
     """Whether a block scalar keeps its final line breaks (``+`` chomping)."""
     target: YamlNode | None = None
     """The node an alias refers to."""
+    irregular: bool = False
+    """Whether a mapping has an explicit ``?`` key or a key with no ``:``."""
     pairs: list[YamlPair] = field(default_factory=list)
     items: list[YamlNode] = field(default_factory=list)
 
@@ -178,8 +186,10 @@ class YamlTree:
         """Return where a value's text ends: the end of its last scalar.
 
         A block collection ends where its last value ends, not after the
-        comments that follow it. A scalar ends at its last character that
-        is not a space or line break, at the end of that line; an empty
+        comments that follow it. A block scalar ends where the parser ends
+        it, before the empty lines at its end, so a line holding only spaces
+        inside it goes with it. Another scalar ends at its last character
+        that is not a space or line break, at the end of that line; an empty
         value ends where it starts.
 
         Args:
@@ -195,12 +205,15 @@ class YamlTree:
         if kept_breaks and last.keep:
             return last.end
         text = self.text[last.start : last.end]
+        if last.style in _BLOCK_STYLES:
+            return last.start + len(text.rstrip(LINE_BREAKS))
         content = len(text.rstrip(_SPACE + LINE_BREAKS))
         return min(last.end, self.line_end(last.start + max(content - 1, 0)))
 
-    def nodes(self) -> Iterator[YamlNode]:
-        """Yield every node of the document once, keys included."""
-        pending = [] if self.root is None else [self.root]
+    def nodes(self, top: YamlNode | None = None) -> Iterator[YamlNode]:
+        """Yield every node of the document, or below ``top``, keys included."""
+        start = self.root if top is None else top
+        pending = [] if start is None else [start]
         while pending:
             node = pending.pop()
             yield node
@@ -224,8 +237,9 @@ def parse_yaml(text: str) -> YamlTree:
         ruamel.yaml.YAMLError: If the text is not valid YAML.
     """
     yaml = YAML()
-    tokens = list(yaml.scan(io.StringIO(text)))
+    yaml.Scanner = _RecordingScanner
     events = list(yaml.parse(io.StringIO(text)))
+    tokens: list[Token] = [token for token in yaml.scanner.taken if token]
     line_starts = [0] + [
         index + 1 for index, char in enumerate(text) if char in LINE_BREAKS
     ]
@@ -236,12 +250,30 @@ def parse_yaml(text: str) -> YamlTree:
         text=text,
         root=builder.root,
         documents=builder.documents,
-        comments=_comment_positions(text, tokens),
+        comments=_comment_positions(text, tokens, events),
         aliases=builder.aliases,
         anchored=builder.anchored,
         document_end=builder.document_end,
         line_starts=line_starts,
     )
+
+
+class _RecordingScanner(RoundTripScanner):
+    """A scanner that keeps every token the parser takes from it.
+
+    The tree needs the parser's events and the scanner's tokens; keeping
+    the tokens as the parser reads them reads the text once, not twice.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.taken: list[Token | None] = []
+        super().__init__(*args, **kwargs)
+
+    def get_token(self) -> Token | None:
+        """Return the next token, keeping it."""
+        token: Token | None = super().get_token()
+        self.taken.append(token)
+        return token
 
 
 class _Builder:
@@ -251,11 +283,21 @@ class _Builder:
         self._text = text
         self._stack: list[tuple[YamlNode, list[YamlNode]]] = []
         self._anchors: dict[str, YamlNode] = {}
-        self._properties: dict[int, int] = {
-            token.end_mark.index: token.start_mark.index
+        properties: list[tuple[int, int]] = [
+            (token.start_mark.index, token.end_mark.index)
             for token in tokens
             if isinstance(token, AnchorToken | TagToken)
-        }
+        ]
+        self._properties: dict[int, int] = {end: start for start, end in properties}
+        self._property_starts: list[int] = sorted(start for start, _ in properties)
+        self._claimed: set[int] = set()
+        """The property tokens a node already starts at, so none has two."""
+        self._explicit_keys: list[int] = sorted(
+            token.start_mark.index
+            for token in tokens
+            if isinstance(token, KeyToken)
+            and token.end_mark.index > token.start_mark.index
+        )
         self._values: list[tuple[int, int]] = sorted(
             (token.start_mark.index, token.end_mark.index)
             for token in tokens
@@ -296,45 +338,64 @@ class _Builder:
 
     def _node(self, event: Event) -> YamlNode:
         """Return the node an event opens or holds."""
-        start = self._start(event.start_mark.index)
-        end = event.end_mark.index
+        end: int = event.end_mark.index
+        column: int = event.start_mark.column
         anchor = getattr(event, "anchor", None)
         if isinstance(event, AliasEvent):
+            start: int = event.start_mark.index
             self.aliases.append((str(anchor), start))
             return YamlNode(
                 NodeKind.ALIAS,
                 start,
                 end,
+                column,
                 value=str(anchor),
                 target=self._anchors.get(str(anchor)),
             )
         tag = getattr(event, "tag", None)
-        node = YamlNode(NodeKind.SCALAR, start, end, anchor=anchor, tag=tag)
+        start = self._start(event, has_properties=anchor is not None or tag is not None)
+        node = YamlNode(NodeKind.SCALAR, start, end, column, anchor=anchor, tag=tag)
         if isinstance(event, ScalarEvent):
             node.value = event.value
             node.style = event.style
             header = self._block_scalars.get(end)
             if header is not None:
                 node.keep = "+" in self._header(header)
-        elif isinstance(event, CollectionStartEvent):
+        else:
             node.kind = (
                 NodeKind.MAPPING
                 if isinstance(event, MappingStartEvent)
                 else NodeKind.SEQUENCE
             )
-            node.flow = bool(event.flow_style)
+            node.flow = bool(getattr(event, "flow_style", False))
         if anchor is not None:
             self._anchors[anchor] = node
             self.anchored.append(node)
         return node
 
-    def _start(self, position: int) -> int:
-        """Return where a node starts, counting the anchor and tag before it."""
+    def _start(self, event: Event, *, has_properties: bool) -> int:
+        """Return where a node starts, counting the anchor and tag before it.
+
+        Only a node that has an anchor or a tag looks for them, and each
+        anchor or tag token is given to one node: the first key inside an
+        anchored mapping, or a key after a tagged empty value, never starts
+        at the earlier node's anchor or tag.
+        """
+        position: int = event.start_mark.index
+        if not has_properties:
+            return position
+        end: int = event.end_mark.index
+        low = bisect.bisect_left(self._property_starts, position)
+        high = bisect.bisect_left(self._property_starts, max(end, position + 1))
+        self._claimed.update(self._property_starts[low:high])
         while True:
-            before = len(self._text[:position].rstrip(_SPACE + LINE_BREAKS))
+            before = position
+            while before > 0 and self._text[before - 1] in _SPACE + LINE_BREAKS:
+                before -= 1
             earlier = self._properties.get(before)
-            if earlier is None or earlier >= position:
+            if earlier is None or earlier >= position or earlier in self._claimed:
                 return position
+            self._claimed.add(earlier)
             position = earlier
 
     def _header(self, start: int) -> str:
@@ -361,9 +422,26 @@ class _Builder:
         else:
             key = pending.pop()
             colon_end = self._colon_end(key.end, node.start)
+            if self._irregular_key(parent, key, colon_end):
+                parent.irregular = True
             if node.is_empty:
                 node.start = node.end = colon_end
             parent.pairs.append(YamlPair(key, node, colon_end))
+
+    def _irregular_key(self, mapping: YamlNode, key: YamlNode, colon_end: int) -> bool:
+        """Return whether a key is written ``? key`` or has no ``:`` after it.
+
+        A plain key in a flow mapping whose text ends in ``:``, as
+        ``{review:,}``, holds its ``:``: the parser reads the key as
+        ``review:``, and the file reads it the same way after an edit.
+        """
+        previous = mapping.pairs[-1].value.end if mapping.pairs else mapping.start
+        index = bisect.bisect_left(self._explicit_keys, previous)
+        if index < len(self._explicit_keys) and self._explicit_keys[index] < key.start:
+            return True
+        if colon_end != key.end:
+            return False
+        return not (mapping.flow and key.style is None and key.value.endswith(":"))
 
     def _colon_end(self, key_end: int, value_start: int) -> int:
         """Return where the ``:`` between a key and its value ends."""
@@ -380,17 +458,26 @@ class _Builder:
         return self._ends[index - 1] if index else 0
 
 
-def _comment_positions(text: str, tokens: list[Token]) -> list[int]:
-    """Return where each comment of the text starts, from the scanner's tokens.
+def _comment_positions(
+    text: str,
+    tokens: list[Token],
+    events: list[Event],
+) -> list[int]:
+    """Return where each comment of the text starts, from tokens and events.
 
     ``ruamel.yaml``'s scanner keeps comments as comment tokens attached to
-    other tokens, several lines to a token; a comment after a block
-    scalar's header is read the way the scanner reads that header.
+    other tokens, several lines to a token, and its parser moves some of
+    them onto events, such as a comment after a key whose block sequence
+    starts on the next line; a comment after a block scalar's header is
+    read the way the scanner reads that header.
     """
     found: set[int] = set()
-    for token in tokens:
-        for comment in _comment_tokens(getattr(token, "_comment", None)):
+    attached = [getattr(token, "_comment", None) for token in tokens]
+    attached += [getattr(event, "comment", None) for event in events]
+    for item in attached:
+        for comment in _comment_tokens(item):
             found.update(_comment_lines(text, comment))
+    for token in tokens:
         if isinstance(token, ScalarToken) and token.style in _BLOCK_STYLES:
             position = token.start_mark.index + 1
             while position < len(text) and text[position] in _BLOCK_INDICATORS:
