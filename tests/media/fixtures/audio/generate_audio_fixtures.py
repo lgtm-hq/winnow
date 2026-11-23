@@ -21,9 +21,9 @@ packet offsets show (:data:`FRAGMENT_CUTS`); nothing in this script parses
 media. Every output is byte for byte the same on each run with the same
 FFmpeg build.
 
-``heaac.m4a`` needs Apple's AudioToolbox AAC encoder (``aac_at``), which
-only macOS builds of FFmpeg have. Elsewhere the committed file is kept and
-the script says so.
+``heaac.m4a`` and ``heaac_mono.m4a`` need Apple's AudioToolbox AAC encoder
+(``aac_at``), which only macOS builds of FFmpeg have. Elsewhere the
+committed files are kept and the script says so.
 """
 
 from __future__ import annotations
@@ -175,6 +175,13 @@ _FRAGMENTS: Final[tuple[str, ...]] = (
     *_FRAGMENT_DURATION,
 )
 """Fragments of 0.5 s with no fragment index besides the trailing ``mfra``."""
+
+_MOOV_FRAGMENTS: Final[tuple[str, ...]] = ("-frag_duration", "250000")
+"""Fragments of 0.25 s, the first one inside ``moov`` (no ``empty_moov``).
+
+``nb_frames`` then counts only the first fragment's MP4 samples: packets
+for ALAC, audio samples for PCM (A15f-1).
+"""
 
 _INDEXED_FRAGMENTS: Final[tuple[str, ...]] = (
     "-movflags",
@@ -1086,6 +1093,35 @@ FIXTURES: Final[tuple[AudioFixture, ...]] = (
         duration=2.0,
         estimated=True,
     ),
+    # A15f-1: without ``empty_moov`` the first fragment sits inside ``moov``.
+    # PCM's ``nb_frames`` counts that fragment's audio samples, more than the
+    # walk's packets, so the file is told fragmented by its span in samples.
+    # Four fragments of about 0.25 s each.
+    AudioFixture(
+        name="pcm_moov_fragments.mp4",
+        inputs=_silence(rate=8000, seconds=1),
+        outputs=("-c:a", "pcm_s16le", *_MOOV_FRAGMENTS),
+        format_name=MP4_FORMAT,
+        codec="pcm_s16le",
+        sample_rate=8000,
+        channels=1,
+        bit_depth=16,
+        duration=1.0,
+        estimated=True,
+        bitrate=128000,
+    ),
+    AudioFixture(
+        name="alac_moov_fragments.mp4",
+        inputs=_silence(rate=48000, seconds=1),
+        outputs=("-c:a", "alac", *_MOOV_FRAGMENTS),
+        format_name=MP4_FORMAT,
+        codec="alac",
+        sample_rate=48000,
+        channels=1,
+        bit_depth=16,
+        duration=1.0,
+        estimated=True,
+    ),
     # A15b: without an edit list the muxer stretches the first ALAC packet
     # (512 ms at 8 kHz) by the 40 ms delay that one B-frame at 25 fps gives
     # the video. That is under the A10b bound, so only A15b sees it.
@@ -1144,10 +1180,34 @@ duration is checked against :data:`HE_AAC_EXCESS` instead of the usual
 tolerance.
 """
 
+HE_AAC_MONO_FIXTURE: Final[AudioFixture] = AudioFixture(
+    name="heaac_mono.m4a",
+    inputs=_silence(rate=48000, seconds=2),
+    outputs=("-c:a", "aac_at", "-profile:a", "4", "-b:a", "32k", *_FASTSTART),
+    format_name=MP4_FORMAT,
+    codec="aac",
+    sample_rate=48000,
+    channels=1,
+    bit_depth=None,
+    duration=2.0,
+    estimated=True,
+)
+"""Mono HE-AAC from AudioToolbox in faststart M4A (A15f-4).
+
+The source has one channel, and ffprobe reports two, as it does for
+:data:`HE_AAC_FIXTURE`. The reader must report the channel count unknown.
+"""
+
+HE_AAC_FIXTURES: Final[tuple[AudioFixture, ...]] = (
+    HE_AAC_FIXTURE,
+    HE_AAC_MONO_FIXTURE,
+)
+"""Every HE-AAC fixture; each needs :data:`HE_AAC_ENCODER`."""
+
 HE_AAC_EXCESS: Final[tuple[float, float]] = (0.08, 0.17)
-"""Range, in seconds, of the measured span of :data:`HE_AAC_FIXTURE` past
-its true length on FFmpeg 9.0.2 (133 ms; 145 to 166 ms over a wider set at
-48 kHz with a tone)."""
+"""Range, in seconds, of the measured span of the HE-AAC fixtures past
+their true length on FFmpeg 9.0.2: 133 ms for each, and 133 to 167 ms
+across the 48 kHz files of the A15f-3 sweep."""
 
 HE_AAC_ENCODER: Final[str] = "aac_at"
 
@@ -1346,59 +1406,63 @@ class FrameCut:
         name: File name inside the fixture directory.
         source: Name of the healthy fixture it is cut from.
         frames: Number of audio frames removed from the end.
-        detected: Whether the reader reports ``truncated=true`` on FFmpeg
-            9.0.2. Losses it misses are a known limit: encoder padding at the
-            end of MP3 and AAC hides them.
+        truncated: The ``truncated`` value the reader reports on FFmpeg
+            9.0.2: ``True`` when it sees the loss, ``False`` when it misses
+            it, ``None`` (``estimated``) when it cannot tell. Losses it
+            misses are a known limit: encoder padding at the end of MP3 and
+            AAC hides them. In MP4 the walk then finds fewer packets than
+            ``nb_frames`` indexes, so the span is compared in samples and
+            the file is ``estimated``, never complete (A15f-1).
     """
 
     name: str
     source: str
     frames: int
-    detected: bool
+    truncated: bool | None
 
 
 FRAME_CUTS: Final[tuple[FrameCut, ...]] = (
-    FrameCut(name="frames_minus1.mp3", source="frames.mp3", frames=1, detected=False),
-    FrameCut(name="frames_minus2.mp3", source="frames.mp3", frames=2, detected=True),
-    FrameCut(name="frames_minus3.mp3", source="frames.mp3", frames=3, detected=True),
-    FrameCut(name="frames_minus1.m4a", source="frames.m4a", frames=1, detected=False),
-    FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, detected=True),
-    FrameCut(name="frames_minus3.m4a", source="frames.m4a", frames=3, detected=True),
+    FrameCut(name="frames_minus1.mp3", source="frames.mp3", frames=1, truncated=False),
+    FrameCut(name="frames_minus2.mp3", source="frames.mp3", frames=2, truncated=True),
+    FrameCut(name="frames_minus3.mp3", source="frames.mp3", frames=3, truncated=True),
+    FrameCut(name="frames_minus1.m4a", source="frames.m4a", frames=1, truncated=None),
+    FrameCut(name="frames_minus2.m4a", source="frames.m4a", frames=2, truncated=True),
+    FrameCut(name="frames_minus3.m4a", source="frames.m4a", frames=3, truncated=True),
     FrameCut(
         name="mp3_frag_minus1.mp4",
         source="mp3_frag.mp4",
         frames=1,
-        detected=True,
+        truncated=True,
     ),
     FrameCut(
         name="mp3_frag_minus3.mp4",
         source="mp3_frag.mp4",
         frames=3,
-        detected=True,
+        truncated=True,
     ),
     FrameCut(
         name="mp3_frag_minus10.mp4",
         source="mp3_frag.mp4",
         frames=10,
-        detected=True,
+        truncated=True,
     ),
     FrameCut(
         name="aac_frag_minus1.mp4",
         source="aac_frag.mp4",
         frames=1,
-        detected=True,
+        truncated=True,
     ),
     FrameCut(
         name="aac_frag_minus3.mp4",
         source="aac_frag.mp4",
         frames=3,
-        detected=True,
+        truncated=True,
     ),
     FrameCut(
         name="aac_frag_minus10.mp4",
         source="aac_frag.mp4",
         frames=10,
-        detected=True,
+        truncated=True,
     ),
 )
 """Fixtures with their last frames removed.
@@ -1441,6 +1505,16 @@ FRAGMENT_CUTS: Final[tuple[FragmentCut, ...]] = (
     FragmentCut(
         name="alac_fragments_cut.mp4",
         source="alac_fragments.mp4",
+        truncated=None,
+    ),
+    FragmentCut(
+        name="pcm_moov_fragments_cut.mp4",
+        source="pcm_moov_fragments.mp4",
+        truncated=None,
+    ),
+    FragmentCut(
+        name="alac_moov_fragments_cut.mp4",
+        source="alac_moov_fragments.mp4",
         truncated=None,
     ),
     FragmentCut(
@@ -1675,16 +1749,15 @@ def generate(directory: Path) -> list[Path]:
         written.append(chained)
     written.extend(_cut_frames(cut, directory) for cut in FRAME_CUTS)
     written.extend(_cut_fragment(cut, directory) for cut in FRAGMENT_CUTS)
-    he_aac = directory / HE_AAC_FIXTURE.name
-    if _has_encoder(HE_AAC_ENCODER):
-        _ffmpeg(
-            inputs=HE_AAC_FIXTURE.inputs,
-            outputs=HE_AAC_FIXTURE.outputs,
-            dest=he_aac,
-        )
+    has_he_aac = _has_encoder(HE_AAC_ENCODER)
+    for fixture in HE_AAC_FIXTURES:
+        he_aac = directory / fixture.name
+        if not has_he_aac:
+            missing = f"{HE_AAC_ENCODER} is not available"
+            print(f"{missing}: {he_aac.name} is kept as committed")
+            continue
+        _ffmpeg(inputs=fixture.inputs, outputs=fixture.outputs, dest=he_aac)
         written.append(he_aac)
-    else:
-        print(f"{HE_AAC_ENCODER} is not available: {he_aac.name} is kept as committed")
     return written
 
 

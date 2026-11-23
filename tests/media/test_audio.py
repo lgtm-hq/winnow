@@ -512,6 +512,10 @@ def test_replay_fragmented_mp4_frame_cut_is_truncated(
         ("alac_indexed", "alac", 2.0),
         ("aac_fragments_cut", "aac", 1.536),
         ("alac_fragments_cut", "alac", 1.536),
+        ("pcm_moov_fragments", "pcm_s16le", 1.0),
+        ("alac_moov_fragments", "alac", 1.0),
+        ("pcm_moov_fragments_cut", "pcm_s16le", 0.768),
+        ("alac_moov_fragments_cut", "alac", 0.768),
     ],
 )
 def test_replay_fragmented_mp4_is_never_complete(
@@ -528,6 +532,12 @@ def test_replay_fragmented_mp4_is_never_complete(
     are 2 s of audio; a cut on the last fragment boundary leaves three
     0.5 s fragments, 1.536 s in 512 ms packets. Before A15a the ALAC cut
     was ``truncated=false`` with that length.
+
+    The ``moov_fragments`` files are 1 s in 0.25 s fragments, the first one
+    inside ``moov``. There ALAC's ``nb_frames`` counts 3 packets, while
+    PCM's counts 2,048 audio samples, more than the walk's 8 packets: the
+    span of 8,000 samples is compared instead (A15f-1). Before A15f the PCM
+    file and its cut were ``truncated=false``.
     """
     metadata = _replay(monkeypatch, tmp_path, name)
 
@@ -587,6 +597,26 @@ def test_replay_he_aac_is_estimated(
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
     assert_that(metadata.truncated).is_none()
     assert_that(metadata.bitrate).is_none()
+    assert_that(known_duration(metadata) - 2.0).is_between(0.08, 0.17)
+
+
+def test_replay_mono_he_aac_channel_count_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A15f-4: ffprobe reports 2 channels for this mono HE-AAC file.
+
+    The source has one channel, so the reported count is not established
+    and the reader leaves it unknown. The duration is ``estimated`` as for
+    stereo HE-AAC (A15b).
+    """
+    metadata = _replay(monkeypatch, tmp_path, "heaac_mono")
+
+    assert_that(metadata.codec).is_equal_to("aac")
+    assert_that(metadata.channels).is_none()
+    assert_that(metadata.sample_rate).is_equal_to(48000)
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
+    assert_that(metadata.truncated).is_none()
     assert_that(known_duration(metadata) - 2.0).is_between(0.08, 0.17)
 
 

@@ -2222,7 +2222,12 @@ def test_header_reads_frame_count_and_profile(
         (MP4_FORMAT_NAME, None, 4, True),
         (MP4_FORMAT_NAME, 6, 47, True),
         (MP4_FORMAT_NAME, 47, 47, False),
+        (MP4_FORMAT_NAME, 41454, 47, False),
         (MP4_FORMAT_NAME, 192000, 47, False),
+        (MP4_FORMAT_NAME, 24576, 47, True),
+        (MP4_FORMAT_NAME, 41234, 47, False),
+        (MP4_FORMAT_NAME, 41233, 47, True),
+        (MP4_FORMAT_NAME, 192000, 0, False),
         (MP4_FORMAT_NAME, None, 0, False),
         ("matroska,webm", None, 47, False),
     ],
@@ -2230,7 +2235,12 @@ def test_header_reads_frame_count_and_profile(
         "empty-moov",
         "first-fragment-in-moov",
         "all-in-moov",
-        "pcm-samples",
+        "pcm-samples-all-in-moov",
+        "pcm-samples-cut",
+        "pcm-samples-first-fragment-in-moov",
+        "pcm-samples-within-tolerance",
+        "pcm-samples-past-tolerance",
+        "pcm-samples-no-packets",
         "no-packets",
         "not-mp4",
     ],
@@ -2244,8 +2254,12 @@ def test_is_fragmented(
     """A15a: an MP4 walk with more packets than ``nb_frames`` read fragments.
 
     ``nb_frames`` counts only the samples ``moov`` indexes: none with
-    ``empty_moov``, the first fragment's without it. PCM counts samples,
-    so it is never below the number of packets.
+    ``empty_moov``, the first fragment's without it. For PCM and ADPCM it
+    counts audio samples, so it exceeds the packet count; then the walk's
+    span in samples is compared instead (A15f-1). The 47 packets of 20 ms
+    span 0.94 s, 41,454 samples at 44.1 kHz, and the 5 ms tolerance is
+    220.5 samples. A cut file indexes more samples than its span holds and
+    is not fragmented.
     """
     header = _header(container=container, frame_count=frame_count)
     walk = _walk(*_packets(packets))

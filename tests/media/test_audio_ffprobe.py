@@ -31,7 +31,7 @@ from tests.media.fixtures.audio.generate_audio_fixtures import (
     FRAME_CUTS,
     FRAME_SOURCES,
     HE_AAC_EXCESS,
-    HE_AAC_FIXTURE,
+    HE_AAC_FIXTURES,
     INCONSISTENT_FIXTURES,
     UNSUPPORTED_FIXTURES,
     AudioFixture,
@@ -267,6 +267,16 @@ PINS: Final[dict[int, Pins]] = {
             ),
             "aac_fragments.mp4": ("unrecognized_output", "truncated", "estimated"),
             "alac_fragments.mp4": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "estimated",
+            ),
+            "pcm_moov_fragments.mp4": (
+                "unrecognized_output",
+                "unrecognized_output",
+                "unrecognized_output",
+            ),
+            "alac_moov_fragments.mp4": (
                 "unrecognized_output",
                 "unrecognized_output",
                 "estimated",
@@ -607,24 +617,28 @@ def test_last_frames_removed(cut: FrameCut) -> None:
     In the faststart files two and three frames are caught and one is not.
     The miss is the documented limit: the encoder's end padding is longer
     than the frame removed, so the audio left still reaches the declared
-    length within max(5 ms, two time-base units) (A5). In fragmented MP3 and
-    AAC, cuts of one, three and ten packets are all ``truncated`` (A14a).
+    length within max(5 ms, two time-base units) (A5). The MP3 miss is
+    ``truncated=false``. In the M4A the walk finds one packet fewer than
+    ``nb_frames`` indexes, so the span is compared in samples (A15f-1) and
+    the file is ``estimated``, never complete. In fragmented MP3 and AAC,
+    cuts of one, three and ten packets are all ``truncated`` (A14a).
     """
     source = BY_NAME[cut.source]
 
     metadata = extract_audio_metadata(AUDIO_DIR / cut.name)
 
     assert_that(metadata.codec).is_equal_to(source.codec)
-    assert_that(_flags(metadata)).is_empty()
-    if cut.detected:
-        assert_that(metadata.truncated).is_same_as(True)
+    assert_that(metadata.truncated).is_same_as(cut.truncated)
+    if cut.truncated is True:
+        assert_that(_flags(metadata)).is_empty()
         assert_that(metadata.duration_seconds).is_none()
-    else:
-        assert_that(metadata.truncated).is_same_as(False)
-        assert_that(_duration(metadata)).is_close_to(
-            source.duration,
-            DURATION_TOLERANCE,
-        )
+        return
+    expected_flags = () if cut.truncated is False else (AudioFlag.ESTIMATED,)
+    assert_that(metadata.audio_flags or ()).is_equal_to(expected_flags)
+    assert_that(_duration(metadata)).is_close_to(
+        source.duration,
+        DURATION_TOLERANCE,
+    )
 
 
 @pytest.mark.parametrize("cut", FRAGMENT_CUTS, ids=lambda cut: cut.name)
@@ -632,9 +646,10 @@ def test_fragment_boundary_cut_is_never_complete(cut: FragmentCut) -> None:
     """A15a: a fragmented MP4 cut on a fragment boundary is never complete.
 
     Without a fragment index the declared duration shrinks with the
-    packets, so the three fragments left (1.536 s) are measured, lossless
-    included. With a ``sidx`` index the declared 2 s stands and the cut is
-    ``truncated``.
+    packets, so the three fragments left (1.536 s of 2 s, 0.768 s of 1 s)
+    are measured, lossless included. That holds when the first fragment
+    sits inside ``moov``, PCM included (A15f-1). With a ``sidx`` index the
+    declared 2 s stands and the cut is ``truncated``.
     """
     source = BY_NAME[cut.source]
 
@@ -653,21 +668,21 @@ def test_fragment_boundary_cut_is_never_complete(cut: FragmentCut) -> None:
     )
 
 
-def test_he_aac_is_estimated() -> None:
+@pytest.mark.parametrize("fixture", HE_AAC_FIXTURES, ids=lambda fixture: fixture.name)
+def test_he_aac_is_estimated(fixture: AudioFixture) -> None:
     """A15b: HE-AAC in MP4 declares more than a codec frame past the audio.
 
     ffprobe names the profile, so the duration is measured, not checked. The
     measured span counts the priming, so it is held to the stated range past
-    the true length.
+    the true length. ffprobe reports two channels for the mono file as well
+    as the stereo one, so the count is unknown for both (A15f-4).
     """
-    fixture = HE_AAC_FIXTURE
-
     metadata = extract_audio_metadata(AUDIO_DIR / fixture.name)
 
     assert_that(metadata.container).is_equal_to(fixture.format_name)
     assert_that(metadata.codec).is_equal_to(fixture.codec)
     assert_that(metadata.sample_rate).is_equal_to(fixture.sample_rate)
-    assert_that(metadata.channels).is_none()  # mono HE-AAC also reads as 2
+    assert_that(metadata.channels).is_none()
     assert_that(metadata.audio_flags).is_equal_to((AudioFlag.ESTIMATED,))
     assert_that(metadata.truncated).is_none()
     assert_that(metadata.bitrate).is_none()
@@ -915,7 +930,7 @@ ALL_FIXTURE_NAMES: Final[tuple[str, ...]] = (
             *EMPTY_FIXTURES,
             *EMPTY_CONTAINER_FIXTURES,
             *FRAME_SOURCES,
-            HE_AAC_FIXTURE,
+            *HE_AAC_FIXTURES,
         )
     ),
     CHAINED_OGG,

@@ -33,64 +33,66 @@ keeps its index at the end and uses a tone so its audio data outweighs the index
 `declared` (checked by the packet walk, `truncated=false`) or `estimated` (measured from
 packets, truncation not checked).
 
-| File                 | `format_name`             | Codec          | Rate  | Ch  | Bits | Duration | Kind      |
-| -------------------- | ------------------------- | -------------- | ----- | --- | ---- | -------- | --------- |
-| `mp3.mp3`            | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
-| `adts.aac`           | `aac`                     | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
-| `ac3.ac3`            | `ac3`                     | `ac3`          | 48000 | 2   | -    | 1.0      | estimated |
-| `eac3.eac3`          | `eac3`                    | `eac3`         | 48000 | 2   | -    | 1.0      | estimated |
-| `flac.flac`          | `flac`                    | `flac`         | 8000  | 1   | 16   | 2.0      | declared  |
-| `wavpack.wv`         | `wv`                      | `wavpack`      | 8000  | 1   | 16   | 2.0      | declared  |
-| `tta.tta`            | `tta`                     | `tta`          | 8000  | 1   | 16   | 2.0      | declared  |
-| `wav.wav`            | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
-| `aiff.aiff`          | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
-| `aac.m4a`            | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
-| `opus.ogg`           | `ogg`                     | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
-| `wma.wma`            | `asf`                     | `wmav2`        | 22050 | 1   | -    | 3.0      | declared  |
-| `opus.mka`           | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
-| `pcm.avi`            | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
-| `mp2.m2ts`           | `mpegts`                  | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
-| `mp2.mpg`            | `mpeg`                    | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
-| `mp3.flv`            | `flv`                     | `mp3`          | 22050 | 1   | -    | 2.0      | estimated |
-| `mp2_named.mp3`      | `mp3`                     | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
-| `alac.m4a`           | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 8000  | 1   | 16   | 2.0      | declared  |
-| `adpcm_ms.wav`       | `wav`                     | `adpcm_ms`     | 8000  | 1   | -    | 2.0      | declared  |
-| `ac3_mono.ac3`       | `ac3`                     | `ac3`          | 48000 | 1   | -    | 1.0      | estimated |
-| `flac24.flac`        | `flac`                    | `flac`         | 8000  | 1   | 24   | 2.0      | declared  |
-| `two_tracks.mka`     | `matroska,webm`           | `flac`         | 16000 | 2   | 16   | 2.0      | estimated |
-| `cover.mp3`          | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
-| `delayed.mkv`        | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 1.0      | estimated |
-| `delayed.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 1.0      | estimated |
-| `delayed.avi`        | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
-| `video.wmv`          | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
-| `vbr_noxing.mp3`     | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | estimated |
-| `cover.m4a`          | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
-| `timecode.mov`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
-| `offset.mka`         | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 2.0      | estimated |
-| `offset_delayed.mkv` | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 1.0      | estimated |
-| `delayed_audio.avi`  | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
-| `delayed_audio.wma`  | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
-| `delayed_pcm.mkv`    | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
-| `late_pcm.mka`       | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
-| `frames.mp3`         | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | declared  |
-| `frames.m4a`         | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
-| `latin1_tag.wav`     | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
-| `latin1_tag.aiff`    | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
-| `latin1_tag.avi`     | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
-| `delay_moov.mp4`     | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
-| `vorbis.mka`         | `matroska,webm`           | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
-| `wma.mka`            | `matroska,webm`           | `wmav2`        | 22050 | 1   | -    | 2.0      | estimated |
-| `mp2.mka`            | `matroska,webm`           | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
-| `ac3.mka`            | `matroska,webm`           | `ac3`          | 32000 | 1   | -    | 2.0      | estimated |
-| `eac3.mka`           | `matroska,webm`           | `eac3`         | 32000 | 1   | -    | 2.0      | estimated |
-| `mp3_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `mp3`          | 48000 | 1   | -    | 2.0      | estimated |
-| `aac_frag.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
-| `vorbis_frag.mp4`    | `mov,mp4,m4a,3gp,3g2,mj2` | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
-| `opus_frag.mp4`      | `mov,mp4,m4a,3gp,3g2,mj2` | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
-| `aac_fragments.mp4`  | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
-| `alac_fragments.mp4` | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
-| `alac_indexed.mp4`   | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
-| `alac_bframes.mp4`   | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 8000  | 1   | 16   | 2.0      | estimated |
+| File                      | `format_name`             | Codec          | Rate  | Ch  | Bits | Duration | Kind      |
+| ------------------------- | ------------------------- | -------------- | ----- | --- | ---- | -------- | --------- |
+| `mp3.mp3`                 | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
+| `adts.aac`                | `aac`                     | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `ac3.ac3`                 | `ac3`                     | `ac3`          | 48000 | 2   | -    | 1.0      | estimated |
+| `eac3.eac3`               | `eac3`                    | `eac3`         | 48000 | 2   | -    | 1.0      | estimated |
+| `flac.flac`               | `flac`                    | `flac`         | 8000  | 1   | 16   | 2.0      | declared  |
+| `wavpack.wv`              | `wv`                      | `wavpack`      | 8000  | 1   | 16   | 2.0      | declared  |
+| `tta.tta`                 | `tta`                     | `tta`          | 8000  | 1   | 16   | 2.0      | declared  |
+| `wav.wav`                 | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
+| `aiff.aiff`               | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
+| `aac.m4a`                 | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
+| `opus.ogg`                | `ogg`                     | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
+| `wma.wma`                 | `asf`                     | `wmav2`        | 22050 | 1   | -    | 3.0      | declared  |
+| `opus.mka`                | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
+| `pcm.avi`                 | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `mp2.m2ts`                | `mpegts`                  | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
+| `mp2.mpg`                 | `mpeg`                    | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
+| `mp3.flv`                 | `flv`                     | `mp3`          | 22050 | 1   | -    | 2.0      | estimated |
+| `mp2_named.mp3`           | `mp3`                     | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
+| `alac.m4a`                | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 8000  | 1   | 16   | 2.0      | declared  |
+| `adpcm_ms.wav`            | `wav`                     | `adpcm_ms`     | 8000  | 1   | -    | 2.0      | declared  |
+| `ac3_mono.ac3`            | `ac3`                     | `ac3`          | 48000 | 1   | -    | 1.0      | estimated |
+| `flac24.flac`             | `flac`                    | `flac`         | 8000  | 1   | 24   | 2.0      | declared  |
+| `two_tracks.mka`          | `matroska,webm`           | `flac`         | 16000 | 2   | 16   | 2.0      | estimated |
+| `cover.mp3`               | `mp3`                     | `mp3`          | 24000 | 1   | -    | 6.0      | declared  |
+| `delayed.mkv`             | `matroska,webm`           | `opus`         | 48000 | 1   | -    | 1.0      | estimated |
+| `delayed.mp4`             | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 1.0      | estimated |
+| `delayed.avi`             | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
+| `video.wmv`               | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
+| `vbr_noxing.mp3`          | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | estimated |
+| `cover.m4a`               | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
+| `timecode.mov`            | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
+| `offset.mka`              | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 2.0      | estimated |
+| `offset_delayed.mkv`      | `matroska,webm`           | `flac`         | 8000  | 1   | 16   | 1.0      | estimated |
+| `delayed_audio.avi`       | `avi`                     | `mp3`          | 24000 | 1   | -    | 1.0      | estimated |
+| `delayed_audio.wma`       | `asf`                     | `wmav2`        | 22050 | 1   | -    | 1.0      | estimated |
+| `delayed_pcm.mkv`         | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `late_pcm.mka`            | `matroska,webm`           | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `frames.mp3`              | `mp3`                     | `mp3`          | 44100 | 1   | -    | 2.0      | declared  |
+| `frames.m4a`              | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | declared  |
+| `latin1_tag.wav`          | `wav`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | declared  |
+| `latin1_tag.aiff`         | `aiff`                    | `adpcm_ima_qt` | 8000  | 1   | -    | 2.0      | declared  |
+| `latin1_tag.avi`          | `avi`                     | `pcm_u8`       | 8000  | 1   | 8    | 1.0      | estimated |
+| `delay_moov.mp4`          | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `vorbis.mka`              | `matroska,webm`           | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
+| `wma.mka`                 | `matroska,webm`           | `wmav2`        | 22050 | 1   | -    | 2.0      | estimated |
+| `mp2.mka`                 | `matroska,webm`           | `mp2`          | 48000 | 1   | -    | 2.0      | estimated |
+| `ac3.mka`                 | `matroska,webm`           | `ac3`          | 32000 | 1   | -    | 2.0      | estimated |
+| `eac3.mka`                | `matroska,webm`           | `eac3`         | 32000 | 1   | -    | 2.0      | estimated |
+| `mp3_frag.mp4`            | `mov,mp4,m4a,3gp,3g2,mj2` | `mp3`          | 48000 | 1   | -    | 2.0      | estimated |
+| `aac_frag.mp4`            | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `vorbis_frag.mp4`         | `mov,mp4,m4a,3gp,3g2,mj2` | `vorbis`       | 48000 | 2   | -    | 2.0      | estimated |
+| `opus_frag.mp4`           | `mov,mp4,m4a,3gp,3g2,mj2` | `opus`         | 48000 | 1   | -    | 2.0      | estimated |
+| `aac_fragments.mp4`       | `mov,mp4,m4a,3gp,3g2,mj2` | `aac`          | 48000 | 1   | -    | 2.0      | estimated |
+| `alac_fragments.mp4`      | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
+| `pcm_moov_fragments.mp4`  | `mov,mp4,m4a,3gp,3g2,mj2` | `pcm_s16le`    | 8000  | 1   | 16   | 1.0      | estimated |
+| `alac_moov_fragments.mp4` | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 1.0      | estimated |
+| `alac_indexed.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 48000 | 1   | 16   | 2.0      | estimated |
+| `alac_bframes.mp4`        | `mov,mp4,m4a,3gp,3g2,mj2` | `alac`         | 8000  | 1   | 16   | 2.0      | estimated |
 
 Notes:
 
@@ -142,6 +144,13 @@ Notes:
   decode the file). ffprobe shows no difference between an indexed and an unindexed
   file, so every fragmented MP4 is measured, lossless included (amendment A15a). Before
   A15a the ALAC files were checked.
+- `pcm_moov_fragments.mp4` (8 kHz) and `alac_moov_fragments.mp4` (48 kHz) are 1 s in
+  four 0.25 s fragments written with `-frag_duration 250000` and no `empty_moov`, so the
+  first fragment sits inside `moov`. Their `nb_frames` counts that fragment's MP4
+  samples: 3 packets for ALAC, but 2,048 audio samples for PCM, more than the 8 packets
+  the walk finds. The PCM file is then told fragmented by its span in samples (8,000)
+  against `nb_frames` (amendment A15f-1). Before A15f-1 the PCM file and its cut were
+  `truncated=false`.
 - `alac_bframes.mp4` is 2 s of ALAC at 8 kHz beside a 25 frame/s H.264 video with one
   B-frame, written with `-use_editlist 0`. The muxer stretches the first audio packet
   from 512 ms to 552 ms by the video's 40 ms delay. That is under twice the median, so
@@ -156,8 +165,14 @@ The source is stereo because FFmpeg reports two channels for any HE-AAC stream, 
 included: parametric stereo may follow. Its declared duration runs about 90 ms past the
 audio, more than its 43 ms packets, so the reader reports the measured span, `estimated`
 (amendment A15b). The span counts the priming too: 2.133 s, so the tests hold it to 80
-to 170 ms over the true length rather than the usual tolerance. Only macOS builds of
-FFmpeg have `aac_at`; elsewhere the generator keeps the committed file.
+to 170 ms over the true length rather than the usual tolerance.
+
+`heaac_mono.m4a` is the same with a mono source. ffprobe reports two channels for it as
+well, so the reader must report the channel count unknown (amendment A15f-4). Its span
+is also 2.133 s.
+
+Only macOS builds of FFmpeg have `aac_at`; elsewhere the generator keeps the committed
+files.
 
 ## Fragment cuts
 
@@ -166,15 +181,18 @@ last `moof`+`mdat` pair and the trailing `mfra` are gone. The generator finds th
 offset from ffprobe's packet offsets and sizes: it is where one fragment's packet data
 ends and the next packet does not follow on.
 
-| File                     | Cut from             | Reported                                  |
-| ------------------------ | -------------------- | ----------------------------------------- |
-| `aac_fragments_cut.mp4`  | `aac_fragments.mp4`  | `estimated`, 1.536 s                      |
-| `alac_fragments_cut.mp4` | `alac_fragments.mp4` | `estimated`, 1.536 s                      |
-| `alac_indexed_cut.mp4`   | `alac_indexed.mp4`   | `truncated=true`, the `sidx` declares 2 s |
+| File                          | Cut from                  | Reported                                  |
+| ----------------------------- | ------------------------- | ----------------------------------------- |
+| `aac_fragments_cut.mp4`       | `aac_fragments.mp4`       | `estimated`, 1.536 s                      |
+| `alac_fragments_cut.mp4`      | `alac_fragments.mp4`      | `estimated`, 1.536 s                      |
+| `pcm_moov_fragments_cut.mp4`  | `pcm_moov_fragments.mp4`  | `estimated`, 0.768 s                      |
+| `alac_moov_fragments_cut.mp4` | `alac_moov_fragments.mp4` | `estimated`, 0.768 s                      |
+| `alac_indexed_cut.mp4`        | `alac_indexed.mp4`        | `truncated=true`, the `sidx` declares 2 s |
 
 Without an index the declared duration is the sum of the fragments present, so it
 shrinks with the packets; the reader must never report such a cut complete. Before A15a,
-`alac_fragments_cut.mp4` was reported `truncated=false` with 1.536 s.
+`alac_fragments_cut.mp4` was reported `truncated=false` with 1.536 s, and before A15f-1
+`pcm_moov_fragments_cut.mp4` was reported `truncated=false` with 0.768 s.
 
 ## Unsupported and empty fixtures
 
@@ -230,8 +248,11 @@ evidence does not establish the duration, so it is unknown with `inconsistent`.
   out of `FIXTURES`. `frames_minus{1,2,3}.mp3` and `.m4a` are the same files cut at the
   byte offset ffprobe reports for the first of the last one, two, or three audio
   packets; the header still declares 2 s. On FFmpeg 9.0.2 the reader reports
-  `truncated=true` for two and three frames and `truncated=false` with 2.0 s for one:
-  the encoder's end padding is longer than the frame removed (a known limit).
+  `truncated=true` for two and three frames. One frame is missed because the encoder's
+  end padding is longer than the frame removed (a known limit): the MP3 is
+  `truncated=false` with 2.0 s, and the M4A, whose walk finds one packet fewer than
+  `nb_frames` indexes, is compared in samples and is `estimated` at 2.005 s (amendment
+  A15f-1). Before A15f-1 the M4A was `truncated=false` with 2.0 s.
 - `mp3_frag_minus{1,3,10}.mp4` and `aac_frag_minus{1,3,10}.mp4` are `mp3_frag.mp4` and
   `aac_frag.mp4` cut the same way, at the packet boundary of the first of the last one,
   three, or ten packets. The stream duration still declares the full span, which is now

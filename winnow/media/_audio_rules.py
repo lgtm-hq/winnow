@@ -16,7 +16,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final
 
 from winnow.media._ffprobe import BoundedRun
@@ -268,9 +268,12 @@ Other containers carry codecs such as Vorbis that vary packet size by design.
 HE_AAC_PROFILES: Final[frozenset[str]] = frozenset({"HE-AAC", "HE-AACv2"})
 """AAC ``profile`` values that ffprobe reports for HE-AAC (A15b).
 
-HE-AAC from AudioToolbox in MP4 declares a duration 88 to 130 ms past the
-audio, against 43 to 64 ms packets, so the checked value would be more than
-a codec frame long.
+HE-AAC and HE-AACv2 from AudioToolbox in MP4 declare a duration 89 to
+376 ms past the true length, 2 to 3 packets, so a checked value would be
+more than a codec frame long. The measured span that is reported instead,
+``estimated``, is 133 to 508 ms past the true length: always over, and by
+3 to 4 packets (43 ms packets at 48 kHz, 128 ms at 16 kHz). Measured on
+FFmpeg 9.0.2 across 16 to 48 kHz, mono and stereo, 0.5 to 10 s (A15f-3).
 """
 
 
@@ -324,7 +327,8 @@ class ProbeHeader:
             the walk's stderr too.
         frame_count: The primary stream's ``nb_frames``. In MP4 it counts
             only the samples indexed in the ``moov`` box, not those in
-            fragments (A15a).
+            fragments (A15a). An MP4 sample is a packet for most codecs
+            but one audio sample for PCM and ADPCM (A15f-1).
         profile: The primary stream's ``profile`` (A15b).
     """
 
@@ -988,17 +992,35 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     a fragment index (``sidx`` or ``mfra``) apart, so every fragmented MP4
     is treated as unindexed.
 
+    For PCM and ADPCM an MP4 sample is one audio sample, so ``nb_frames``
+    exceeds the packet count and a packet comparison never finds the
+    fragments. When ``nb_frames`` exceeds the packet count, the comparison
+    is made in audio samples instead (A15f-1): the measured span times the
+    sample rate, rounded, against ``nb_frames``, with the A5 tolerance
+    converted to samples. The rule keys on that count mismatch, not on the
+    codec.
+
     Args:
         header: Accepted header facts.
         walk: Completed packet walk of the primary stream.
 
     Returns:
         ``True`` for MP4 whose walk found more packets than ``nb_frames``
-        (taken as zero when ffprobe does not report it).
+        (taken as zero when ffprobe does not report it), or, when
+        ``nb_frames`` exceeds the packet count, whose measured span holds
+        more samples than ``nb_frames`` by more than the tolerance.
     """
     if header.container != MP4_FORMAT_NAME:
         return False
-    return walk.packets > (header.frame_count or 0)
+    indexed = header.frame_count or 0
+    if indexed <= walk.packets:
+        return walk.packets > indexed
+    measured = walk.measured_duration()
+    if measured is None:
+        return False
+    rate = Decimal(header.sample_rate)
+    span_samples = (measured * rate).to_integral_value(rounding=ROUND_HALF_EVEN)
+    return span_samples - indexed > shortfall_tolerance(header) * rate
 
 
 def may_be_primed(codec: str) -> bool:

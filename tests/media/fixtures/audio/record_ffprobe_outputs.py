@@ -64,10 +64,15 @@ CASES: Final[dict[str, tuple[str, float]]] = {
     "aac_fragments_cut": ("aac_fragments_cut.mp4", 1.0),
     "alac_fragments": ("alac_fragments.mp4", 1.0),
     "alac_fragments_cut": ("alac_fragments_cut.mp4", 1.0),
+    "pcm_moov_fragments": ("pcm_moov_fragments.mp4", 1.0),
+    "pcm_moov_fragments_cut": ("pcm_moov_fragments_cut.mp4", 1.0),
+    "alac_moov_fragments": ("alac_moov_fragments.mp4", 1.0),
+    "alac_moov_fragments_cut": ("alac_moov_fragments_cut.mp4", 1.0),
     "alac_indexed": ("alac_indexed.mp4", 1.0),
     "alac_indexed_cut": ("alac_indexed_cut.mp4", 1.0),
     "alac_bframes": ("alac_bframes.mp4", 1.0),
     "heaac": ("heaac.m4a", 1.0),
+    "heaac_mono": ("heaac_mono.m4a", 1.0),
 }
 """Recording name to (fixture, fraction of the file kept)."""
 
