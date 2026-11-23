@@ -152,6 +152,10 @@ class TextLayout:
         return f"{_BOM}{text}" if self.bom else text
 
 
+_PLAIN_LAYOUT: Final = TextLayout()
+"""LF line ends and no BOM: the layout of a new file."""
+
+
 def split_layout(raw: str, *, path: Path) -> tuple[str, TextLayout]:
     """Return file content with ``\\n`` line ends and no BOM, and its layout.
 
@@ -186,7 +190,7 @@ def dump_document(
     file_format: ConfigFormat,
     *,
     original: str | None,
-    layout: TextLayout = TextLayout(),
+    layout: TextLayout = _PLAIN_LAYOUT,
 ) -> str:
     """Render an edited document in its file's format and line layout.
 
