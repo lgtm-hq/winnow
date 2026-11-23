@@ -20,14 +20,14 @@ concurrency:
 jobs:
   quality:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-quality-lint.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-quality-lint.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: checkout repository for lintro analysis
       contents: read
       # read: pull py-lintro Docker image from GHCR
       packages: read
     with:
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       # Org ruleset (checks-winnow): quality / 🛠️ Lintro Code Quality
       job-name: '🛠️ Lintro Code Quality'
       # yamllint disable-line rule:line-length
@@ -46,7 +46,7 @@ jobs:
         || github.event.action == 'ready_for_review'
       )
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-quality-summary.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-quality-summary.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: checkout repository metadata
       contents: read
@@ -57,7 +57,7 @@ jobs:
       # Keep up to three earlier runs under "Previous runs" (lgtm-ci #1346).
       comment-history: true
       comment-history-limit: 3
-      tooling-ref: 'd990149fa4189262a41abc706c35271c098b2807' # v0.99.0
+      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
       egress-policy: block
 
   # Durable failure report for main pushes and scheduled runs (#356): the
@@ -74,7 +74,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d990149fa4189262a41abc706c35271c098b2807 # v0.99.0
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
     permissions:
       # read: list the run's jobs and steps for the issue body
       actions: read

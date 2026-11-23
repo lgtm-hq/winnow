@@ -64,7 +64,7 @@ _CONDITION = (
 )
 # Exactly the scopes the pinned reusable's job requests.
 _PERMISSIONS = {"actions": "write", "checks": "read", "contents": "read"}
-# Inputs the pinned reusable (lgtm-ci v0.99.0) declares. Kept here so a typo
+# Inputs the pinned reusable (lgtm-ci v0.116.3) declares. Kept here so a typo
 # or an input removed upstream fails a test rather than the run at startup.
 _DECLARED_INPUTS = frozenset(
     {

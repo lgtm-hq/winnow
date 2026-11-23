@@ -44,7 +44,7 @@ _CONDITION = (
     " && !startsWith(github.ref_name, 'actions-v')"
 )
 _PERMISSIONS = {"actions": "read", "contents": "read", "issues": "write"}
-# Every input the reusable declares at the pinned lgtm-ci release (v0.99.0).
+# Every input the reusable declares at the pinned lgtm-ci release (v0.116.3).
 _DECLARED_INPUTS = {
     "workflow-key",
     "tag",

@@ -35,7 +35,8 @@ _REUSABLE = re.compile(
     r"^lgtm-hq/lgtm-ci/\.github/workflows/(?P<name>[^@]+)@(?P<pin>\S+)",
     re.IGNORECASE,
 )
-# The lgtm-ci commit the table below was read from: v0.116.3.
+# The lgtm-ci commit the table below was read from: v0.116.3. Every caller
+# must pin it, so moving the pin means reading the table again.
 _LGTM_CI_COMMIT = "0c373f1252e0fe23a1e119df639b51d63b02b7d8"
 
 
@@ -204,6 +205,12 @@ def _caller(reusable: str, inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def test_every_caller_passes_presets_its_reusable_accepts() -> None:
     """Keep each caller on a preset the pinned reusable embeds."""
     _assert_callers_pass_accepted_presets(_workflows())
+
+
+def test_the_table_was_read_at_the_pinned_lgtm_ci_commit() -> None:
+    """Fail a pin move until the table is read again from the new commit."""
+    pins = {caller.pin for caller in _callers(_workflows()).values()}
+    assert_that(pins).is_equal_to({_LGTM_CI_COMMIT})
 
 
 def test_the_collector_finds_callers_on_every_trigger() -> None:
