@@ -121,23 +121,35 @@ back in its own format:
   round trip allows; indentation may be normalized.
 - JSON files stay JSON with the same keys and values; indentation is kept but spacing
   and number forms may be normalized.
-- CRLF line endings and a missing final newline are kept, and a symlinked file is
-  written through its link with its permission bits unchanged.
+- CRLF line endings, a UTF-8 byte order mark, a missing final newline and comments above
+  a leading `---` are kept.
+- The file is replaced, not rewritten in place, so the user running `set` becomes its
+  owner. It keeps its permission bits, but not setuid, setgid or sticky bits. A
+  symlinked file is written through its link; a link to a missing file creates that file
+  and keeps the link.
 - Setting `follow_symlinks` or `symlink_policy` also sets the other only when the file
   would otherwise contradict itself.
-- When the file already sets the key to the value, nothing is written.
+- When the file already sets the key to the value as written, nothing is written.
+  `"@int 4"` and `4` count as different values.
 
 The result, read with the companion file, is validated before anything is written. These
 fail with an error and leave the file untouched:
 
 - a TOML (`.toml`, `.tml`), INI (`.ini`, `.conf`, `.properties`) or Python (`.py`) file;
 - a file you cannot write;
-- a `NaN` or infinite number;
-- a JSON file with a duplicate key, or a YAML file that does not parse;
-- a key inside a mapping a YAML anchor shares with an alias;
+- a symlink loop;
+- a file that mixes CRLF and LF line endings or holds a lone CR;
+- a YAML file with a `%` directive, a `...` document end, or a `---` other than one
+  after its leading comments;
+- a `NaN` or infinite number, or a value the file's format cannot hold;
+- a JSON file with a duplicate key or a byte order mark, or a YAML file that does not
+  parse;
+- a key inside a mapping a YAML anchor shares with an alias, or merges into another
+  mapping with a `<<` merge key;
 - a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
   value instead;
-- a key a later entry or a flat key elsewhere in the file would override or merge into;
+- a key a later entry or a flat key elsewhere in the file would override or merge into,
+  or that would not read back as exactly the value given;
 - an invalid result.
 
 A file that does not exist yet is created: a `.json` path as JSON, any other path that
