@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
-from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 import pytest
@@ -17,12 +16,6 @@ from click.testing import CliRunner
 from winnow.cli import main
 from winnow.cli.clean import clean
 from winnow.cli.errors import ExitCode
-from winnow.fs.errors import FileSystemOperationError
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from winnow.fs.empty_dirs import RemovalResult
 
 _WINDOWS = sys.platform.startswith("win")
 
@@ -238,33 +231,85 @@ def test_clean_rejects_missing_directory(tmp_path: Path) -> None:
     assert_that(result.exit_code).is_not_equal_to(0)
 
 
-def test_clean_removal_failure_renders_error_panel(
+def test_clean_reports_failed_candidates_and_exits_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A filesystem failure during removal reaches the root error panel."""
-    (tmp_path / "solo").mkdir()
+    """A failure mid-list is reported with the rest of the outcome, exit 1."""
+    # Relative paths keep Rich from wrapping the skipped lines.
+    monkeypatch.chdir(tmp_path)
+    Path("a").mkdir()
+    Path("b").mkdir()
+    real_rmdir = os.rmdir
 
-    def failing_remove(candidates: Sequence[Path]) -> RemovalResult:
-        raise FileSystemOperationError(
-            "failed to remove empty directory",
-            operation="remove_directories",
-            file_path=candidates[0],
-        )
+    def denied_rmdir(path: str, *, dir_fd: int | None = None) -> None:
+        if path == "a":
+            raise PermissionError(errno.EACCES, "denied", path)
+        real_rmdir(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(
-        import_module("winnow.cli.clean"),
-        "remove_directories",
-        failing_remove,
-    )
+    monkeypatch.setattr(os, "rmdir", denied_rmdir)
+    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open})
 
-    result = CliRunner().invoke(main, ["clean", str(tmp_path), "--yes"])
+    result = CliRunner().invoke(main, ["clean", ".", "--yes"])
 
     assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
-    assert_that(result.stderr).contains("Error")
-    assert_that(result.stderr).contains("failed to remove empty directory")
-    assert_that(result.stderr).contains("operation: remove_directories")
-    assert_that(result.stderr).contains("path:")
-    assert_that(result.stderr).contains("solo")
-    assert_that(result.stdout).is_empty()
-    assert_that((tmp_path / "solo").exists()).is_true()
+    assert_that(result.output.splitlines()).is_equal_to(
+        [
+            "Removed 1 empty directory.",
+            "Skipped 1 directory.",
+            "Skipped: a (permission denied)",
+        ],
+    )
+    assert_that(Path("a").is_dir()).is_true()
+    assert_that(Path("b").exists()).is_false()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+def test_clean_does_not_follow_symlink_swapped_in_during_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ancestor swapped for a symlink never removes anything outside."""
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    (root / "parent" / "child").mkdir(parents=True)
+    (outside / "real" / "child").mkdir(parents=True)
+
+    def confirm_and_swap(*args: object, **kwargs: object) -> bool:
+        (root / "parent" / "child").rmdir()
+        (root / "parent").rmdir()
+        (root / "parent").symlink_to(outside / "real", target_is_directory=True)
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm_and_swap)
+
+    result = CliRunner().invoke(main, ["clean", str(root)])
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.output).contains("Removed 0 empty directories.")
+    assert_that(result.output).contains("path changed")
+    assert_that((outside / "real" / "child").is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_clean_does_not_report_unreadable_excluded_directory(tmp_path: Path) -> None:
+    """An excluded directory is never read, so it is not reported."""
+    excluded = tmp_path / ".git"
+    excluded.mkdir()
+    (tmp_path / "plain").mkdir()
+    excluded.chmod(0)
+    try:
+        result = CliRunner().invoke(
+            main,
+            ["clean", str(tmp_path), "--exclude", ".git", "--yes"],
+        )
+    finally:
+        excluded.chmod(stat.S_IRWXU)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).is_equal_to("Removed 1 empty directory.\n")
+    assert_that(excluded.is_dir()).is_true()

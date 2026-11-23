@@ -370,26 +370,6 @@ def test_remove_directories_skips_non_empty_path_and_its_parent(
     assert_that((child / "late.txt").exists()).is_true()
 
 
-def test_remove_directories_wraps_other_rmdir_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An rmdir failure other than missing or non-empty is raised."""
-    target = tmp_path / "solo"
-    target.mkdir()
-
-    def denied_rmdir(self: Path) -> None:
-        raise PermissionError(errno.EACCES, "denied", str(self))
-
-    monkeypatch.setattr(Path, "rmdir", denied_rmdir)
-
-    with pytest.raises(FileSystemOperationError) as excinfo:
-        remove_directories([target])
-
-    assert_that(excinfo.value.context.operation).is_equal_to("remove_directories")
-    assert_that(excinfo.value.context.file_path).is_equal_to(target)
-
-
 @pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
 @pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
@@ -438,3 +418,295 @@ def test_scan_empty_directories_reports_unreadable_root(
     assert_that(scan).is_equal_to(
         EmptyDirScan(candidates=(), unreadable=(tmp_path,)),
     )
+
+
+def test_remove_directories_continues_after_other_rmdir_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another rmdir failure is recorded with its reason and removal goes on."""
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    (tmp_path / "later").mkdir()
+    real_rmdir = Path.rmdir
+
+    def denied_rmdir(self: Path) -> None:
+        if self == denied:
+            raise PermissionError(errno.EACCES, "denied", str(self))
+        real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", denied_rmdir)
+
+    result = remove_directories([denied, tmp_path / "later"])
+
+    assert_that(result).is_equal_to(
+        RemovalResult(
+            removed=(tmp_path / "later",),
+            skipped=((denied, "permission denied"),),
+        ),
+    )
+    assert_that(denied.is_dir()).is_true()
+
+
+def test_remove_directories_reports_path_replaced_by_file(tmp_path: Path) -> None:
+    """A candidate replaced by a file is skipped as not a directory."""
+    replaced = tmp_path / "replaced"
+    replaced.write_text("data")
+    (tmp_path / "later").mkdir()
+
+    result = remove_directories([replaced, tmp_path / "later"])
+
+    assert_that(result.removed).is_equal_to((tmp_path / "later",))
+    assert_that(result.skipped).is_equal_to(((replaced, "not a directory"),))
+    assert_that(replaced.is_file()).is_true()
+
+
+def test_remove_directories_reports_unexpected_os_error_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmapped rmdir error is reported with the OS error text."""
+    target = tmp_path / "busy"
+    target.mkdir()
+
+    def busy_rmdir(self: Path) -> None:
+        raise OSError(errno.EBUSY, "Resource busy", str(self))
+
+    monkeypatch.setattr(Path, "rmdir", busy_rmdir)
+
+    result = remove_directories([target])
+
+    assert_that(result.skipped).is_equal_to(((target, "Resource busy"),))
+
+
+def _swap_parent_for_symlink(root: Path, outside: Path) -> None:
+    """Replace ``root/parent`` with a symlink to ``outside/real``.
+
+    Args:
+        root: Scan root holding ``parent/child``.
+        outside: Directory holding ``real/child`` outside the root.
+    """
+    (root / "parent" / "child").rmdir()
+    (root / "parent").rmdir()
+    (root / "parent").symlink_to(outside / "real", target_is_directory=True)
+
+
+@pytest.fixture
+def swapped_tree(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
+    """Plan ``root/parent/child`` and swap ``parent`` for an outside symlink.
+
+    Returns:
+        The scan root, the outside directory, and the planned candidates.
+    """
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    (root / "parent" / "child").mkdir(parents=True)
+    (outside / "real" / "child").mkdir(parents=True)
+    planned = list(scan_empty_directories(root).candidates)
+    _swap_parent_for_symlink(root, outside)
+    return root, outside, planned
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_refuses_symlinked_ancestor(
+    swapped_tree: tuple[Path, Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A component swapped for a symlink never leads outside the root."""
+    root, outside, planned = swapped_tree
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+
+    result = remove_directories(planned, root=root)
+
+    assert_that(result.removed).is_empty()
+    assert_that(result.skipped).is_equal_to(
+        (
+            (root / "parent" / "child", "path changed"),
+            (root / "parent", "path changed"),
+        ),
+    )
+    assert_that((outside / "real" / "child").is_dir()).is_true()
+    assert_that((root / "parent").is_symlink()).is_true()
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_with_root_removes_planned_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """With a root, an unchanged plan is removed exactly as without one."""
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+    _make_tree(tmp_path)
+    planned = find_empty_directories(tmp_path)
+    (tmp_path / "gone").mkdir()
+    (tmp_path / "gone").rmdir()
+    planned.insert(0, tmp_path / "gone" / "child")
+
+    result = remove_directories(planned, root=tmp_path)
+
+    assert_that(result.removed).is_equal_to(tuple(planned[1:]))
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "gone" / "child", "no longer exists"),),
+    )
+    assert_that((tmp_path / "photos" / "2020" / "pic.jpg").is_file()).is_true()
+
+
+def test_remove_directories_with_root_reports_file_component(
+    tmp_path: Path,
+) -> None:
+    """An ancestor replaced by a file counts as a changed path."""
+    (tmp_path / "parent").write_text("data")
+
+    result = remove_directories([tmp_path / "parent" / "child"], root=tmp_path)
+
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "parent" / "child", "path changed"),),
+    )
+
+
+def test_remove_directories_with_root_reports_leaf_replaced_by_file(
+    tmp_path: Path,
+) -> None:
+    """A leaf replaced by a file is skipped as not a directory."""
+    (tmp_path / "leaf").write_text("data")
+
+    result = remove_directories([tmp_path / "leaf"], root=tmp_path)
+
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "leaf", "not a directory"),),
+    )
+
+
+def test_remove_directories_with_missing_root_skips_everything(
+    tmp_path: Path,
+) -> None:
+    """A root that vanished leaves every candidate skipped as missing."""
+    root = tmp_path / "root"
+
+    result = remove_directories([root / "a"], root=root)
+
+    assert_that(result.skipped).is_equal_to(((root / "a", "no longer exists"),))
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_rejects_candidate_outside_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A candidate outside the root, or the root itself, is a caller bug."""
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+
+    with pytest.raises(ValueError, match="not below"):
+        remove_directories([tmp_path / "elsewhere"], root=root)
+    with pytest.raises(ValueError, match="not below"):
+        remove_directories([root], root=root)
+    assert_that((tmp_path / "elsewhere").is_dir()).is_true()
+
+
+def test_remove_directories_with_root_reports_permission_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A descriptor-relative rmdir failure is reported and removal goes on."""
+    (tmp_path / "denied").mkdir()
+    (tmp_path / "later").mkdir()
+    real_rmdir = os.rmdir
+
+    def denied_rmdir(path: str, *, dir_fd: int | None = None) -> None:
+        if path == "denied":
+            raise PermissionError(errno.EACCES, "denied", path)
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "rmdir", denied_rmdir)
+    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open})
+
+    result = remove_directories(
+        [tmp_path / "denied", tmp_path / "later"],
+        root=tmp_path,
+    )
+
+    assert_that(result.removed).is_equal_to((tmp_path / "later",))
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "denied", "permission denied"),),
+    )
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_scan_empty_directories_prunes_unreadable_excluded_directory(
+    tmp_path: Path,
+) -> None:
+    """An excluded directory is not walked, so it is not reported unreadable."""
+    excluded = tmp_path / "keep" / ".git"
+    excluded.mkdir(parents=True)
+    (tmp_path / "plain").mkdir()
+    excluded.chmod(0)
+    try:
+        scan = scan_empty_directories(tmp_path, exclude_patterns=[".git"])
+    finally:
+        excluded.chmod(stat.S_IRWXU)
+
+    assert_that(scan).is_equal_to(
+        EmptyDirScan(candidates=(tmp_path / "plain",), unreadable=()),
+    )
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_scan_empty_directories_sorts_unreadable_ascending(tmp_path: Path) -> None:
+    """Unreadable directories are reported in ascending order."""
+    locked = [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
+    for directory in locked:
+        directory.mkdir()
+        directory.chmod(0)
+    try:
+        scan = scan_empty_directories(tmp_path)
+    finally:
+        for directory in locked:
+            directory.chmod(stat.S_IRWXU)
+
+    assert_that(scan.unreadable).is_equal_to(tuple(locked))
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_remove_directories_with_root_reports_unopenable_ancestor(
+    tmp_path: Path,
+) -> None:
+    """An ancestor that cannot be opened is reported and removal goes on."""
+    locked = tmp_path / "locked"
+    (locked / "child").mkdir(parents=True)
+    (tmp_path / "later").mkdir()
+    locked.chmod(0)
+    try:
+        result = remove_directories(
+            [locked / "child", tmp_path / "later"],
+            root=tmp_path,
+        )
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+    assert_that(result.removed).is_equal_to((tmp_path / "later",))
+    assert_that(result.skipped).is_equal_to(
+        ((locked / "child", "permission denied"),),
+    )
+    assert_that((locked / "child").is_dir()).is_true()
