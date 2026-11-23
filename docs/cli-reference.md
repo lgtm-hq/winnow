@@ -156,6 +156,18 @@ fail with an error and leave the file untouched:
 - a key whose value is an alias, or whose value holds an anchor (on a key or a value)
   that an alias or merge key outside it refers to, and a key inside a mapping reached
   through an alias or merged elsewhere with a `<<` merge key;
+- a file that nests values more than 100 levels deep or holds a value that contains
+  itself through a recursive anchor (`x: &r {self: *r}`), and a value that contains
+  itself or would nest more than 100 levels deep with its key; every command that reads
+  the file refuses it the same way;
+- a key in, or a value holding, a YAML mapping written with an explicit `?` key or with
+  a key that has no `:`;
+- a new key for a flow mapping (`{...}`) that holds a comment, which would then follow
+  the new key;
+- a YAML file that holds a U+0085, U+2028 or U+2029 line break;
+- an edit whose new lines would not start at the file's indentation, or whose result
+  does not parse; the message says the edit could not be made safely, not that the file
+  is invalid;
 - a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
   value instead;
 - a key a later entry or a flat key elsewhere in the file would override or merge into,
