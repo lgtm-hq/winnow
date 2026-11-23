@@ -1459,7 +1459,10 @@ def test_ffmpeg_helper_skips_without_encoder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A missing encoder skips the test instead of failing it (finding 9)."""
-    monkeypatch.setattr(sys.modules[__name__], "_ffmpeg_encoders", lambda: frozenset())
+    module = sys.modules[__name__]
+    # The helper stops before running anything, so this holds without ffmpeg.
+    monkeypatch.setattr(module, "FFMPEG", "ffmpeg")
+    monkeypatch.setattr(module, "_ffmpeg_encoders", lambda: frozenset())
 
     with pytest.raises(pytest.skip.Exception, match="libvpx"):
         _ffmpeg(*_VIDEO_IN, "-c:v", "libvpx", str(tmp_path / "x.webm"))
