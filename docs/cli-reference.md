@@ -296,10 +296,11 @@ Known limits:
   `moof` has lost every fragment, looks unfragmented, and reports `truncated=false`. So
   does a cut at a later `moof` when no fragment before it held audio, as with ALAC at 8
   kHz beside video (512 ms packets, 200 ms fragments), and a cut that leaves one
-  fragment of a PCM file written with `+delay_moov`.
+  fragment of a PCM file written with `+delay_moov`, or that leaves no more than the
+  tolerance of PCM audio past the indexed samples.
 - ADPCM in MP4 and MOV has no established duration: ffprobe's packet durations do not
   match the decoded audio, so the duration is unknown with `inconsistent`, never
-  `truncated`. ADPCM in WAV, AVI and Matroska keeps its checks.
+  `truncated`. ADPCM in WAV and Matroska keeps its checks; in AVI it is `estimated`.
 - HE-AAC in MP4 is `estimated`: its declared duration is 89 to 376 ms past the true
   length (2 to 3 packets), more than a codec frame. The measured length reported instead
   is 133 to 508 ms past the true length: always over, and by 3 to 4 packets (43 ms

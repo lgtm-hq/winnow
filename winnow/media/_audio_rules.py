@@ -217,7 +217,7 @@ ADPCM_CODEC_PREFIX: Final[str] = "adpcm_"
 """Codec-name prefix of ADPCM.
 
 In MP4 and MOV, ffprobe gives an ADPCM packet a duration that does not match
-the audio it decodes to (A15g): a healthy mono ``adpcm_ms`` file at 96 kHz
+the audio it decodes to (A15g): a healthy mono ``adpcm_ms`` file at 96 kHz can
 spans 1.01 s of packets against 2.0 s of audio. Its duration is unknown with
 ``inconsistent`` there, never ``truncated``.
 """
@@ -1026,8 +1026,10 @@ def is_fragmented(header: ProbeHeader, walk: PacketWalk) -> bool:
     indexed = header.frame_count or 0
     if indexed == 0:
         return walk.packets > 0
-    if indexed <= walk.packets and not header.codec.startswith(PCM_CODEC_PREFIX):
-        return walk.packets > indexed
+    if walk.packets > indexed:
+        return True
+    if indexed == walk.packets and not header.codec.startswith(PCM_CODEC_PREFIX):
+        return False
     measured = walk.measured_duration()
     if measured is None:
         return False

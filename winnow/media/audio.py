@@ -208,7 +208,9 @@ Known limits (not worked around):
   always compared in samples (A15g), so a cut that leaves exactly as many
   packets as ``nb_frames`` counts samples is still fragmented, and a file
   with no ``nb_frames`` (``empty_moov``) is fragmented whenever it has
-  packets.
+  packets. With an index, a PCM cut that leaves no more than the A5
+  tolerance of audio past the indexed samples (fragments of a few
+  milliseconds) also reads ``truncated=false``.
   Measured on FFmpeg 9.0.2: 395 fragment-boundary cuts without an index
   were all ``estimated``; 784 with one (``+global_sidx`` with
   ``+default_base_moof``, or ``+dash``) were ``truncated`` (770) or, for
@@ -227,9 +229,10 @@ Known limits (not worked around):
   ``estimated``, never damaged.
 * ADPCM in MP4 and MOV has no established duration (A15g): ffprobe gives
   each packet a duration that does not match the audio it decodes to, so a
-  healthy mono ``adpcm_ms`` file at 96 kHz spans 1.01 s of packets against
+  healthy mono ``adpcm_ms`` file at 96 kHz can span 1.01 s of packets against
   2.0 s of audio. The duration is unknown with ``inconsistent``, never
-  ``truncated``. ADPCM in WAV, AVI and Matroska keeps its checks.
+  ``truncated``. ADPCM in WAV and Matroska keeps its checks; in AVI it is
+  ``estimated``, as before.
 * HE-AAC in MP4 is ``estimated`` (A15b): AudioToolbox HE-AAC and
   HE-AACv2 declare a duration 89 to 376 ms past the true length, 2 to 3
   packets, more than a codec frame. The measured span that is reported

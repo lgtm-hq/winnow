@@ -2507,3 +2507,15 @@ def test_pcm_without_indexed_samples_is_fragmented_however_short() -> None:
     walk = _walk(*_packets(1, step="0.004000"))
 
     assert_that(is_fragmented(header, walk)).is_true()
+
+
+def test_pcm_with_more_packets_than_indexed_samples_is_fragmented() -> None:
+    """A15g: one-sample PCM packets past a small index are fragmented.
+
+    The 6 packets span less than the tolerance, but outnumber the 4 indexed
+    samples, so the file read fragments.
+    """
+    header = _header(container=MP4_FORMAT_NAME, codec="pcm_s16le", frame_count=4)
+    walk = _walk(*_packets(6, step="0.000021"))
+
+    assert_that(is_fragmented(header, walk)).is_true()
