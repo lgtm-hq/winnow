@@ -146,6 +146,14 @@ def _assert_macos_leg(workflows: dict[str, dict[str, Any]]) -> None:
     )
     for step in (sync, run):
         assert_that(step).does_not_contain_key("env")
+    # Nor from above: PYTEST_ADDOPTS=--collect-only in a job or workflow
+    # environment would make the same command pass without running a test,
+    # and a default shell or working directory could run it somewhere else.
+    for key in ("env", "defaults"):
+        assert_that(job).described_as(f"{_JOB} {key}").does_not_contain_key(key)
+        assert_that(workflows[_TEST_CI]).described_as(
+            f"{_TEST_CI} {key}",
+        ).does_not_contain_key(key)
 
     # Nothing but the failure notifier waits on it or reads its outputs, so
     # it reaches neither the coverage publish nor any release path.
@@ -164,6 +172,14 @@ def _assert_macos_leg(workflows: dict[str, dict[str, Any]]) -> None:
 def test_the_macos_leg_runs_the_full_suite_without_standing() -> None:
     """Keep the leg complete, read-only and off every publish path."""
     _assert_macos_leg(_workflows())
+
+
+def test_a_workflow_environment_that_changes_pytest_fails() -> None:
+    """A workflow-level env reaches the leg too, so it is rejected as well."""
+    workflows = copy.deepcopy(_workflows())
+    workflows[_TEST_CI]["env"] = {"PYTEST_ADDOPTS": "--collect-only"}
+    with pytest.raises(AssertionError):
+        _assert_macos_leg(workflows)
 
 
 def test_the_failure_notifier_needs_the_macos_leg() -> None:
@@ -219,6 +235,8 @@ def _set(job: dict[str, Any], path: tuple[Any, ...], value: Any) -> None:
         (("steps", 2, "run"), "uv sync"),
         (("steps", 3, "run"), "uv run --frozen pytest tests"),
         (("steps", 3, "run"), "uv run --frozen pytest tests -m 'not integration'"),
+        (("env",), {"PYTEST_ADDOPTS": "--collect-only"}),
+        (("defaults",), {"run": {"working-directory": "docs"}}),
     ],
     ids=[
         "id-token",
@@ -241,6 +259,8 @@ def _set(job: dict[str, Any], path: tuple[Any, ...], value: Any) -> None:
         "unfrozen-sync",
         "no-integration",
         "integration-excluded",
+        "collect-only-from-job-env",
+        "job-defaults",
     ],
 )
 def test_a_macos_leg_with_more_standing_or_less_suite_fails(

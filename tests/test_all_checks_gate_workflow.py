@@ -529,6 +529,9 @@ def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
     job = cast(dict[str, Any], tests["jobs"][_MACOS_JOB])
     assert_that(str(job["runs-on"])).starts_with("macos-")
     assert_that(job).does_not_contain_key("continue-on-error")
+    # A job is skipped when a job it needs is skipped, and the gate accepts a
+    # skipped check: the leg depends on nothing.
+    assert_that(job).does_not_contain_key("needs")
     condition = " ".join(str(job.get("if", _DRAFT_ONLY_IF)).split())
     assert_that(condition).is_equal_to(_DRAFT_ONLY_IF)
     for index, step in enumerate(job["steps"]):
@@ -546,6 +549,12 @@ def _assert_macos_leg_is_gated(workflows: dict[str, str]) -> None:
             f"{_TEST_CI} {event}"
         ).is_empty()
     assert_that(events["push"]["branches"]).contains("main")
+    # The leg skips drafts, so marking a draft ready must start a run, or the
+    # skipped result would stand until the next push.
+    assert_that(events["pull_request"]["branches"]).contains("main")
+    assert_that(set(events["pull_request"]["types"])).is_equal_to(
+        {"opened", "synchronize", "reopened", "ready_for_review"},
+    )
 
     # Neither the main-push pattern nor the empty one hides its checks.
     gate = _workflow_text(workflows[_GATE.name])
@@ -618,6 +627,16 @@ _RUN_TESTS = "      - name: Run tests\n"
         ),
         ("test-ci.yml", "  merge_group:\n", ""),
         ("test-ci.yml", "  test-macos:\n", "  test-darwin:\n"),
+        (
+            "test-ci.yml",
+            "    runs-on: macos-26\n",
+            "    runs-on: macos-26\n    needs: publish-coverage\n",
+        ),
+        (
+            "test-ci.yml",
+            "    types: [opened, synchronize, reopened, ready_for_review]\n",
+            "    types: [opened, synchronize, reopened]\n",
+        ),
     ],
     ids=[
         "ignored-by-name",
@@ -632,6 +651,8 @@ _RUN_TESTS = "      - name: Run tests\n"
         "path-filtered",
         "not-in-merge-queue",
         "missing",
+        "skipped-through-a-dependency",
+        "not-run-when-marked-ready",
     ],
 )
 def test_a_macos_leg_the_gate_cannot_see_fails(
