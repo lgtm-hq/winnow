@@ -20,6 +20,7 @@ name: Quality Check - Lintro Version Sync
     paths:
       - 'pyproject.toml'
       - '.github/workflows/quality-ci.yml'
+      - '.github/workflows/security-audit.yml'
       - '.github/workflows/validate-lintro-version.yml'
   workflow_dispatch:
 
@@ -40,7 +41,7 @@ jobs:
       # Caller repos must pass lintro-image; resolve-lintro-image.sh defaults to
       # lgtm-ci-owned paths that do not exist in consumer repositories.
       # yamllint disable-line rule:line-length
-      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:20c7c6666d0a8ccd53c304958bdb070883d96bbdaf31ceba6436d0e6a49bb57b
+      lintro-image: ghcr.io/lgtm-hq/py-lintro@sha256:a841c59f0804b0c11401321515ab21da0f6970314b8c5611fe97b08cc1a9e1ed # 0.183.3
       egress-policy: block
       egress-preset: quality
     permissions:
