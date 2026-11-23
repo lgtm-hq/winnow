@@ -290,8 +290,8 @@ Known limits:
 - HE-AAC in MP4 is `estimated`: its declared duration is 108 to 312 ms past the audio,
   more than a codec frame, and the measured length is further over (145 ms at 48 kHz up
   to 444 ms at 16 kHz).
-- HE-AAC's channel count is unknown: ffprobe reports 2 channels for mono HE-AAC as
-  well as stereo.
+- HE-AAC's channel count is unknown: ffprobe reports 2 channels for mono HE-AAC as well
+  as stereo.
 - In MP4, a first packet longer than the median packet by more than the tolerance makes
   the duration `estimated`. Without an edit list, B-frame video stretches the first
   audio packet by its delay (40 ms at 25 fps with one B-frame). A two-packet file whose
