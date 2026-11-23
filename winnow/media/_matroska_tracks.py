@@ -155,7 +155,10 @@ def _classify(types: list[int]) -> TrackWalk:
 
 
 def _find_track_types(reader: Reader, segment_offset: int) -> list[int] | None:
-    """Walk the Segment's top-level elements to ``Tracks``.
+    """Walk the Segment's top-level elements to every ``Tracks``.
+
+    Every ``Tracks`` before the first ``Cluster`` is read and their track
+    types joined. ``Tracks`` and ``SeekHead`` must lie inside the Segment.
 
     Args:
         reader: Reader over the open file.
@@ -172,19 +175,9 @@ def _find_track_types(reader: Reader, segment_offset: int) -> list[int] | None:
     if segment.element_id != SEGMENT:
         raise MalformedError("no Segment after the EBML header")
     end = reader.size if segment.end is None else min(segment.end, reader.size)
-    seek_tracks: int | None = None
-    offset = segment.data
-    while offset < end:
-        element = _read_header(reader, offset, end=end)
-        if element.element_id == TRACKS:
-            return _read_tracks(reader, element)
-        if element.element_id == CLUSTER:
-            break
-        if element.end is None:
-            raise MalformedError("unknown size outside Segment and Cluster")
-        if element.element_id == SEEK_HEAD and seek_tracks is None:
-            seek_tracks = _read_seek_head(reader, element, segment.data)
-        offset = element.end
+    types, seek_tracks = _walk_segment(reader, segment.data, end)
+    if types is not None:
+        return types
     if seek_tracks is None:
         return None
     if not segment.data <= seek_tracks < end:
@@ -192,7 +185,61 @@ def _find_track_types(reader: Reader, segment_offset: int) -> list[int] | None:
     element = _read_header(reader, seek_tracks, end=end)
     if element.element_id != TRACKS:
         raise MalformedError("SeekHead position is not a Tracks element")
-    return _read_tracks(reader, element)
+    return _read_tracks(reader, _inside(element, end))
+
+
+def _walk_segment(
+    reader: Reader,
+    start: int,
+    end: int,
+) -> tuple[list[int] | None, int | None]:
+    """Read every ``Tracks`` and the first ``SeekHead`` before a Cluster.
+
+    Args:
+        reader: Reader over the open file.
+        start: File offset of the Segment's data.
+        end: File offset just past the Segment, or the file's end.
+
+    Returns:
+        The joined track types (``None`` without a ``Tracks``) and the
+        ``Tracks`` position the ``SeekHead`` gives, if any.
+
+    Raises:
+        MalformedError: On an element of unknown size other than a Cluster.
+    """
+    seek_tracks: int | None = None
+    types: list[int] | None = None
+    offset = start
+    while offset < end:
+        element = _read_header(reader, offset, end=end)
+        if element.element_id == CLUSTER:
+            break
+        if element.end is None:
+            raise MalformedError("unknown size outside Segment and Cluster")
+        if element.element_id == TRACKS:
+            types = [*(types or []), *_read_tracks(reader, _inside(element, end))]
+        elif element.element_id == SEEK_HEAD and seek_tracks is None:
+            seek_tracks = _read_seek_head(reader, _inside(element, end), start)
+        offset = element.end
+    return types, seek_tracks
+
+
+def _inside(element: _Element, end: int) -> _Element:
+    """Check that a master element lies inside the Segment.
+
+    Args:
+        element: The element.
+        end: File offset just past the Segment, or the file's end.
+
+    Returns:
+        ``element``.
+
+    Raises:
+        MalformedError: When it has an unknown size or passes ``end``.
+    """
+    if element.end is None or element.end > end:
+        raise MalformedError("master element extends past the Segment")
+    return element
 
 
 def _read_seek_head(reader: Reader, element: _Element, segment_data: int) -> int | None:

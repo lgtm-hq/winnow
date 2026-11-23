@@ -221,7 +221,15 @@ def _ts_packet(pid: int, section: bytes) -> bytes:
     )
 
 
-def _psi(table_id: int, body: bytes, *, number: int = 0, last: int = 0) -> bytes:
+def _psi(
+    table_id: int,
+    body: bytes,
+    *,
+    number: int = 0,
+    last: int = 0,
+    extension: int = 1,
+    current: bool = True,
+) -> bytes:
     """Build a long-form PSI section with a dummy CRC.
 
     Args:
@@ -229,18 +237,22 @@ def _psi(table_id: int, body: bytes, *, number: int = 0, last: int = 0) -> bytes
         body: Bytes after ``last_section_number``.
         number: ``section_number``.
         last: ``last_section_number``.
+        extension: ``transport_stream_id`` or ``program_number``.
+        current: ``current_next_indicator``.
 
     Returns:
         The section.
     """
-    rest = b"\x00\x01\xc1" + bytes([number, last]) + body + b"\x00" * 4
+    version = 0xC1 if current else 0xC0
+    rest = extension.to_bytes(2, "big") + bytes([version, number, last]) + body
+    rest += b"\x00" * 4
     return bytes([table_id, 0xB0 | (len(rest) >> 8), len(rest) & 0xFF]) + rest
 
 
 def test_multi_section_pat_waits_for_every_section(tmp_path: Path) -> None:
     """Finding 5: a program named in a later PAT section is still read."""
     audio_pmt = _psi(0x02, b"\xe1\x00\xf0\x00\x0f\xe1\x01\xf0\x00")
-    video_pmt = _psi(0x02, b"\xe2\x00\xf0\x00\x1b\xe2\x01\xf0\x00")
+    video_pmt = _psi(0x02, b"\xe2\x00\xf0\x00\x1b\xe2\x01\xf0\x00", extension=2)
     packets = [
         _ts_packet(0, _psi(0x00, b"\x00\x01\xf0\x00", number=0, last=1)),
         _ts_packet(0x1000, audio_pmt),
@@ -351,3 +363,55 @@ def _noise(seed: str) -> bytes:
         block = hashlib.sha256(block).digest()
         out += block
     return out[:2050]
+
+
+def _deep_inputs() -> dict[str, bytes]:
+    """Build deeply nested inputs for every container that nests.
+
+    Returns:
+        Name to file bytes.
+    """
+    from tests.media.test_detect_hardening import _deep_asf, _deep_avi
+
+    nested = box(TRACK_BOX, box(b"mdia", b""))
+    for _ in range(1100):
+        nested = box(b"moov", nested)
+    entry = b""
+    for _ in range(300):
+        entry = b"\xae" + _ebml_size(len(entry)) + entry
+    return {
+        "avi-strl": _deep_avi(1100),
+        "asf-extension": _deep_asf(1100),
+        "bmff-moov": ftyp("isom", ("isom",)) + nested,
+        "matroska-entries": matroska(
+            b"\x16\x54\xae\x6b" + _ebml_size(len(entry)) + entry
+        ),
+    }
+
+
+def _ebml_size(value: int) -> bytes:
+    """Encode an EBML data size in eight bytes.
+
+    Args:
+        value: The size.
+
+    Returns:
+        The VINT.
+    """
+    return (0x01 << 56 | value).to_bytes(8, "big")
+
+
+@pytest.mark.parametrize(
+    "name", ["avi-strl", "asf-extension", "bmff-moov", "matroska-entries"]
+)
+def test_deep_nesting_prefixes_are_safe(tmp_path: Path, name: str) -> None:
+    """Deep nesting, whole and cut every 97 bytes, never raises."""
+    data = _deep_inputs()[name]
+    target = tmp_path / "deep.bin"
+
+    for length in [*range(0, len(data), 97), len(data)]:
+        target.write_bytes(data[:length])
+        assert_that(detect(target).media_type).described_as(f"{name}[:{length}]").is_in(
+            None,
+            MediaType.VIDEO,
+        )

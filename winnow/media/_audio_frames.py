@@ -19,7 +19,7 @@ from typing import Final
 MIN_FRAMES: Final[int] = 3
 """Consecutive valid frames needed to recognise an elementary stream."""
 
-MAX_ID3_TAGS: Final[int] = 4
+MAX_ID3_TAGS: Final[int] = 64
 """ID3v2 tags skipped in a row before giving up."""
 
 FrameLength = Callable[[bytes], int | None]
@@ -158,6 +158,82 @@ def dts_frame_length(header: bytes) -> int | None:
     return fsize + 1 if fsize >= _DTS_MIN_FSIZE else None
 
 
+def dts_le_frame_length(header: bytes) -> int | None:
+    """Return a little-endian 16-bit DTS core frame's length.
+
+    The same frame as :func:`dts_frame_length` with each 16-bit word byte
+    swapped (sync ``FE 7F 01 80``; ETSI TS 102 114, 5.3.1 and annex D).
+
+    Args:
+        header: At least eight bytes at the frame start.
+
+    Returns:
+        The frame length in bytes, or ``None`` when a field is invalid.
+    """
+    if len(header) < _DTS_HEADER:
+        return None
+    swapped = bytes(header[i ^ 1] for i in range(_DTS_HEADER))
+    return dts_frame_length(swapped)
+
+
+def dts14_be_frame_length(header: bytes) -> int | None:
+    """Return a 14-bit big-endian DTS core frame's length.
+
+    Each 16-bit word carries 14 bits of the stream (sync ``1F FF E8 00 07
+    Fx``; ETSI TS 102 114, annex D). The frame is 16/14 times its length
+    in the packed stream.
+
+    Args:
+        header: At least sixteen bytes at the frame start.
+
+    Returns:
+        The frame length in bytes, or ``None`` when a field is invalid.
+    """
+    return _dts14_frame_length(header, little=False)
+
+
+def dts14_le_frame_length(header: bytes) -> int | None:
+    """Return a 14-bit little-endian DTS core frame's length.
+
+    As :func:`dts14_be_frame_length` with byte-swapped words (sync ``FF 1F
+    00 E8 Fx 07``).
+
+    Args:
+        header: At least sixteen bytes at the frame start.
+
+    Returns:
+        The frame length in bytes, or ``None`` when a field is invalid.
+    """
+    return _dts14_frame_length(header, little=True)
+
+
+def _dts14_frame_length(header: bytes, *, little: bool) -> int | None:
+    """Unpack 14-bit DTS words and read the core frame length.
+
+    Args:
+        header: At least sixteen bytes at the frame start.
+        little: Whether the 16-bit words are little-endian.
+
+    Returns:
+        The frame length in the file, or ``None`` when invalid.
+    """
+    if len(header) < _DTS14_HEADER:
+        return None
+    bits = 0
+    for index in range(0, _DTS14_HEADER, 2):
+        pair = header[index : index + 2]
+        word = int.from_bytes(pair, "little" if little else "big")
+        if (word >> 14) not in {0, 3}:
+            return None
+        bits = (bits << 14) | (word & 0x3FFF)
+    packed = bits.to_bytes(_DTS14_HEADER * 14 // 16, "big")
+    length = dts_frame_length(packed)
+    return None if length is None else length * 8 // 7
+
+
+_DTS14_HEADER: Final[int] = 16
+
+
 def frames_follow(
     data: bytes,
     offset: int,
@@ -229,7 +305,10 @@ __all__ = [
     "FrameLength",
     "ac3_frame_length",
     "adts_frame_length",
+    "dts14_be_frame_length",
+    "dts14_le_frame_length",
     "dts_frame_length",
+    "dts_le_frame_length",
     "frames_follow",
     "mpeg_audio_frame_length",
     "skip_id3v2",

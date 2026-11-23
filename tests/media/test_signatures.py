@@ -32,7 +32,9 @@ from tests.media.signature_support import (
     adts_frames,
     asf,
     avi,
+    dts14_frames,
     dts_frames,
+    dts_le_frames,
     eac3_frames,
     flv,
     id3v2,
@@ -54,7 +56,7 @@ AUDIO = MediaType.AUDIO
 VIDEO = MediaType.VIDEO
 
 _PCX = bytes([0x0A, 5, 1, 8]) + struct.pack("<4H", 0, 0, 31, 23) + b"\x00" * 116
-_SGI = b"\x01\xda\x01\x01" + struct.pack(">H", 3) + b"\x00" * 506
+_SGI = b"\x01\xda\x01\x01" + struct.pack(">4H", 3, 1, 1, 3) + b"\x00" * 500
 _TGA = (
     b"\x00\x00\x02"
     + b"\x00" * 15
@@ -63,6 +65,14 @@ _TGA = (
     + b"TRUEVISION-XFILE.\x00"
 )
 _SVG = b'<?xml version="1.0"?>\n<!-- c -->\n<!DOCTYPE svg [ <!ENTITY a "b"> ]>\n<svg/>'
+
+_ICO_ENTRY = (
+    b"\x00\x00\x02\x00\x01\x00"
+    + b"\x10\x10\x00\x00\x01\x00\x20\x00"
+    + struct.pack("<II", 40, 22)
+    + b"\x00" * 40
+)
+_FITS = (b"SIMPLE  =" + b" " * 20 + b"T").ljust(80) + b"END".ljust(80)
 
 _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("jpeg", b"\xff\xd8\xff\xe0\x00\x10JFIF\x00", "jpeg", IMAGE),
@@ -84,13 +94,13 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("webp", riff(b"RIFF", b"WEBP", b"VP8 "), "webp", IMAGE),
     (
         "ico",
-        b"\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00" + b"\x00" * 10,
+        _ICO_ENTRY.replace(b"\x00\x00\x02\x00", b"\x00\x00\x01\x00", 1),
         "ico",
         IMAGE,
     ),
     (
         "cur",
-        b"\x00\x00\x02\x00\x01\x00\x10\x10\x00\x00\x01\x00" + b"\x00" * 10,
+        _ICO_ENTRY,
         "ico",
         IMAGE,
     ),
@@ -105,8 +115,22 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("icns", b"icns" + struct.pack(">I", 8), "icns", IMAGE),
     ("exr", b"\x76\x2f\x31\x01\x02\x00\x00\x00", "openexr", IMAGE),
     ("sun", b"\x59\xa6\x6a\x95" + b"\x00" * 28, "sun-raster", IMAGE),
-    ("xbm", b"#define img_width 8\n#define img_height 1\n", "xbm", IMAGE),
+    (
+        "xbm",
+        b"#define img_width 8\n#define img_height 1\n"
+        b"static char img_bits[] = {0x00};\n",
+        "xbm",
+        IMAGE,
+    ),
     ("xpm", b'/* XPM */\nstatic char *x[] = {"1 1 1 1"};\n', "xpm", IMAGE),
+    ("xpm2", b"! XPM2\n1 1 1 1\na c #000000\na\n", "xpm", IMAGE),
+    ("eps", b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 1 1\n", "eps", IMAGE),
+    ("eps-dos", b"\xc5\xd0\xd3\xc6" + b"\x00" * 28, "eps", IMAGE),
+    ("xcf", b"gimp xcf v011\x00" + b"\x00" * 16, "xcf", IMAGE),
+    ("jpeg-xr", b"II\xbc\x01" + b"\x00" * 16, "jpeg-xr", IMAGE),
+    ("ilbm", b"FORM\x00\x00\x00\x04ILBM", "ilbm", IMAGE),
+    ("fits", _FITS, "fits", IMAGE),
+    ("djvu", b"AT&TFORM\x00\x00\x00\x10DJVUINFO", "djvu", IMAGE),
     ("svg", _SVG, "svg", IMAGE),
     ("tga", _TGA, "tga", IMAGE),
     ("wav", riff(b"RIFF", b"WAVE", b"fmt "), "wav", AUDIO),
@@ -116,6 +140,13 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("aifc", b"FORM\x00\x00\x00\x04AIFC", "aiff", AUDIO),
     ("flac", b"fLaC\x00\x00\x00\x22" + b"\x00" * 34, "flac", AUDIO),
     ("au", b".snd" + struct.pack(">5I", 24, 0, 3, 8000, 1), "au", AUDIO),
+    ("au-le", b"dns." + struct.pack("<5I", 24, 0, 3, 8000, 1), "au", AUDIO),
+    ("monkeys-audio", b"MAC \x96\x0f" + b"\x00" * 26, "monkeys-audio", AUDIO),
+    ("musepack-sv7", b"MP+\x07" + b"\x00" * 24, "musepack", AUDIO),
+    ("musepack-sv8", b"MPCKSH" + b"\x00" * 24, "musepack", AUDIO),
+    ("midi", b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60", "midi", AUDIO),
+    ("rmid", riff(b"RIFF", b"RMID", b"data"), "midi", AUDIO),
+    ("dv", b"\x1f\x07\x00\x3f" + b"\x00" * 76, "dv", VIDEO),
     ("caf", b"caff\x00\x01\x00\x00desc", "caf", AUDIO),
     (
         "wavpack",
@@ -145,6 +176,9 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("ac3", ac3_frames(), "ac3", AUDIO),
     ("eac3", eac3_frames(), "ac3", AUDIO),
     ("dts", dts_frames(), "dts", AUDIO),
+    ("dts-le", dts_le_frames(), "dts", AUDIO),
+    ("dts14-be", dts14_frames(), "dts", AUDIO),
+    ("dts14-le", dts14_frames(little=True), "dts", AUDIO),
 ]
 
 
@@ -438,10 +472,11 @@ def test_two_byte_ac3_sync_alone_is_not_audio(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("data", "container"),
     [
-        (riff(b"RIFF", b"RMID", b"data"), "riff"),
-        (b"FORM\x00\x00\x00\x04ILBM", "iff"),
+        (riff(b"RIFF", b"CDXA", b"data"), "riff"),
+        (riff(b"BW64", b"XXXX", b"data"), "riff"),
+        (b"FORM\x00\x00\x00\x048SVX", "iff"),
     ],
-    ids=["riff-rmid", "form-ilbm"],
+    ids=["riff-cdxa", "bw64-other", "form-8svx"],
 )
 def test_unlisted_form_type_is_unknown(
     tmp_path: Path, data: bytes, container: str

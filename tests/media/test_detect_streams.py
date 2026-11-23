@@ -234,7 +234,7 @@ def test_probe_that_cannot_start_is_unavailable(
         (b"\x1a\x45\xdf\xa3\x88\x42\x86\x81\x01", "matroska", "past the end"),
         (b"\x1a\x45\xdf\xa3\x84\x42\x86\x81\x01", "matroska", "no DocType"),
         (b"\x1a\x45\xdf\xa3\xff", "matroska", "EBML header size"),
-        (_ebml(extra=b"\x42\xf7\x81\x02"), "matroska", "EBML version 2"),
+        (_ebml(extra=b"\x42\xf7\x81\x02"), "matroska", "EBMLReadVersion 2"),
         (_ebml(extra=b"\x42\xf2\x81\x08"), "matroska", "EBMLMaxIDLength 8"),
         (_ebml(extra=b"\x42\xf3\x81\x09"), "matroska", "EBMLMaxSizeLength 9"),
         (b"\x1a\x45\xdf\xa3\x83\x42\x86\x85\x01", "matroska", "past the header"),

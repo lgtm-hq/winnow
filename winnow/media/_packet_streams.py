@@ -1,0 +1,328 @@
+"""Stream-type walks of tag, packet and page streams, for rule 4 (#393).
+
+FLV, MPEG program streams and Ogg have no single stream table up front:
+their streams show up in tags, packets and pages. The rules of
+:mod:`winnow.media._containers` apply: any video stream gives video; audio
+needs a complete list in which every stream is recognised. What counts as
+complete differs per format and is stated on each walk.
+"""
+
+from __future__ import annotations
+
+import struct
+from typing import Final
+
+from winnow.media._containers import (
+    AUDIO,
+    DATA,
+    VIDEO,
+    StreamList,
+    WalkBudget,
+)
+from winnow.media._detect_base import BudgetExceededError, Content
+
+# --- FLV (Adobe Flash Video File Format Specification 10.1, annex E) --------
+
+_FLV_AUDIO_TAG: Final[int] = 8
+_FLV_VIDEO_TAG: Final[int] = 9
+_FLV_SCRIPT_TAG: Final[int] = 18
+_FLV_TAG_HEADER: Final[int] = 11
+_FLV_PREVIOUS_SIZE: Final[int] = 4
+
+
+def flv_streams(content: Content) -> StreamList:
+    """Read FLV's header flags and the types of its tags (E.2, E.4.1).
+
+    ``TypeFlagsVideo`` or any video tag gives video. The header flags are
+    not trusted for audio: the list is complete only when the walk visits
+    every tag and ends exactly at the end of the file. Tag headers past the
+    opening bytes are read one by one, within the read budget and
+    :data:`~winnow.media._containers.MAX_CHUNKS`.
+
+    Args:
+        content: File content, ``FLV`` first.
+
+    Returns:
+        ``"video"`` when seen or flagged, ``"audio"`` for audio tags or the
+        audio flag, ``None`` for a tag of another type.
+    """
+    head = content.head
+    flags = head[4]
+    has_video = bool(flags & 0x01)
+    has_audio = bool(flags & 0x04)
+    has_other = False
+    budget = WalkBudget()
+    data_offset: int = struct.unpack_from(">I", head, 5)[0]
+    offset = data_offset + _FLV_PREVIOUS_SIZE
+    complete = False
+    while not has_video:
+        if offset == content.size:
+            complete = True
+            break
+        if offset + _FLV_TAG_HEADER > content.size or not budget.visit():
+            break
+        header = _tag_header(content, offset)
+        if header is None:
+            break
+        tag_type = header[0] & 0x1F
+        has_video = tag_type == _FLV_VIDEO_TAG
+        has_audio = has_audio or tag_type == _FLV_AUDIO_TAG
+        has_other = has_other or tag_type not in {
+            _FLV_AUDIO_TAG,
+            _FLV_VIDEO_TAG,
+            _FLV_SCRIPT_TAG,
+        }
+        size = int.from_bytes(header[1:4], "big")
+        offset += _FLV_TAG_HEADER + size + _FLV_PREVIOUS_SIZE
+    kinds: list[str | None] = []
+    if has_video:
+        kinds.append(VIDEO)
+    if has_audio:
+        kinds.append(AUDIO)
+    if has_other:
+        kinds.append(None)
+    return StreamList(kinds, complete)
+
+
+def _tag_header(content: Content, offset: int) -> bytes | None:
+    """Return the 11-byte FLV tag header at ``offset``.
+
+    Args:
+        content: File content.
+        offset: File offset of the tag.
+
+    Returns:
+        The header, or ``None`` when it is past the read budget.
+    """
+    if offset + _FLV_TAG_HEADER <= len(content.head):
+        return content.head[offset : offset + _FLV_TAG_HEADER]
+    try:
+        header = content.reader.read_at(offset, _FLV_TAG_HEADER)
+    except BudgetExceededError:
+        return None
+    return header if len(header) == _FLV_TAG_HEADER else None
+
+
+# --- MPEG program stream (ISO/IEC 13818-1, 2.5; ISO/IEC 11172-1) -------------
+
+_PACK_START: Final[int] = 0xBA
+_SYSTEM_HEADER: Final[int] = 0xBB
+_PROGRAM_END: Final[int] = 0xB9
+_PRIVATE_STREAM_1: Final[int] = 0xBD
+_DATA_STREAM_IDS: Final[frozenset[int]] = frozenset({0xBB, 0xBC, 0xBE, 0xBF})
+_MPEG2_PACK: Final[int] = 14
+_MPEG1_PACK: Final[int] = 12
+_PES_HEADER: Final[int] = 6
+
+
+def program_stream_streams(content: Content) -> StreamList:
+    """Read the stream IDs of the PES packets in an MPEG program stream.
+
+    ``E0``-``EF`` are video and ``C0``-``DF`` audio (13818-1, table 2-22).
+    In ``private_stream_1`` the first payload byte names a DVD substream:
+    ``80``-``8F`` AC-3 or DTS and ``A0``-``AF`` LPCM are audio, ``20``-``3F``
+    subpictures are data (DVD-Video, part 3).
+
+    A program stream has no stream list: packets interleave. The list counts
+    as complete only when a system header (2.5.3.5) gives ``video_bound``
+    0, so no video stream can follow, and the walk read every packet: it
+    reached the ``program_end_code`` or the exact end of the file. A cut,
+    corrupt bytes or the chunk cap leave it incomplete, keeping what was
+    found.
+
+    Args:
+        content: File content, a pack header first.
+
+    Returns:
+        The stream kinds of the packets read.
+    """
+    head = content.head
+    streams = StreamList()
+    budget = WalkBudget()
+    no_video = False
+    whole = False
+    offset = 0
+    while budget.visit():
+        if offset == len(head):
+            whole = offset == content.size
+            break
+        if offset + 4 > len(head) or head[offset : offset + 3] != b"\x00\x00\x01":
+            break
+        stream_id = head[offset + 3]
+        if stream_id == _PROGRAM_END:
+            whole = True
+            break
+        if stream_id == _PACK_START:
+            length = _pack_header_length(head, offset)
+            if length is None:
+                break
+            offset += length
+            continue
+        if offset + _PES_HEADER > len(head):
+            break
+        if stream_id == _SYSTEM_HEADER and offset + 11 <= len(head):
+            no_video = head[offset + 10] & 0x1F == 0
+        packet_length: int = struct.unpack_from(">H", head, offset + 4)[0]
+        streams.kinds.append(_pes_kind(head, offset, stream_id))
+        offset += _PES_HEADER + packet_length
+    streams.complete = no_video and whole
+    return streams
+
+
+def _pack_header_length(head: bytes, offset: int) -> int | None:
+    """Return the length of the pack header at ``offset``.
+
+    Args:
+        head: Bytes read.
+        offset: Offset of the pack start code.
+
+    Returns:
+        14 plus stuffing for MPEG-2, 12 for MPEG-1, ``None`` for another
+        marker or a header cut by the bytes read.
+    """
+    if offset + 5 > len(head):
+        return None
+    marker = head[offset + 4]
+    if marker >> 6 == 0b01 and offset + _MPEG2_PACK <= len(head):
+        return _MPEG2_PACK + (head[offset + 13] & 0x7)
+    if marker >> 4 == 0b0010 and offset + _MPEG1_PACK <= len(head):
+        return _MPEG1_PACK
+    return None
+
+
+def _pes_kind(head: bytes, offset: int, stream_id: int) -> str | None:
+    """Classify one PES packet by its stream ID.
+
+    Args:
+        head: Bytes read.
+        offset: Offset of the packet start code.
+        stream_id: The packet's stream ID.
+
+    Returns:
+        The stream kind, or ``None`` when unrecognised.
+    """
+    if 0xE0 <= stream_id <= 0xEF:
+        return VIDEO
+    if 0xC0 <= stream_id <= 0xDF:
+        return AUDIO
+    if stream_id in _DATA_STREAM_IDS:
+        return DATA
+    if stream_id == _PRIVATE_STREAM_1:
+        return _dvd_substream_kind(head, offset)
+    return None
+
+
+def _dvd_substream_kind(head: bytes, offset: int) -> str | None:
+    """Classify a ``private_stream_1`` packet by its DVD substream ID.
+
+    Only an MPEG-2 PES header (marker bits ``10``, 13818-1 2.4.3.7) has
+    the ``PES_header_data_length`` this reads.
+
+    Args:
+        head: Bytes read.
+        offset: Offset of the packet start code.
+
+    Returns:
+        The stream kind, or ``None`` when unrecognised.
+    """
+    if offset + 9 > len(head) or head[offset + 6] >> 6 != 0b10:
+        return None
+    payload = offset + 9 + head[offset + 8]
+    if payload >= len(head):
+        return None
+    substream = head[payload]
+    if 0x80 <= substream <= 0x8F or 0xA0 <= substream <= 0xAF:
+        return AUDIO
+    if 0x20 <= substream <= 0x3F:
+        return DATA
+    return None
+
+
+def mpeg_video_sequence(head: bytes) -> bool:
+    """Check an MPEG-1/2 video sequence header (ISO/IEC 13818-2, 6.2.2.1).
+
+    Args:
+        head: The file's opening bytes.
+
+    Returns:
+        ``True`` for ``00 00 01 B3`` with a non-zero picture size, a valid
+        aspect ratio and a valid frame rate code.
+    """
+    if len(head) < 12 or head[:4] != b"\x00\x00\x01\xb3":
+        return False
+    width = (head[4] << 4) | (head[5] >> 4)
+    height = ((head[5] & 0x0F) << 8) | head[6]
+    aspect = head[7] >> 4
+    rate = head[7] & 0x0F
+    return width > 0 and height > 0 and 1 <= aspect <= 14 and 1 <= rate <= 8
+
+
+# --- Ogg (RFC 3533) ---------------------------------------------------------
+
+OGG_CODECS: Final[tuple[tuple[bytes, str], ...]] = (
+    (b"\x01vorbis", AUDIO),  # Vorbis I specification, 4.2.1
+    (b"OpusHead", AUDIO),  # RFC 7845, 5.1
+    (b"\x7fFLAC", AUDIO),  # FLAC-to-Ogg mapping, RFC 9639 section 10.1
+    (b"Speex   ", AUDIO),  # Speex manual, Ogg mapping
+    (b"\x80theora", VIDEO),  # Theora specification, 6.2
+    (b"OVP80", VIDEO),  # VP8-in-Ogg mapping (Xiph wiki OggVP8)
+    (b"BBCD\x00", VIDEO),  # Dirac-in-Ogg mapping
+    (b"fishead\x00", DATA),  # Ogg Skeleton 3/4: an index, not media
+)
+"""First-packet prefixes of the Ogg codec mappings."""
+
+_OGG_PAGE_HEADER: Final[int] = 27
+_OGG_BOS: Final[int] = 0x02
+
+
+def ogg_streams(content: Content) -> StreamList:
+    """Read the first packet of every beginning-of-stream page.
+
+    RFC 3533, section 4: every logical stream's BOS page comes before any
+    other page, so the list is complete once a page that is not a BOS page
+    is reached. A BOS page cut by the bytes read ends the walk incomplete,
+    keeping the streams already found.
+
+    Args:
+        content: File content, ``OggS`` first.
+
+    Returns:
+        The streams in file order.
+    """
+    head = content.head
+    streams = StreamList()
+    budget = WalkBudget()
+    offset = 0
+    while offset + _OGG_PAGE_HEADER <= len(head) and budget.visit():
+        page = head[offset : offset + _OGG_PAGE_HEADER]
+        if page[:4] != b"OggS" or page[4] != 0:
+            break
+        if not page[5] & _OGG_BOS:
+            streams.complete = bool(streams.kinds)
+            break
+        segments = page[26]
+        body = offset + _OGG_PAGE_HEADER + segments
+        table = head[offset + _OGG_PAGE_HEADER : body]
+        if len(table) < segments:
+            break
+        packet = 0
+        for lacing in table:
+            packet += lacing
+            if lacing < 255:
+                break
+        first = head[body : body + packet]
+        kind = next((k for prefix, k in OGG_CODECS if first.startswith(prefix)), None)
+        if kind is None and body + packet > len(head):
+            break
+        streams.kinds.append(kind)
+        offset = body + sum(table)
+    return streams
+
+
+__all__ = [
+    "OGG_CODECS",
+    "flv_streams",
+    "mpeg_video_sequence",
+    "ogg_streams",
+    "program_stream_streams",
+]

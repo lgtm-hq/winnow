@@ -13,8 +13,8 @@ import re
 import struct
 from typing import Final
 
-from winnow.media._containers import mpeg_video_sequence
 from winnow.media._detect_base import Content
+from winnow.media._packet_streams import mpeg_video_sequence
 
 TEXT_BYTES: Final[int] = 8 * 1024
 """Opening bytes checked when deciding whether a file is plain text."""
@@ -55,6 +55,9 @@ _DIB_SIZES: Final[frozenset[int]] = frozenset({12, 16, 40, 52, 56, 64, 108, 124}
 def ico(content: Content) -> bool:
     """ICONDIR type 1 (icon) or 2 (cursor) with a valid first entry.
 
+    The first ICONDIRENTRY has a zero reserved byte, a positive
+    ``dwBytesInRes``, and an image offset past the directory.
+
     Args:
         content: File content.
 
@@ -64,7 +67,13 @@ def ico(content: Content) -> bool:
     head = content.head
     if len(head) < 22 or head[:2] != b"\x00\x00" or _u16le(head, 2) not in {1, 2}:
         return False
-    return _u16le(head, 4) >= 1 and head[9] == 0
+    count = _u16le(head, 4)
+    return (
+        count >= 1
+        and head[9] == 0
+        and _u32le(head, 14) > 0
+        and _u32le(head, 18) >= 6 + 16 * count
+    )
 
 
 def pcx(content: Content) -> bool:
@@ -96,10 +105,21 @@ def sgi(content: Content) -> bool:
         Whether the file is an SGI image.
     """
     head = content.head
-    if len(head) < 12 or head[:2] != b"\x01\xda":
+    if len(head) < _SGI_HEADER or head[:2] != b"\x01\xda":
         return False
-    dimension: int = struct.unpack_from(">H", head, 4)[0]
-    return head[2] in {0, 1} and head[3] in {1, 2} and dimension in {1, 2, 3}
+    fields: tuple[int, ...] = struct.unpack_from(">3H", head, 4)
+    dimension, width, height = fields
+    return (
+        head[2] in {0, 1}
+        and head[3] in {1, 2}
+        and dimension in {1, 2, 3}
+        and width > 0
+        and (height > 0 or dimension == 1)
+    )
+
+
+_SGI_HEADER: Final[int] = 512
+"""An SGI file starts with a 512-byte header."""
 
 
 _NETPBM_FIELDS: Final[dict[bytes, int]] = {
@@ -157,11 +177,17 @@ def netpbm(content: Content) -> bool:
     return width > 0 and height > 0 and maxval_ok
 
 
-_XBM: Final[re.Pattern[bytes]] = re.compile(rb"#define[ \t]+\w*width[ \t]+[0-9]+")
+_XBM: Final[re.Pattern[bytes]] = re.compile(
+    rb"#define[ \t]+(\w*)_width[ \t]+[0-9]{1,10}[ \t]*\r?\n"
+    rb"#define[ \t]+(\w*)_height[ \t]+[0-9]{1,10}",
+)
 
 
 def xbm(content: Content) -> bool:
-    """X11 bitmap: ``#define <name>_width <n>`` first (X Window System, XBM).
+    """X11 bitmap (X Window System, Xlib ``XReadBitmapFile`` format).
+
+    The file starts with ``#define <name>_width <n>`` and
+    ``#define <name>_height <n>``, and holds a ``<name>_bits[]`` array.
 
     Args:
         content: File content.
@@ -169,7 +195,11 @@ def xbm(content: Content) -> bool:
     Returns:
         Whether the file is an XBM.
     """
-    return _XBM.match(content.head) is not None
+    match = _XBM.match(content.head)
+    if match is None or match.group(1) != match.group(2):
+        return False
+    bits = re.compile(rb"char[ \t]+" + re.escape(match.group(1)) + rb"_bits[ \t]*\[")
+    return bits.search(content.head, match.end()) is not None
 
 
 _XML_SKIPS: Final[tuple[tuple[bytes, bytes], ...]] = (
@@ -182,7 +212,7 @@ def svg(content: Content) -> bool:
     """SVG: an ``svg`` root element (W3C SVG 1.1, 5.1.1).
 
     An XML declaration, processing instructions, comments and a DOCTYPE
-    may come first.
+    may come first, anywhere in the opening bytes read.
 
     Args:
         content: File content.
@@ -190,7 +220,7 @@ def svg(content: Content) -> bool:
     Returns:
         Whether the document's root element is ``svg``.
     """
-    text = content.head[:TEXT_BYTES].removeprefix(b"\xef\xbb\xbf")
+    text = content.head.removeprefix(b"\xef\xbb\xbf")
     position = 0
     while True:
         position = len(text) - len(text[position:].lstrip())
@@ -308,18 +338,22 @@ def flac_at(data: bytes, offset: int) -> bool:
 
 
 def au(content: Content) -> bool:
-    """Sun/NeXT audio: ``.snd``, a data offset of at least 24, an encoding.
+    """Sun/NeXT audio: magic, a data offset of at least 24, an encoding.
+
+    Sun ``audio_filehdr``: ``.snd`` with big-endian fields, or ``dns.``
+    with little-endian fields as DEC systems wrote it.
 
     Args:
         content: File content.
 
     Returns:
-        Whether the file is an AU file (Sun ``audio_filehdr``).
+        Whether the file is an AU file.
     """
     head = content.head
-    if len(head) < 24 or head[:4] != b".snd":
+    order = {b".snd": ">", b"dns.": "<"}.get(head[:4])
+    if len(head) < 24 or order is None:
         return False
-    fields: tuple[int, ...] = struct.unpack_from(">5I", head, 4)
+    fields: tuple[int, ...] = struct.unpack_from(f"{order}5I", head, 4)
     offset, _, encoding, rate, channels = fields
     return offset >= 24 and 1 <= encoding <= 27 and rate > 0 and channels > 0
 
@@ -449,6 +483,150 @@ def mpeg_video(content: Content) -> bool:
     return mpeg_video_sequence(content.head)
 
 
+def eps(content: Content) -> bool:
+    """Encapsulated PostScript (Adobe Technical Note 5002, EPSF 3.0).
+
+    The DSC header line ``%!PS-Adobe-<n> EPSF-<n>`` (section 2), or the
+    DOS EPS binary header ``C5 D0 D3 C6`` (section 5).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is EPS.
+    """
+    head = content.head
+    if head.startswith(b"\xc5\xd0\xd3\xc6"):
+        return True
+    first_line = head[:256].split(b"\n", 1)[0].split(b"\r", 1)[0]
+    return first_line.startswith(b"%!PS-Adobe-") and b" EPSF-" in first_line
+
+
+def monkeys_audio(content: Content) -> bool:
+    """Monkey's Audio: ``MAC `` and a file version (APE_DESCRIPTOR/APE_HEADER).
+
+    Monkey's Audio SDK, ``APEInfo.h``: the version is 3.80 to 3.99 as
+    3800 to 3990 in old headers, or a later descriptor version.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is Monkey's Audio.
+    """
+    head = content.head
+    return len(head) >= 6 and head[:4] == b"MAC " and 1000 <= _u16le(head, 4) <= 9999
+
+
+def musepack(content: Content) -> bool:
+    """Musepack: SV7 ``MP+`` with stream version 7, or SV8 ``MPCK``.
+
+    Musepack SV7 header (stream version in the low nibble of byte 3) and
+    the SV8 specification (``MPCK`` then a two-letter packet key).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is Musepack.
+    """
+    head = content.head
+    if head[:3] == b"MP+" and len(head) >= 4:
+        return head[3] & 0x0F == 7
+    key = head[4:6]
+    return head[:4] == b"MPCK" and len(key) == 2 and key.isalpha() and key.isupper()
+
+
+_XCF: Final[re.Pattern[bytes]] = re.compile(rb"gimp xcf (file|v[0-9]{3})\x00")
+
+
+def xcf(content: Content) -> bool:
+    """GIMP XCF: ``gimp xcf file`` or ``gimp xcf v<NNN>`` then NUL.
+
+    GIMP ``devel-docs/xcf.txt``, section 2 (the header).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is XCF.
+    """
+    return _XCF.match(content.head) is not None
+
+
+def midi(content: Content) -> bool:
+    """Standard MIDI File: ``MThd``, header length 6, format 0 to 2.
+
+    MIDI Manufacturers Association, Standard MIDI Files 1.0, header chunk.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is a MIDI file.
+    """
+    head = content.head
+    if len(head) < 10 or head[:4] != b"MThd":
+        return False
+    return _u32be(head, 4) == 6 and head[8:10] in {
+        b"\x00\x00",
+        b"\x00\x01",
+        b"\x00\x02",
+    }
+
+
+def fits(content: Content) -> bool:
+    """FITS: the ``SIMPLE`` keyword with value ``T`` in column 30.
+
+    FITS Standard 4.0, section 4.4.1.1: the primary header's first card.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is FITS.
+    """
+    head = content.head
+    return head[:10] == b"SIMPLE  = " and head[29:30] == b"T"
+
+
+def djvu(content: Content) -> bool:
+    """DjVu: ``AT&T`` then an IFF ``FORM`` of a DjVu form type.
+
+    DjVu v3 specification, section 4: ``DJVU`` (single page), ``DJVM``
+    (multi-page), ``DJVI`` (shared data) or ``THUM`` (thumbnails).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is DjVu.
+    """
+    head = content.head
+    return head[:8] == b"AT&TFORM" and head[12:16] in {
+        b"DJVU",
+        b"DJVM",
+        b"DJVI",
+        b"THUM",
+    }
+
+
+def dv(content: Content) -> bool:
+    """Raw DV: a header-section DIF block first (IEC 61834-2, SMPTE 314M).
+
+    The DIF block ID ``1F 07 00`` (section type header, sequence 0, block
+    0), then the header byte: ``DSF`` (525/60 or 625/50) and six ones.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is a raw DV stream.
+    """
+    head = content.head
+    return head[:3] == b"\x1f\x07\x00" and head[3:4] in {b"\x3f", b"\xbf"}
+
+
 def is_text(head: bytes, *, size: int) -> bool:
     """Report whether the opening bytes are plain UTF-8 text.
 
@@ -484,6 +662,14 @@ _TEXT_CONTROLS: Final[bytes] = bytes(
 
 
 __all__ = [
+    "dv",
+    "djvu",
+    "fits",
+    "midi",
+    "xcf",
+    "musepack",
+    "monkeys_audio",
+    "eps",
     "TEXT_BYTES",
     "au",
     "bmp",

@@ -7,21 +7,28 @@ docstring of its check in :mod:`winnow.media._header_checks`, cites the
 format's specification). Entries are tried in table order and the first
 that matches decides. An entry either names the media type, takes it from a
 walk over the container's stream declarations
-(:mod:`winnow.media._containers`), or marks the format as non-media; a
+(:mod:`winnow.media._containers`, :mod:`winnow.media._packet_streams`), or
+marks the format as non-media; a
 non-media match is final, so a PDF named ``.jpg`` is not an image.
 
 After the table come the formats with no fixed header:
 
 * MPEG transport streams, by repeated sync bytes
   (:mod:`winnow.media._mpegts`);
-* elementary audio streams (MPEG audio, ADTS AAC, AC-3, E-AC-3, DTS), by
-  consecutive valid frame headers (:mod:`winnow.media._audio_frames`);
-* an ID3v2 tag, skipped by its synchsafe size, then FLAC or audio frames.
-  An ID3v2 tag followed by neither is only a hint, recorded in
+* elementary audio streams (MPEG audio, ADTS AAC, AC-3, E-AC-3, DTS in
+  its 16-bit and 14-bit forms of either byte order), by consecutive valid
+  frame headers (:mod:`winnow.media._audio_frames`);
+* ID3v2 tags, each skipped by its synchsafe size (only the 10-byte headers
+  are read), then FLAC or audio frames read once after the last tag. An
+  ID3v2 tag followed by neither is only a hint, recorded in
   :attr:`Content.hints`; it decides nothing.
 
-RIFF and IFF ``FORM`` files whose form type is not in the table are
-recognised but unknown.
+A container walk decides audio only from a complete stream list in which
+every stream is recognised; otherwise ffprobe is asked, and without it the
+answer is unknown with a signal saying why.
+
+RIFF, RF64, BW64 and IFF ``FORM`` files whose form type is not in the
+table are recognised but unknown.
 """
 
 from __future__ import annotations
@@ -36,7 +43,10 @@ from winnow.media._audio_frames import (
     FrameLength,
     ac3_frame_length,
     adts_frame_length,
+    dts14_be_frame_length,
+    dts14_le_frame_length,
     dts_frame_length,
+    dts_le_frame_length,
     frames_follow,
     mpeg_audio_frame_length,
     skip_id3v2,
@@ -46,10 +56,7 @@ from winnow.media._containers import (
     StreamList,
     asf_streams,
     avi_streams,
-    flv_streams,
     media_type_of,
-    ogg_streams,
-    program_stream_streams,
     realmedia_streams,
 )
 from winnow.media._detect_base import (
@@ -61,6 +68,11 @@ from winnow.media._detect_base import (
     evidence,
 )
 from winnow.media._mpegts import inspect_transport_stream
+from winnow.media._packet_streams import (
+    flv_streams,
+    ogg_streams,
+    program_stream_streams,
+)
 from winnow.media._stream_probe import probe_stream_types
 from winnow.models.media import MediaType
 
@@ -77,7 +89,7 @@ ID3_FRAME_BYTES: Final[int] = 64 * 1024
 """Bytes read after an ID3v2 tag to check the frames that follow it."""
 
 Matcher = Callable[[Content], bool]
-Walker = Callable[[bytes], StreamList]
+Walker = Callable[[Content], StreamList]
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,8 +204,17 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     # Sun rasterfile.h: RAS_MAGIC 0x59a66a95.
     Signature("sun-raster", _starts(b"\x59\xa6\x6a\x95"), MediaType.IMAGE),
     Signature("xbm", checks.xbm, MediaType.IMAGE),
-    # XPM manual (version 3.4), 2: the comment "/* XPM */" first.
-    Signature("xpm", _starts(b"/* XPM */"), MediaType.IMAGE),
+    # XPM manual (version 3.4), 2: the comment "/* XPM */" first; XPM2 files
+    # open with "! XPM2" (same manual, 1.2).
+    Signature("xpm", _starts(b"/* XPM */", b"! XPM2"), MediaType.IMAGE),
+    Signature("eps", checks.eps, MediaType.IMAGE),
+    Signature("xcf", checks.xcf, MediaType.IMAGE),
+    # ITU-T T.832 (JPEG XR), A.7.1: "II", 0xBC, FILE_VERSION_ID 1.
+    Signature("jpeg-xr", _starts(b"II\xbc\x01"), MediaType.IMAGE),
+    # EA IFF 85 and the ILBM specification: FORM type "ILBM" or "PBM ".
+    Signature("ilbm", _form(b"FORM", b"ILBM", b"PBM "), MediaType.IMAGE),
+    Signature("fits", checks.fits, MediaType.IMAGE),
+    Signature("djvu", checks.djvu, MediaType.IMAGE),
     Signature("svg", checks.svg, MediaType.IMAGE),
     Signature("tga", checks.tga, MediaType.IMAGE),
     # Audio.
@@ -211,6 +232,11 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("voc", checks.voc, MediaType.AUDIO),
     # RealAudio 3 to 5 header ".ra" FD (RealAudio file format, Helix DNA).
     Signature("realaudio", _starts(b".ra\xfd"), MediaType.AUDIO),
+    Signature("monkeys-audio", checks.monkeys_audio, MediaType.AUDIO),
+    Signature("musepack", checks.musepack, MediaType.AUDIO),
+    Signature("midi", checks.midi, MediaType.AUDIO),
+    # Microsoft RIFF MIDI: RIFF form type "RMID" around a Standard MIDI File.
+    Signature("midi", _form(b"RIFF", b"RMID"), MediaType.AUDIO),
     # Containers whose streams decide.
     # Microsoft AVI RIFF File Reference: RIFF form type "AVI ".
     Signature("avi", _form(b"RIFF", b"AVI "), streams=avi_streams, demuxer="avi"),
@@ -227,12 +253,14 @@ SIGNATURES: Final[tuple[Signature, ...]] = (
     Signature("mpeg-video", checks.mpeg_video, MediaType.VIDEO),
     # YUV4MPEG2 stream header "YUV4MPEG2 " (mjpegtools yuv4mpeg(5)).
     Signature("yuv4mpeg", _starts(b"YUV4MPEG2 "), MediaType.VIDEO),
+    Signature("dv", checks.dv, MediaType.VIDEO),
 )
 """winnow's signature table, tried in order; the first match decides."""
 
 _UNLISTED_FORMS: Final[tuple[tuple[bytes, str], ...]] = (
     (b"RIFF", "riff"),
     (b"RF64", "riff"),
+    (b"BW64", "riff"),
     (b"FORM", "iff"),
 )
 
@@ -241,6 +269,9 @@ _ELEMENTARY_AUDIO: Final[tuple[tuple[str, FrameLength], ...]] = (
     ("adts", adts_frame_length),
     ("ac3", ac3_frame_length),
     ("dts", dts_frame_length),
+    ("dts", dts_le_frame_length),
+    ("dts", dts14_be_frame_length),
+    ("dts", dts14_le_frame_length),
 )
 """Frame-based audio streams, each recognised by consecutive frames."""
 
@@ -285,7 +316,7 @@ def _outcome(signature: Signature, content: Content) -> Outcome:
         return decide(signature.container, None, "non-media signature")
     if signature.streams is None:
         return decide(signature.container, signature.media_type, "signature")
-    streams = signature.streams(content.head)
+    streams = signature.streams(content)
     names = {
         MediaType.VIDEO.value: MediaType.VIDEO,
         MediaType.AUDIO.value: MediaType.AUDIO,
@@ -305,16 +336,18 @@ def _outcome(signature: Signature, content: Content) -> Outcome:
         return decide(
             signature.container, media_type, reason, evidence=(*found, listed)
         )
-    if streams.complete:
+    unrecognised = None in streams.kinds
+    if streams.complete and not unrecognised:
         reason = "unknown unresolved: no audio or video stream established"
         return decide(signature.container, None, reason, evidence=(*found, listed))
     probe = probe_stream_types(content.descriptor, demuxer=signature.demuxer)
     probed = evidence(probe.detail, probe.media_type, source="track-handler")
     media_type = probe.media_type
+    why = "stream list incomplete" if not streams.complete else "unrecognised stream"
     if media_type is not None:
         reason = f"stream types {media_type.value} from ffprobe"
     elif not probe.available:
-        reason = "unknown unavailable: stream list incomplete, ffprobe needed"
+        reason = f"unknown unavailable: {why}, ffprobe needed"
     else:
         reason = "unknown unresolved: no audio or video stream established"
     found = (*found, listed, probed)
@@ -358,42 +391,43 @@ def _elementary_audio(
 def _after_id3(content: Content) -> Outcome | None:
     """Skip ID3v2 tags and recognise the audio after them.
 
+    Only each tag's 10-byte header is read to skip it; the bytes after the
+    last tag are read once.
+
     Args:
         content: File content.
 
     Returns:
         An audio outcome, or ``None`` with a hint recorded when the tag is
-        followed by no recognised audio.
+        followed by no recognised audio or lies past the read budget.
     """
     offset = 0
-    data = content.head
-    data_offset = 0
     tags = 0
-    while tags < MAX_ID3_TAGS:
-        after = skip_id3v2(data, offset - data_offset)
+    while tags < MAX_ID3_TAGS and offset < content.size:
+        header = _bytes_at(content, offset, _ID3_HEADER)
+        if header is None:
+            content.hints.append(evidence("hint=id3v2 tag past the read budget"))
+            return None
+        after = skip_id3v2(header, 0)
         if after is None:
             break
         tags += 1
-        offset = after + data_offset
-        if offset >= content.size:
-            break
-        if data_offset + len(data) < min(offset + ID3_FRAME_BYTES, content.size):
-            try:
-                data = content.reader.read_at(offset, ID3_FRAME_BYTES)
-            except BudgetExceededError:
-                content.hints.append(evidence("hint=id3v2 tag past the read budget"))
-                return None
-            data_offset = offset
+        offset += after
     if tags == 0:
         return None
+    window = min(ID3_FRAME_BYTES, max(content.size - offset, 0))
+    data = _bytes_at(content, offset, window)
+    if data is None:
+        content.hints.append(evidence("hint=id3v2 tag past the read budget"))
+        return None
     tag = evidence(f"id3v2 tags={tags} audio_offset={offset}")
-    if checks.flac_at(data, offset - data_offset):
+    if checks.flac_at(data, 0):
         return decide("flac", MediaType.AUDIO, "after id3v2", evidence=(tag,))
     audio = _elementary_audio(
         data,
         offset,
         size=content.size,
-        data_offset=data_offset,
+        data_offset=offset,
         found=(tag,),
         reason="consecutive frames after id3v2",
     )
@@ -402,6 +436,28 @@ def _after_id3(content: Content) -> Outcome | None:
             evidence("hint=id3v2 tag without audio frames after it", MediaType.AUDIO),
         )
     return audio
+
+
+_ID3_HEADER: Final[int] = 10
+
+
+def _bytes_at(content: Content, offset: int, length: int) -> bytes | None:
+    """Return the bytes at ``offset``, from the head when it holds them.
+
+    Args:
+        content: File content.
+        offset: File offset.
+        length: Bytes wanted; fewer come back at the end of the file.
+
+    Returns:
+        The bytes, or ``None`` when reading them would pass the budget.
+    """
+    if offset + length <= len(content.head):
+        return content.head[offset : offset + length]
+    try:
+        return content.reader.read_at(offset, length)
+    except BudgetExceededError:
+        return None
 
 
 __all__ = [

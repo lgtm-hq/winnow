@@ -43,6 +43,7 @@ _PAT_TABLE: Final[int] = 0x00
 _PMT_TABLE: Final[int] = 0x02
 _SECTION_HEADER: Final[int] = 3
 _CRC_BYTES: Final[int] = 4
+_STUFFING: Final[int] = 0xFF
 _DEMUXER: Final[str] = "mpegts"
 
 _VIDEO: Final[str] = "video"
@@ -120,25 +121,51 @@ REGISTERED_FORMATS: Final[dict[bytes, str]] = {
 """Registration-descriptor format identifiers that classify a stream."""
 
 
+Program = tuple[int, int]
+"""A program: its ``program_number`` and its PMT PID."""
+
+
 @dataclass(slots=True)
 class _Tables:
     """Program tables assembled from the packets read.
 
     Args:
-        pmt_pids: PMT PIDs the PAT names.
-        parsed_pmts: PMT PIDs whose section has been read.
-        streams: ``(stream_type, kind)`` of every elementary stream.
+        programs: Programs the PAT names, as ``(program_number, PMT PID)``;
+            several programs may share one PMT PID.
+        pmts: Streams of each program whose PMT has been read, as
+            ``(stream_type, kind)``.
         buffers: Partly assembled sections by PID.
         pat_sections: PAT ``section_number`` values read.
         pat_last: The PAT's ``last_section_number``, once a section is read.
     """
 
-    pmt_pids: set[int] = field(default_factory=set)
-    parsed_pmts: set[int] = field(default_factory=set)
-    streams: list[tuple[int, str | None]] = field(default_factory=list)
+    programs: set[Program] = field(default_factory=set)
+    pmts: dict[Program, list[tuple[int, str | None]]] = field(default_factory=dict)
     buffers: dict[int, bytes] = field(default_factory=dict)
     pat_sections: set[int] = field(default_factory=set)
     pat_last: int | None = None
+
+    @property
+    def pids(self) -> set[int]:
+        """Return the PMT PIDs the PAT names.
+
+        Returns:
+            The PIDs.
+        """
+        return {pid for _, pid in self.programs}
+
+    @property
+    def streams(self) -> list[tuple[int, str | None]]:
+        """Return the streams of the PAT's programs whose PMT was read.
+
+        Returns:
+            ``(stream_type, kind)`` of every elementary stream found.
+        """
+        return [
+            stream
+            for program in sorted(self.programs)
+            for stream in self.pmts.get(program, [])
+        ]
 
     @property
     def pat_read(self) -> bool:
@@ -153,14 +180,12 @@ class _Tables:
 
     @property
     def complete(self) -> bool:
-        """Report whether the PAT and every PMT it names were read.
+        """Report whether the PAT and the PMT of every program were read.
 
         Returns:
             ``True`` once all program tables are known.
         """
-        return (
-            self.pat_read and bool(self.pmt_pids) and self.pmt_pids <= self.parsed_pmts
-        )
+        return self.pat_read and bool(self.programs) and self.programs <= set(self.pmts)
 
 
 def layout(head: bytes, size: int) -> tuple[int, int] | None:
@@ -187,6 +212,9 @@ def layout(head: bytes, size: int) -> tuple[int, int] | None:
 def inspect_transport_stream(content: Content) -> Outcome | None:
     """Recognise a transport stream and establish its media type.
 
+    Any video stream in the PMTs read gives video, even before every table
+    is read. Audio needs every program's PMT, with every stream recognised.
+
     Args:
         content: The file's opening bytes and open descriptor.
 
@@ -202,22 +230,29 @@ def inspect_transport_stream(content: Content) -> Outcome | None:
     tables = _read_tables(content.head, start=start, stride=stride)
     signals: tuple[TypeSignal, ...] = (sync, *_stream_signals(tables))
     kinds = [kind for _, kind in tables.streams]
-    if tables.complete and _VIDEO in kinds:
+    if _VIDEO in kinds:
         return decide(container, MediaType.VIDEO, "pmt video stream", evidence=signals)
-    if tables.complete and _AUDIO in kinds and None not in kinds:
+    recognised = bool(kinds) and None not in kinds
+    if tables.complete and recognised and _AUDIO in kinds:
         return decide(
             container,
             MediaType.AUDIO,
             "pmt audio streams without video",
             evidence=signals,
         )
-    if tables.complete and kinds and None not in kinds:
+    if tables.complete and recognised:
         return decide(
             container,
             None,
             "unknown unresolved: pmt lists no audio or video stream",
             evidence=signals,
         )
+    if not tables.complete:
+        why = "program tables incomplete"
+    elif kinds:
+        why = "unrecognised stream type"
+    else:
+        why = "pmt lists no streams"
     probe = probe_stream_types(content.descriptor, demuxer=_DEMUXER)
     probed = (
         *signals,
@@ -226,7 +261,7 @@ def inspect_transport_stream(content: Content) -> Outcome | None:
     if probe.media_type is not None:
         reason = f"stream types {probe.media_type.value} from ffprobe"
     elif not probe.available:
-        reason = "unknown unavailable: program tables incomplete, ffprobe needed"
+        reason = f"unknown unavailable: {why}, ffprobe needed"
     else:
         reason = "unknown unresolved: no audio or video stream established"
     return decide(container, probe.media_type, reason, evidence=probed)
@@ -275,14 +310,22 @@ def _read_tables(head: bytes, *, start: int, stride: int) -> _Tables:
 
 
 def _feed_packet(tables: _Tables, packet: bytes) -> None:
-    """Add one transport packet's payload to the section being assembled.
+    """Add one transport packet's payload to the sections being assembled.
+
+    Packets with ``transport_error_indicator`` set, or scrambled
+    (``transport_scrambling_control`` not 0), are skipped (13818-1,
+    2.4.3.3). When a section starts mid-packet, the bytes before
+    ``pointer_field`` finish the previous section first; more than one
+    section may follow in the same packet.
 
     Args:
         tables: Tables being assembled.
         packet: One 188-byte transport packet.
     """
+    if packet[1] & 0x80 or packet[3] >> 6:
+        return
     pid = ((packet[1] & 0x1F) << 8) | packet[2]
-    if pid != _PAT_PID and pid not in tables.pmt_pids:
+    if pid != _PAT_PID and pid not in tables.pids:
         return
     unit_start = bool(packet[1] & 0x40)
     control = (packet[3] >> 4) & 0x3
@@ -292,30 +335,63 @@ def _feed_packet(tables: _Tables, packet: bytes) -> None:
     if control in {0, 2} or payload_at >= PACKET_BYTES:
         return
     payload = packet[payload_at:]
-    if unit_start:
-        pointer = payload[0]
-        tables.buffers[pid] = payload[1 + pointer :]
-    elif pid in tables.buffers:
-        tables.buffers[pid] += payload
-    else:
+    if not unit_start:
+        if pid in tables.buffers:
+            tables.buffers[pid] += payload
+            _drain(tables, pid)
         return
-    section = tables.buffers[pid]
-    if len(section) < _SECTION_HEADER:
+    pointer = payload[0]
+    if pid in tables.buffers:
+        tables.buffers[pid] += payload[1 : 1 + pointer]
+        _drain(tables, pid)
+    tables.buffers[pid] = payload[1 + pointer :]
+    _drain(tables, pid)
+
+
+def _drain(tables: _Tables, pid: int) -> None:
+    """Handle every whole section waiting in a PID's buffer.
+
+    Args:
+        tables: Tables being assembled.
+        pid: The PID whose buffer to drain.
+    """
+    while True:
+        section = tables.buffers.get(pid, b"")
+        if len(section) < _SECTION_HEADER:
+            return
+        if section[0] == _STUFFING:
+            del tables.buffers[pid]
+            return
+        length = _SECTION_HEADER + (((section[1] & 0x0F) << 8) | section[2])
+        if len(section) < length:
+            return
+        tables.buffers[pid] = section[length:]
+        _handle_section(tables, pid, section[:length])
+
+
+def _handle_section(tables: _Tables, pid: int, section: bytes) -> None:
+    """Read one whole PAT or PMT section.
+
+    Sections with ``current_next_indicator`` 0 describe a future table and
+    are ignored (13818-1, 2.4.4.5).
+
+    Args:
+        tables: Tables being assembled.
+        pid: The PID it arrived on.
+        section: The section, CRC included.
+    """
+    if len(section) < 8 + _CRC_BYTES or not section[5] & 0x01:
         return
-    length = _SECTION_HEADER + (((section[1] & 0x0F) << 8) | section[2])
-    if len(section) < length:
-        return
-    del tables.buffers[pid]
-    body = section[:length]
-    if pid == _PAT_PID and body[0] == _PAT_TABLE:
-        _read_pat(tables, body)
-    elif pid in tables.pmt_pids and body[0] == _PMT_TABLE:
-        _read_pmt(tables, body)
-        tables.parsed_pmts.add(pid)
+    if pid == _PAT_PID and section[0] == _PAT_TABLE:
+        _read_pat(tables, section)
+    elif section[0] == _PMT_TABLE:
+        program = ((section[3] << 8) | section[4], pid)
+        if program in tables.programs and program not in tables.pmts:
+            tables.pmts[program] = _read_pmt(section)
 
 
 def _read_pat(tables: _Tables, section: bytes) -> None:
-    """Read the PMT PIDs from a PAT section (13818-1, 2.4.4.3).
+    """Read the programs from a PAT section (13818-1, 2.4.4.3).
 
     A PAT may span several sections; each records its ``section_number``
     and the ``last_section_number``, so the PAT counts as read only once
@@ -325,34 +401,36 @@ def _read_pat(tables: _Tables, section: bytes) -> None:
         tables: Tables being assembled.
         section: The whole section, CRC included.
     """
-    if len(section) < 8 + _CRC_BYTES:
-        return
     tables.pat_sections.add(section[6])
     tables.pat_last = section[7]
     for index in range(8, len(section) - _CRC_BYTES - 3, 4):
         program = (section[index] << 8) | section[index + 1]
         pid = ((section[index + 2] & 0x1F) << 8) | section[index + 3]
         if program != 0:
-            tables.pmt_pids.add(pid)
+            tables.programs.add((program, pid))
 
 
-def _read_pmt(tables: _Tables, section: bytes) -> None:
+def _read_pmt(section: bytes) -> list[tuple[int, str | None]]:
     """Read the elementary streams of a PMT section (13818-1, 2.4.4.8).
 
     Args:
-        tables: Tables being assembled.
         section: The whole section, CRC included.
+
+    Returns:
+        ``(stream_type, kind)`` of each stream.
     """
+    streams: list[tuple[int, str | None]] = []
     end = len(section) - _CRC_BYTES
     if end < 12:
-        return
+        return streams
     index = 12 + (((section[10] & 0x0F) << 8) | section[11])
     while index + 5 <= end:
         stream_type = section[index]
         info = ((section[index + 3] & 0x0F) << 8) | section[index + 4]
         descriptors = section[index + 5 : min(index + 5 + info, end)]
-        tables.streams.append((stream_type, classify_stream(stream_type, descriptors)))
+        streams.append((stream_type, classify_stream(stream_type, descriptors)))
         index += 5 + info
+    return streams
 
 
 def classify_stream(stream_type: int, descriptors: bytes) -> str | None:

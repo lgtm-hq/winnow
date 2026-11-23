@@ -6,6 +6,7 @@ each walk knows it read the whole list, and what happens when it did not.
 
 from __future__ import annotations
 
+import io
 import struct
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
+from tests.media.detect_support import content_of
 from tests.media.ebml_support import (
     INFO,
     SEEK,
@@ -25,10 +27,16 @@ from tests.media.ebml_support import (
     matroska,
 )
 from tests.media.signature_support import avi, riff, riff_chunk
-from winnow.media import _containers, _stream_probe
+from winnow.media import _containers, _matroska_tracks, _stream_probe
 from winnow.media._containers import asf_streams, avi_streams, realmedia_streams
 from winnow.media._detect import DetectionResult, detect
+from winnow.media._detect_base import MalformedError as _MalformedError
+from winnow.media._detect_base import Reader as _Reader
 from winnow.media._ffprobe import BoundedRun
+from winnow.media._packet_streams import flv_streams as _flv_streams
+from winnow.media._packet_streams import (
+    program_stream_streams as _program_stream_streams,
+)
 from winnow.models.media import MediaType
 
 
@@ -175,7 +183,7 @@ def _extension(*objects: bytes) -> bytes:
 )
 def test_asf_stream_list(data: bytes, kinds: list[str], complete: bool) -> None:
     """Every stream an Extended Stream Properties declares must be typed."""
-    streams = asf_streams(data)
+    streams = asf_streams(content_of(data))
 
     assert_that(streams.kinds).is_equal_to(kinds)
     assert_that(streams.complete).is_equal_to(complete)
@@ -187,7 +195,7 @@ def test_avi_movi_before_hdrl_is_incomplete() -> None:
         b"RIFF", b"AVI ", riff_chunk(b"LIST", b"movi") + riff_chunk(b"LIST", b"hdrl")
     )
 
-    streams = avi_streams(data)
+    streams = avi_streams(content_of(data))
 
     assert_that(streams.kinds).is_empty()
     assert_that(streams.complete).is_false()
@@ -201,7 +209,7 @@ def test_avi_chunk_cap_makes_the_list_incomplete(
     """A walk stopped by the chunk cap is incomplete."""
     monkeypatch.setattr(_containers, "MAX_CHUNKS", cap)
 
-    streams = avi_streams(avi(b"auds", b"auds", b"auds"))
+    streams = avi_streams(content_of(avi(b"auds", b"auds", b"auds")))
 
     assert_that(streams.complete).is_false()
 
@@ -217,7 +225,7 @@ def test_avi_chunk_cap_inside_a_stream_list(monkeypatch: pytest.MonkeyPatch) -> 
     )
     data = riff(b"RIFF", b"AVI ", riff_chunk(b"LIST", b"hdrl" + strl))
 
-    assert_that(avi_streams(data).complete).is_false()
+    assert_that(avi_streams(content_of(data)).complete).is_false()
 
 
 def test_short_pat_section_is_ignored(
@@ -247,7 +255,7 @@ def test_realmedia_chunk_smaller_than_its_header_stops() -> None:
         + struct.pack(">IH", 4, 0)
     )
 
-    assert_that(realmedia_streams(data).complete).is_false()
+    assert_that(realmedia_streams(content_of(data)).complete).is_false()
 
 
 def _detect_bytes(tmp_path: Path, data: bytes, name: str) -> DetectionResult:
@@ -361,5 +369,95 @@ def test_tracks_of_unknown_size_is_malformed(
 
     assert_that(result.media_type).is_none()
     assert_that([s.detail for s in result.signals]).contains(
-        "tracks=unresolved malformed: master element of unknown size",
+        "tracks=unresolved malformed: unknown size outside Segment and Cluster",
+    )
+
+
+# --- remaining edges of the second review's changes ---------------------------
+
+
+def test_flv_tag_header_past_the_read_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag header the budget cannot reach ends the FLV walk incomplete."""
+    monkeypatch.setattr(_stream_probe, "find_binary", lambda _: None)
+    monkeypatch.setattr("winnow.media._detect.SIGNATURE_BYTES_READ", 64 * 1024 + 40)
+    script = b"\x12" + (70_000).to_bytes(3, "big") + b"\x00" * 7 + b"\x00" * 70_000
+    data = b"FLV\x01\x04" + struct.pack(">I", 9) + b"\x00" * 4 + script + b"\x00" * 4
+    data += b"\x08\x00\x00\x08" + b"\x00" * 15
+
+    result = _detect_bytes(tmp_path, data, "x.flv")
+
+    assert_that(result.media_type).is_none()
+    assert_that([s.detail for s in result.signals]).contains("streams=incomplete")
+
+
+def test_flv_unknown_tag_type_is_unrecognised(tmp_path: Path) -> None:
+    """A tag type the specification does not define is not audio."""
+    tag = b"\x0f\x00\x00\x08" + b"\x00" * 7 + b"\x00" * 8 + struct.pack(">I", 19)
+    data = b"FLV\x01\x04" + struct.pack(">I", 9) + b"\x00" * 4 + tag
+
+    streams = _flv_streams(content_of(data))
+
+    assert_that(streams.kinds).is_equal_to(["audio", None])
+    assert_that(streams.complete).is_true()
+
+
+def test_program_stream_pack_start_at_the_very_end() -> None:
+    """A pack start code in the last four bytes ends the walk incomplete."""
+    data = (
+        b"\x00\x00\x01\xba\x44\x00\x04\x00\x04\x01\x01\x89\xc3\xf8"
+        + b"\x00\x00\x01\xba"
+    )
+
+    assert_that(_program_stream_streams(content_of(data)).complete).is_false()
+
+
+def test_ts_pmt_without_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PMT too short to list a stream leaves complete tables with none."""
+    monkeypatch.setattr(_stream_probe, "find_binary", lambda _: None)
+    pat = b"\x00\xb0\x0d\x00\x01\xc1\x00\x00\x00\x01\xe1\x00" + b"\x00" * 4
+    pmt = b"\x02\xb0\x09\x00\x01\xc1\x00\x00" + b"\x00" * 4
+    packets = [
+        b"\x47\x40\x00\x10\x00" + pat,
+        b"\x47\x41\x00\x10\x00" + pmt,
+    ]
+    packets = [p + b"\xff" * (188 - len(p)) for p in packets]
+    packets += [b"\x47\x1f\xff\x10" + b"\xff" * 184] * 5
+
+    result = _detect_bytes(tmp_path, b"".join(packets), "x.ts")
+
+    assert_that(result.media_type).is_none()
+    decisions = [s.detail for s in result.signals if s.detail.startswith("decision=")]
+    assert_that(decisions[0]).contains("pmt lists no streams")
+
+
+def test_matroska_master_of_unknown_size_is_refused() -> None:
+    """Reading a master element of unknown size is malformed."""
+    element = _matroska_tracks._Element(0x1654AE6B, 0, 12, None)
+    reader = _Reader(handle=io.BytesIO(b""), size=0, budget=64)
+
+    with pytest.raises(_MalformedError, match="unknown size"):
+        _matroska_tracks._read_master(reader, element)
+
+
+def test_second_id3_header_past_the_read_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ID3v2 header the budget cannot reach is a hint."""
+    from tests.media.signature_support import id3v2, mpeg_frames
+
+    monkeypatch.setattr("winnow.media._detect.SIGNATURE_BYTES_READ", 64 * 1024 + 40)
+    data = id3v2(70_000) + id3v2(8) + mpeg_frames()
+
+    result = _detect_bytes(tmp_path, data, "x.bin")
+
+    assert_that(result.media_type).is_none()
+    assert_that([s.detail for s in result.signals]).contains(
+        "hint=id3v2 tag past the read budget",
     )

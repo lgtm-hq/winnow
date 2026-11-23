@@ -1,12 +1,15 @@
 """Rule 3 of media-type detection: Matroska and WebM (#393).
 
 A file opening with the EBML magic ``1A 45 DF A3`` is claimed. Its EBML
-header is validated (RFC 8794, section 11.2: element IDs and sizes are
-variable-size integers, the header fits in the file, ``EBMLReadVersion`` is
-1, ``EBMLMaxIDLength`` and ``EBMLMaxSizeLength`` are within the RFC's
-limits) and its ``DocType`` must be ``matroska`` or ``webm`` (RFC 9559,
-section 4). Neither the magic nor the DocType says whether the file holds
-video, so the track types decide. They are read natively first
+header is validated against RFC 8794, section 11.2: element IDs and sizes
+are variable-size integers, the header fits in the file,
+``EBMLReadVersion`` is 1 (a reader gates on it, not on ``EBMLVersion``),
+and ``EBMLMaxIDLength`` and ``EBMLMaxSizeLength`` are within the RFC's
+limits. Its ``DocType`` must be ``matroska`` or ``webm`` (RFC 9559,
+section 4).
+
+Neither the magic nor the DocType says whether the file holds video, so
+the track types decide. They are read natively first
 (:mod:`winnow.media._matroska_tracks`: the ``TrackType`` of every
 ``TrackEntry`` in ``Tracks``). Only when that walk cannot settle the type
 (no ``Tracks`` found, a complex track, malformed or over-budget input) is
@@ -33,7 +36,6 @@ MAX_EBML_HEADER_BYTES: Final[int] = 4096
 MATROSKA_DOCTYPES: Final[frozenset[str]] = frozenset({"matroska", "webm"})
 """DocType values of Matroska (RFC 9559) and WebM."""
 
-_EBML_VERSION: Final[int] = 0x4286
 _EBML_READ_VERSION: Final[int] = 0x42F7
 _EBML_MAX_ID_LENGTH: Final[int] = 0x42F2
 _EBML_MAX_SIZE_LENGTH: Final[int] = 0x42F3
@@ -147,15 +149,14 @@ def _check_limit(element: int, payload: bytes) -> None:
         _EbmlError: When a value is outside what RFC 8794 allows readers.
     """
     if element not in {
-        _EBML_VERSION,
         _EBML_READ_VERSION,
         _EBML_MAX_ID_LENGTH,
         _EBML_MAX_SIZE_LENGTH,
     }:
         return
     value = int.from_bytes(payload, "big") if payload else 0
-    if element in {_EBML_VERSION, _EBML_READ_VERSION} and value != 1:
-        raise _EbmlError(f"EBML version {value}")
+    if element == _EBML_READ_VERSION and value != 1:
+        raise _EbmlError(f"EBMLReadVersion {value}")
     if element == _EBML_MAX_ID_LENGTH and not 4 <= value <= _MAX_ID_BYTES:
         raise _EbmlError(f"EBMLMaxIDLength {value}")
     if element == _EBML_MAX_SIZE_LENGTH and not 1 <= value <= _MAX_SIZE_BYTES:

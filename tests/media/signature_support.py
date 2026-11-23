@@ -92,6 +92,45 @@ def dts_frames(count: int = 3, *, length: int = 1024) -> bytes:
     return (header + b"\x00" * (length - len(header))) * count
 
 
+def dts_le_frames(count: int = 3) -> bytes:
+    """Build little-endian 16-bit DTS core frames (words byte swapped).
+
+    Args:
+        count: Number of frames.
+
+    Returns:
+        The frames.
+    """
+    data = dts_frames(count)
+    return b"".join(
+        data[i + 1 : i + 2] + data[i : i + 1] for i in range(0, len(data), 2)
+    )
+
+
+def dts14_frames(count: int = 3, *, little: bool = False) -> bytes:
+    """Build 14-bit DTS core frames: 14 stream bits per 16-bit word.
+
+    A 1,015-byte frame is 8,120 bits, exactly 580 words of 14 bits.
+
+    Args:
+        count: Number of frames.
+        little: Write the 16-bit words little-endian.
+
+    Returns:
+        The frames.
+    """
+    frame = dts_frames(1, length=1015)
+    bits = int.from_bytes(frame, "big")
+    total = len(frame) * 8
+    words = []
+    for index in range(total // 14):
+        chunk = (bits >> (total - 14 * (index + 1))) & 0x3FFF
+        words.append(chunk | (0xC000 if chunk & 0x2000 else 0))
+    if little:
+        return b"".join(word.to_bytes(2, "little") for word in words) * count
+    return b"".join(word.to_bytes(2, "big") for word in words) * count
+
+
 def id3v2(size: int, *, version: int = 3, footer: bool = False) -> bytes:
     """Build an ID3v2 tag of ``size`` payload bytes.
 

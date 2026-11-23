@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 
+from tests.media.detect_support import content_of
 from tests.media.signature_support import (
     VORBIS_ID,
     id3v2,
@@ -30,12 +31,11 @@ from winnow.media._containers import (
     ASF_HEADER,
     AUDIO,
     asf_streams,
-    ogg_streams,
-    program_stream_streams,
     realmedia_streams,
 )
 from winnow.media._detect import detect
 from winnow.media._detect_base import MalformedError, Reader
+from winnow.media._packet_streams import ogg_streams, program_stream_streams
 from winnow.models.media import MediaType
 
 # --- frame headers -----------------------------------------------------------
@@ -125,7 +125,7 @@ def test_id3_tag_filling_the_file_is_a_hint(tmp_path: Path) -> None:
 def test_too_many_id3_tags_stop_the_search(tmp_path: Path) -> None:
     """Only a bounded number of ID3v2 tags in a row are skipped."""
     target = tmp_path / "tags.bin"
-    target.write_bytes(id3v2(4) * 6 + mpeg_frames())
+    target.write_bytes(id3v2(4) * 65 + mpeg_frames())
 
     assert_that(detect(target).media_type).is_none()
 
@@ -135,14 +135,14 @@ def test_too_many_id3_tags_stop_the_search(tmp_path: Path) -> None:
 
 def test_asf_header_shorter_than_its_fixed_part() -> None:
     """An ASF GUID without the rest of the header lists no stream."""
-    assert_that(asf_streams(ASF_HEADER + b"\x00" * 4).kinds).is_empty()
+    assert_that(asf_streams(content_of(ASF_HEADER + b"\x00" * 4)).kinds).is_empty()
 
 
 def test_asf_object_smaller_than_its_header_stops_the_walk() -> None:
     """An object size below 24 bytes ends the walk."""
     header = ASF_HEADER + struct.pack("<Q", 200) + b"\x01\x00\x00\x00\x01\x02"
     assert_that(
-        asf_streams(header + b"\x00" * 16 + struct.pack("<Q", 8)).kinds
+        asf_streams(content_of(header + b"\x00" * 16 + struct.pack("<Q", 8))).kinds
     ).is_empty()
 
 
@@ -160,14 +160,14 @@ def test_realmedia_media_properties(body: bytes, expected: list[str | None]) -> 
     data = b".RMF" + struct.pack(">IH", 18, 0) + b"\x00" * 8
     data += b"MDPR" + struct.pack(">IH", 10 + len(body), 0) + body
 
-    assert_that(realmedia_streams(data).kinds).is_equal_to(expected)
+    assert_that(realmedia_streams(content_of(data)).kinds).is_equal_to(expected)
 
 
 def test_realmedia_without_data_chunk_ends_with_the_bytes() -> None:
     """The walk stops at the end of the bytes read."""
     data = b".RMF" + struct.pack(">IH", 18, 0) + b"\x00" * 8 + b"PROP"
 
-    assert_that(realmedia_streams(data).kinds).is_empty()
+    assert_that(realmedia_streams(content_of(data)).kinds).is_empty()
 
 
 def test_program_stream_mpeg1_pack(tmp_path: Path) -> None:
@@ -205,14 +205,14 @@ def test_program_stream_mpeg1_pack(tmp_path: Path) -> None:
 )
 def test_program_stream_packets(data: bytes, expected: list[str | None]) -> None:
     """Malformed or unrecognised packets give no or unknown streams."""
-    assert_that(program_stream_streams(data).kinds).is_equal_to(expected)
+    assert_that(program_stream_streams(content_of(data)).kinds).is_equal_to(expected)
 
 
 def test_ogg_cut_segment_table() -> None:
     """A BOS page whose segment table is cut lists no stream."""
     page = ogg_page(VORBIS_ID)
 
-    assert_that(ogg_streams(page[:27]).kinds).is_empty()
+    assert_that(ogg_streams(content_of(page[:27])).kinds).is_empty()
 
 
 def test_ogg_packet_spanning_full_segments() -> None:
@@ -222,7 +222,7 @@ def test_ogg_packet_spanning_full_segments() -> None:
     table_end = 27 + page[26]
     trimmed = page[:26] + bytes([2]) + b"\xff\xff" + page[table_end:]
 
-    assert_that(ogg_streams(trimmed).kinds).is_equal_to([AUDIO])
+    assert_that(ogg_streams(content_of(trimmed)).kinds).is_equal_to([AUDIO])
 
 
 # --- EBML and transport streams ------------------------------------------------

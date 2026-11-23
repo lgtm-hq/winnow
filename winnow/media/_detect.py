@@ -8,7 +8,9 @@
 2. **ISO-BMFF and QuickTime** (:mod:`winnow.media._detect_bmff`): brands,
    track handlers and Canon profiles from a bounded box walk.
 3. **Matroska and WebM** (:mod:`winnow.media._matroska`): a validated EBML
-   header, then stream types from ffprobe; without ffprobe, unknown.
+   header, then the ``TrackType`` of every track read natively
+   (:mod:`winnow.media._matroska_tracks`). Only when that walk cannot
+   settle the type is ffprobe asked; without it, unknown.
 4. **Signature table** (:mod:`winnow.media._signatures`): winnow's own
    table of the formats it recognises, non-media formats (PDF, ZIP)
    included, then MPEG transport streams (:mod:`winnow.media._mpegts`) and

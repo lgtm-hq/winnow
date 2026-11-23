@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import io
 import itertools
 import os
 import threading
@@ -16,6 +17,7 @@ from PIL import Image
 from tests.media.bmff_support import box, canon_uuid, ftyp, moov
 from winnow.media import service as service_module
 from winnow.media._detect import DetectionResult, TypeSignal, detect
+from winnow.media._detect_base import Content, Reader
 from winnow.media._ffprobe import FFMPEG as FFMPEG_NAME
 from winnow.media._ffprobe import FFPROBE as FFPROBE_NAME
 from winnow.media._ffprobe import find_binary, run_command
@@ -195,3 +197,23 @@ def record_dispatch(monkeypatch: pytest.MonkeyPatch) -> list[MediaType]:
         {media_type: _recorder(media_type) for media_type in MediaType},
     )
     return dispatched
+
+
+def content_of(data: bytes, *, head_bytes: int = 64 * 1024) -> Content:
+    """Wrap ``data`` as the content rules 3 and 4 inspect.
+
+    Args:
+        data: The whole file.
+        head_bytes: Opening bytes held as the head.
+
+    Returns:
+        Content over an in-memory file, with no descriptor for ffprobe.
+    """
+    reader = Reader(handle=io.BytesIO(data), size=len(data), budget=256 * 1024)
+    return Content(
+        head=data[:head_bytes],
+        tail=data[-32:],
+        size=len(data),
+        reader=reader,
+        descriptor=-1,
+    )
