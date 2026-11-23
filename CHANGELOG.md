@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.21] - 2026-11-23
+
+### Fixed
+
+- **ci**: use lgtm-ci egress presets where they do not widen access (#473) (e7986f1)
+
 ## [0.37.20] - 2026-11-23
 
 ### Fixed
