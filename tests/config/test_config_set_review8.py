@@ -78,6 +78,26 @@ def test_comment_above_the_first_entry_is_refused(
     assert_that(message).contains(_COMMENT_ERROR)
 
 
+@pytest.mark.parametrize(
+    ("original", "key"),
+    [
+        ("workers: # c\n  !!int 2\n\nb: 2\n", "workers"),
+        ("cache:\n  directory: # c\n    !!str /x\n\nb: 2\n", "cache.directory"),
+        ("workers: # c\n  !!int\n  2\n\nb: 2\n", "workers"),
+    ],
+    ids=["tagged-scalar", "nested-tagged-scalar", "tag-on-its-own-line"],
+)
+def test_comment_the_parser_drops_before_a_tag_is_still_seen(
+    tmp_path: Path, original: str, key: str
+) -> None:
+    """A comment the parser loses before a tagged value still blocks the edit."""
+    value: object = 3 if key == "workers" else "/y"
+
+    message = _refusal(tmp_path, original, key, value)
+
+    assert_that(message).contains("comment")
+
+
 def test_comment_on_the_key_line_is_kept_when_the_list_is_replaced(
     tmp_path: Path,
 ) -> None:

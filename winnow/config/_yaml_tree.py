@@ -274,7 +274,12 @@ def parse_yaml(text: str) -> YamlTree:
         text=text,
         root=builder.root,
         documents=builder.documents,
-        comments=_comment_positions(text, tokens, events),
+        comments=_comment_positions(
+            text,
+            tokens,
+            events,
+            list(yaml.scanner.carried),
+        ),
         aliases=builder.aliases,
         anchored=builder.anchored,
         document_end=builder.document_end,
@@ -292,12 +297,19 @@ class _RecordingScanner(RoundTripScanner):
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.taken: list[Token | None] = []
+        self.carried: list[object] = []
         super().__init__(*args, **kwargs)
 
     def get_token(self) -> Token | None:
-        """Return the next token, keeping it."""
+        """Return the next token, keeping it and the comments it carries.
+
+        The comments are kept as the token is taken: the parser can detach
+        a comment from a token afterwards and then lose it, as it does for
+        a comment after a key whose value on the next line starts with a tag.
+        """
         token: Token | None = super().get_token()
         self.taken.append(token)
+        self.carried.append(getattr(token, "_comment", None))
         return token
 
 
@@ -487,6 +499,7 @@ def _comment_positions(
     text: str,
     tokens: list[Token],
     events: list[Event],
+    carried: list[object],
 ) -> list[int]:
     """Return where each comment of the text starts, from tokens and events.
 
@@ -494,11 +507,14 @@ def _comment_positions(
     other tokens, several lines to a token, and its parser moves some of
     them onto events, such as a comment after a key whose block sequence
     starts on the next line; a comment after a block scalar's header is
-    read the way the scanner reads that header.
+    read the way the scanner reads that header. ``carried`` holds what each
+    token carried when the parser took it, since the parser drops some
+    comments after that.
     """
     found: set[int] = set()
     attached = [getattr(token, "_comment", None) for token in tokens]
     attached += [getattr(event, "comment", None) for event in events]
+    attached += carried
     for item in attached:
         for comment in _comment_tokens(item):
             found.update(_comment_lines(text, comment))
