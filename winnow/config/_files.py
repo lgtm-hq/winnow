@@ -155,12 +155,19 @@ def read_config_layers(
     return store
 
 
-def read_config_text(text: str, path: Path) -> dict[str, object]:
+def read_config_text(
+    text: str,
+    path: Path,
+    *,
+    cast: bool = True,
+) -> dict[str, object]:
     """Read one config file's content on its own, without its companion.
 
     Args:
         text: The content, in the format ``path``'s suffix names.
         path: The file the content belongs to.
+        cast: Whether to apply cast markers; without them the settings hold
+            the values as written.
 
     Returns:
         The file's settings, read as :func:`read_config_layers` reads them.
@@ -171,23 +178,25 @@ def read_config_text(text: str, path: Path) -> dict[str, object]:
         ValueError: If the content is invalid or not a mapping.
     """
     store: dict[str, object] = {}
-    _apply_file(store, _parse_document(text, path), path=path)
+    _apply_file(store, _parse_document(text, path), path=path, cast=cast)
     return store
 
 
-def read_value(value: object) -> object:
+def read_value(value: object, *, cast: bool = True) -> object:
     """Return a value as reading it from a config file gives it.
 
     Args:
         value: A value as written in a file.
+        cast: Whether to apply cast markers.
 
     Returns:
-        The value with cast markers applied and mapping keys lowercased.
+        The value with mapping keys lowercased and, when ``cast`` is set,
+        cast markers applied.
 
     Raises:
         ValueError: If the value uses a cast marker winnow does not support.
     """
-    return _lowercase_keys(cast_markers_in(value))
+    return _lowercase_keys(cast_markers_in(value) if cast else value)
 
 
 def _read_document(path: Path) -> Mapping[str, object]:
@@ -248,6 +257,7 @@ def _apply_file(
     document: Mapping[str, object],
     *,
     path: Path,
+    cast: bool = True,
 ) -> None:
     """Merge one file's settings into ``store``, in the file's key order.
 
@@ -258,6 +268,7 @@ def _apply_file(
         store: Settings read so far; updated in place.
         document: The file's top-level mapping.
         path: The file, for error messages.
+        cast: Whether to apply cast markers.
     """
     collapsed: dict[str, tuple[str, object]] = {}
     for raw_key, value in document.items():
@@ -268,7 +279,7 @@ def _apply_file(
     for key, value in collapsed.values():
         parts = key.replace("__", ".").split(".")
         top = parts[0].strip().lower()
-        nested = _lowercase_keys(cast_markers_in(value))
+        nested = read_value(value, cast=cast)
         for part in reversed(parts[1:]):
             nested = {part.lower(): nested}
         store[top] = merge_values(store.get(top), nested)

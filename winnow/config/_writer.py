@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import os
-import stat
 from collections.abc import Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Final
 
 from pydantic import TypeAdapter, ValidationError
+from ruamel.yaml.error import YAMLError
 
 from winnow.config._editor import (
+    TextLayout,
     check_finite,
     dump_document,
     load_document,
     set_in_document,
-    split_line_ends,
+    split_layout,
     writable_format,
 )
 from winnow.config._env import (
@@ -41,6 +43,8 @@ _PAIRED_ADAPTERS: dict[str, TypeAdapter[object]] = {
     _SYMLINK_POLICY_KEY: TypeAdapter(SymlinkPolicy),
 }
 """How the model reads each paired symlink setting."""
+_PERMISSION_BITS: Final = 0o777
+"""The mode bits a replaced file keeps; setuid, setgid and sticky are not."""
 
 
 def generate_default_config(
@@ -92,10 +96,12 @@ def set_config_value(
     allows, line ends and the final newline included. Setting
     ``follow_symlinks`` or ``symlink_policy`` also sets the other only when
     the file would otherwise contradict itself. When the file already sets
-    the key to the value, nothing is written. A symlinked file is written
-    through its link, and the file keeps its permission bits. TOML files,
-    files the user cannot write, non-finite numbers, keys an alias shares and
-    keys a cast string holds are refused, and the file is left untouched.
+    the key to the value as written, nothing is written. A symlinked file
+    is written through its link, and the file keeps its permission bits but
+    not setuid, setgid or sticky bits. TOML files, files the user cannot
+    write, symlink loops, mixed line ends, non-finite numbers, values the
+    format cannot hold, keys an alias or merge key shares and keys a cast
+    string holds are refused, and the file is left untouched.
 
     Args:
         key: Dotted config key, such as ``cache.enabled``.
@@ -120,6 +126,7 @@ def set_config_value(
     file_format = writable_format(target_path)
     _key_parts(key)
     check_finite(value, key=key)
+    _refuse_unresolvable_link(target_path)
     write_path = Path(os.path.realpath(target_path))
     raw = (
         _read_text(target_path, operation="load_config")
@@ -127,26 +134,37 @@ def set_config_value(
         else None
     )
     mode = None if raw is None else _writable_mode(write_path)
-    original, crlf = (None, False) if raw is None else split_line_ends(raw)
+    original, layout = (
+        (None, TextLayout()) if raw is None else split_layout(raw, path=target_path)
+    )
+    as_read = None if original is None else layout.apply(original)
     try:
         document = load_document(original, file_format, path=target_path)
-        current = (
-            read_config_text(original, target_path) if original is not None else {}
+        current = {} if as_read is None else read_config_text(as_read, target_path)
+        as_written = (
+            {}
+            if as_read is None
+            else read_config_text(as_read, target_path, cast=False)
         )
     except _CONFIG_LOAD_ERRORS as exc:
         raise _load_error(target_path, exc) from exc
 
     updates = _updates_for(key=key, value=value, current=current)
     if raw is not None and all(
-        _already_set(current, update_key, update_value)
+        _already_set(as_written, update_key, update_value)
         for update_key, update_value in updates.items()
     ):
         return _validate_new_text(raw, target_path=target_path, updates=updates)
     for update_key, update_value in updates.items():
         set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
     try:
-        new_text = dump_document(document, file_format, original=original, crlf=crlf)
-    except (ValueError, TypeError) as exc:
+        new_text = dump_document(
+            document,
+            file_format,
+            original=original,
+            layout=layout,
+        )
+    except (ValueError, TypeError, YAMLError) as exc:
         raise ConfigError(
             f"config set cannot write this value in a {file_format.upper()} file",
             operation="set_config",
@@ -163,6 +181,32 @@ def set_config_value(
     return updated_config
 
 
+def _refuse_unresolvable_link(path: Path) -> None:
+    """Refuse a config path that is a symlink loop or cannot be resolved.
+
+    A link to a missing file is not refused: its target is created.
+
+    Raises:
+        ConfigError: If ``path`` is a symlink whose target cannot be reached
+            for a reason other than not existing, such as a loop.
+    """
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if not path.is_symlink():
+            return
+        raise ConfigError(
+            "config set cannot follow the configuration file's symlink: it is "
+            "a symlink loop or cannot be resolved; fix the link or edit the "
+            "file by hand",
+            operation="set_config",
+            file_path=path,
+            details={"error": str(exc)},
+        ) from exc
+
+
 def _writable_mode(path: Path) -> int:
     """Return an existing config file's permission bits, if the user may write it.
 
@@ -176,21 +220,20 @@ def _writable_mode(path: Path) -> int:
             operation="write_config",
             file_path=path,
         )
-    return stat.S_IMODE(path.stat().st_mode)
+    return path.stat().st_mode & _PERMISSION_BITS
 
 
 def _already_set(
-    settings: Mapping[str, object],
+    written: Mapping[str, object],
     key: str,
     value: object,
 ) -> bool:
-    """Return whether read settings hold exactly ``value`` at ``key``."""
-    try:
-        expected = read_value(_yaml_safe(value))
-    except ValueError:
-        return False
-    found, existing = _setting_at(settings, key)
-    return found and _same(existing, expected)
+    """Return whether settings read uncast hold exactly ``value`` at ``key``.
+
+    The value is compared as written, so ``"@int 4"`` is not ``4``.
+    """
+    found, existing = _setting_at(written, key)
+    return found and _same(existing, read_value(_yaml_safe(value), cast=False))
 
 
 def _same(left: object, right: object) -> bool:
@@ -239,12 +282,13 @@ def _updates_for(
         ``key`` with its value, plus the paired symlink setting when the
         value the file gives it, or its default, would contradict the change.
     """
+    matched = ".".join(_key_parts(key)).lower()
     synced = dict(current)
-    synced[key] = value
-    _sync_symlink_settings(data=synced, key=key, value=value)
-    updates: dict[str, object] = {key: synced[key]}
+    synced[matched] = value
+    _sync_symlink_settings(data=synced, key=matched, value=value)
+    updates: dict[str, object] = {key: synced[matched]}
     for paired_key in (_FOLLOW_SYMLINKS_KEY, _SYMLINK_POLICY_KEY):
-        if paired_key == key or paired_key not in synced:
+        if paired_key == matched or paired_key not in synced:
             continue
         effective = current.get(
             paired_key,
@@ -274,8 +318,9 @@ def _validate_new_text(
 ) -> WinnowConfig:
     """Check new file content before it is written.
 
-    The content must set each updated key to its value when read on its own,
-    and give a valid configuration together with the companion file.
+    The content must set each updated key to exactly its value as written,
+    compared as :func:`_already_set` compares, when read on its own, and give
+    a valid configuration together with the companion file.
 
     Args:
         new_text: The content about to be written.
@@ -290,11 +335,10 @@ def _validate_new_text(
             configuration is invalid.
     """
     try:
-        written = read_config_text(new_text, target_path)
+        written = read_config_text(new_text, target_path, cast=False)
         layered = read_config_layers(target_path, main_text=new_text)
         for update_key, update_value in updates.items():
-            expected = read_value(_yaml_safe(update_value))
-            if _setting_at(written, update_key) != (True, expected):
+            if not _already_set(written, update_key, update_value):
                 raise ConfigError(
                     "config set cannot change this key where the file sets it; "
                     "edit the file by hand",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ from winnow.exceptions import ConfigError
 from winnow.models.enums import SymlinkPolicy
 
 _LOCAL_NAME = ".winnow-config.local.yaml"
+_WINDOWS = sys.platform.startswith("win")
+_POSIX_MODES = pytest.mark.skipif(_WINDOWS, reason="POSIX mode bits do not apply")
 _COMMENTED = """\
 # Winnow settings
 workers: 2  # threads
@@ -420,7 +423,14 @@ def test_unindented_json_lines_fall_back_to_one_line(tmp_path: Path) -> None:
 @pytest.mark.parametrize("suffix", [".json", ".yaml"])
 @pytest.mark.parametrize(
     "value",
-    [float("nan"), float("inf"), float("-inf"), {"x": [float("nan")]}],
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        {"x": [float("nan")]},
+        ("a", float("nan")),
+        {"x": (float("inf"),)},
+    ],
 )
 def test_non_finite_number_is_refused(
     tmp_path: Path,
@@ -459,9 +469,10 @@ def test_non_finite_number_on_the_command_line_is_an_error(
     assert_that(config_path.read_text()).is_equal_to('{"workers": 2}\n')
 
 
-def test_unserializable_value_is_a_config_error(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", [".json", ".yaml"])
+def test_unserializable_value_is_a_config_error(tmp_path: Path, suffix: str) -> None:
     """A value the format cannot hold fails as ``ConfigError``, file untouched."""
-    config_path = tmp_path / "c.json"
+    config_path = tmp_path / f"c{suffix}"
     config_path.write_text('{"workers": 2}\n')
 
     with pytest.raises(ConfigError):
@@ -551,6 +562,7 @@ def test_unshared_key_in_a_file_with_anchors_can_be_set(tmp_path: Path) -> None:
     )
 
 
+@_POSIX_MODES
 @pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="root can write read-only files",
@@ -569,6 +581,7 @@ def test_read_only_file_is_refused(tmp_path: Path) -> None:
     assert_that(stat.S_IMODE(config_path.stat().st_mode)).is_equal_to(0o444)
 
 
+@_POSIX_MODES
 def test_existing_permission_bits_are_kept(tmp_path: Path) -> None:
     """The replacement file keeps the permission bits of the file it replaces."""
     config_path = tmp_path / CONFIG_FILE_NAME
@@ -580,6 +593,7 @@ def test_existing_permission_bits_are_kept(tmp_path: Path) -> None:
     assert_that(stat.S_IMODE(config_path.stat().st_mode)).is_equal_to(0o640)
 
 
+@_POSIX_MODES
 def test_new_file_mode_is_unchanged(tmp_path: Path) -> None:
     """A new file gets the private mode ``config set`` always gave it."""
     _set(tmp_path, "workers", 3)
@@ -594,7 +608,7 @@ def test_new_file_mode_is_unchanged(tmp_path: Path) -> None:
         ("c.json", '{"workers":2}', "workers", 2),
         ("c.yaml", "workers: 2", "workers", 2),
         ("c.yaml", "cache: {enabled: true}\n", "cache.enabled", True),
-        ("c.yaml", 'workers: "@int 4"\n', "workers", 4),
+        ("c.yaml", 'workers: "@int 4"\n', "workers", "@int 4"),
     ],
 )
 def test_value_already_set_writes_nothing(
@@ -607,12 +621,15 @@ def test_value_already_set_writes_nothing(
     """Setting the value a key already has leaves the file byte for byte."""
     config_path = tmp_path / name
     config_path.write_text(text)
-    before = config_path.stat().st_mtime_ns
+    os.utime(config_path, ns=(1_000_000_000, 1_000_000_000))
+    before = config_path.stat()
 
     set_config_value(key, value, config_path=config_path)
 
+    after = config_path.stat()
     assert_that(config_path.read_text()).is_equal_to(text)
-    assert_that(config_path.stat().st_mtime_ns).is_equal_to(before)
+    assert_that(after.st_mtime_ns).is_equal_to(1_000_000_000)
+    assert_that(after.st_ino).is_equal_to(before.st_ino)
 
 
 def test_equal_value_of_another_type_is_written(tmp_path: Path) -> None:
@@ -785,3 +802,254 @@ def test_directory_that_cannot_be_made_is_a_write_error(tmp_path: Path) -> None:
 
     assert_that(error.value.context.operation).is_equal_to("write_config")
     assert_that((tmp_path / "f").read_text()).is_equal_to("")
+
+
+# --- second review round (#429) ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "cache: &a {enabled: true}\nrouting: {<<: *a}\n",
+        "cache: &a\n  enabled: true\nrouting:\n  <<: [*a]\n",
+    ],
+)
+def test_key_in_a_mapping_merged_with_a_merge_key_is_refused(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    """A mapping merged elsewhere through ``<<`` counts as shared."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("cache.enabled", False, config_path=config_path)
+
+    assert_that(str(error.value)).contains("anchor")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_key_overriding_a_merge_key_can_be_set(tmp_path: Path) -> None:
+    """Setting a key of the merging mapping adds an override there only."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("cache: &a {enabled: true}\nrouting: {<<: *a}\n")
+
+    set_config_value("routing.enabled", False, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(
+        "cache: &a {enabled: true}\nrouting: {<<: *a, enabled: false}\n",
+    )
+
+
+@pytest.mark.parametrize("links", [["a.yaml"], ["a.yaml", "b.yaml"]])
+def test_symlink_loop_is_refused(tmp_path: Path, links: list[str]) -> None:
+    """A link that loops back on itself is refused and stays a link."""
+    paths = [tmp_path / name for name in links]
+    for path, target in zip(paths, [*paths[1:], paths[0]], strict=True):
+        path.symlink_to(target)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=paths[0])
+
+    assert_that(str(error.value)).contains("symlink loop")
+    assert_that(all(path.is_symlink() for path in paths)).is_true()
+    assert_that(sorted(path.name for path in tmp_path.iterdir())).is_equal_to(links)
+
+
+def test_dangling_symlink_creates_its_target(tmp_path: Path) -> None:
+    """A link to a missing file keeps the link and creates the file it names."""
+    link = tmp_path / "c.yaml"
+    target = tmp_path / "real" / "settings.yaml"
+    link.symlink_to(target)
+
+    set_config_value("workers", 3, config_path=link)
+
+    assert_that(link.is_symlink()).is_true()
+    assert_that(target.read_text()).contains("workers: 3")
+
+
+def test_later_entry_that_reads_back_another_type_is_refused(tmp_path: Path) -> None:
+    """A write that would read back as ``1`` where ``true`` was asked is refused."""
+    config_path = tmp_path / "c.yaml"
+    original = "cache.enabled: 1\ncache__enabled: 1\nCACHE.ENABLED: 0\n"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("cache.enabled", True, config_path=config_path)
+
+    assert_that(str(error.value)).contains("by hand")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+@_POSIX_MODES
+def test_special_mode_bits_are_not_copied(tmp_path: Path) -> None:
+    """Only the permission bits are kept; setuid is dropped."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("workers: 2\n")
+    config_path.chmod(0o4750)
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(stat.S_IMODE(config_path.stat().st_mode)).is_equal_to(0o750)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        (
+            "FOLLOW_SYMLINKS",
+            True,
+            "workers: 2\nFOLLOW_SYMLINKS: true\nsymlink_policy: follow\n",
+        ),
+        (
+            "SYMLINK_POLICY",
+            "follow",
+            "workers: 2\nSYMLINK_POLICY: follow\nfollow_symlinks: true\n",
+        ),
+    ],
+)
+def test_uppercase_paired_key_sets_its_pair(
+    tmp_path: Path,
+    key: str,
+    value: object,
+    expected: str,
+) -> None:
+    """Paired symlink keys match whatever their letter case."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("workers: 2\n")
+
+    config = set_config_value(key, value, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(expected)
+    assert_that(config.symlink_policy).is_equal_to(SymlinkPolicy.FOLLOW)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("﻿workers: 2\n", "﻿workers: 3\n"),
+        ("﻿# Winnow settings\n", "﻿# Winnow settings\nworkers: 3\n"),
+    ],
+)
+def test_yaml_byte_order_mark_is_kept(
+    tmp_path: Path,
+    before: str,
+    after: str,
+) -> None:
+    """A YAML file starting with a BOM keeps it, and its comments."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(before, encoding="utf-8")
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(after)
+
+
+def test_json_byte_order_mark_is_kept(tmp_path: Path) -> None:
+    """A JSON file with a BOM, which the reader refuses, is left as it is."""
+    config_path = tmp_path / "c.json"
+    original = '﻿{"workers": 2}\n'.encode()
+    config_path.write_bytes(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(error.value.context.operation).is_equal_to("load_config")
+    assert_that(config_path.read_bytes()).is_equal_to(original)
+
+
+@pytest.mark.parametrize(
+    ("name", "original"),
+    [
+        ("c.yaml", b"workers: 2\r\ndry_run: false\n"),
+        ("c.yaml", b"workers: 2\rdry_run: false\r"),
+        ("c.yaml", b"workers: 2\r\ndry_run: false\r"),
+        ("c.json", b'{\r\n  "workers": 2\n}\n'),
+    ],
+)
+def test_mixed_line_endings_are_refused(
+    tmp_path: Path,
+    name: str,
+    original: bytes,
+) -> None:
+    """Line ends that cannot be kept faithfully leave the file untouched."""
+    config_path = tmp_path / name
+    config_path.write_bytes(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("line endings")
+    assert_that(config_path.read_bytes()).is_equal_to(original)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("# header\n---\nworkers: 2\n", "# header\n---\nworkers: 3\n"),
+        ("# header\n---\n", "# header\n---\nworkers: 3\n"),
+        ("# header\nnull\n", "# header\nworkers: 3\n"),
+        ("# header\n---\nnull\n", "# header\n---\nworkers: 3\n"),
+        ("# header\n{}\n", "# header\nworkers: 3\n"),
+        ("# header", "# header\nworkers: 3"),
+        ("# header\n---", "# header\n---\nworkers: 3"),
+        (
+            "# a\n\n# b\n--- # start\nworkers: 2\n",
+            "# a\n\n# b\n--- # start\nworkers: 3\n",
+        ),
+    ],
+)
+def test_leading_comments_are_kept(tmp_path: Path, before: str, after: str) -> None:
+    """Comments above a document start, ``null`` or ``{}`` survive a set."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(before)
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+@pytest.mark.parametrize(
+    ("before", "value", "after"),
+    [
+        ("workers: 4\n", "@int 4", "workers: '@int 4'\n"),
+        ('workers: "@int 4"\n', 4, "workers: 4\n"),
+    ],
+)
+def test_value_in_another_written_form_is_written(
+    tmp_path: Path,
+    before: str,
+    value: object,
+    after: str,
+) -> None:
+    """A value that casts to the one set, but is written differently, is written."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(before)
+
+    set_config_value("workers", value, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "# h\n%YAML 1.2\n---\nworkers: 2\n",
+        "--- {workers: 2}\n",
+        "workers: 2\n...\n",
+        "workers: 2\n... # end\n# tail\n",
+    ],
+)
+def test_yaml_markers_the_round_trip_drops_are_refused(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    """Directives and document markers that cannot be kept leave the file as is."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("document markers")
+    assert_that(config_path.read_text()).is_equal_to(original)
