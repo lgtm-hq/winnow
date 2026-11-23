@@ -17,11 +17,20 @@ from pathlib import Path
 import pytest
 from assertpy import assert_that
 from click.testing import CliRunner
+from ruamel.yaml.error import YAMLError
 
 from winnow.cli import main
 from winnow.cli.errors import ExitCode
-from winnow.config import CONFIG_FILE_NAME, load_config, set_config_value
-from winnow.config._editor import set_in_document
+from winnow.config import CONFIG_FILE_NAME, _editor, load_config, set_config_value
+from winnow.config._editor import (
+    TextLayout,
+    _holds_shared,
+    _round_trip_yaml,
+    keeps_layout,
+    load_document,
+    set_in_document,
+)
+from winnow.config._files import ConfigFormat
 from winnow.exceptions import ConfigError
 from winnow.models.enums import SymlinkPolicy
 
@@ -1053,3 +1062,296 @@ def test_yaml_markers_the_round_trip_drops_are_refused(
 
     assert_that(str(error.value)).contains("document markers")
     assert_that(config_path.read_text()).is_equal_to(original)
+
+
+# --- third review round (#429) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("before", "key", "value", "after"),
+    [
+        (
+            "paths:\n  output_dir:\nsource_dirs: # my photos\n- /photos\n",
+            "source_dirs",
+            ["/photos", "/videos"],
+            "paths:\n  output_dir:\nsource_dirs: # my photos\n- /photos\n- /videos\n",
+        ),
+        (
+            "note: |\n  - # just text\nworkers: 2\n",
+            "workers",
+            3,
+            "note: |\n  - # just text\nworkers: 3\n",
+        ),
+        (
+            "note: |\n  key:\n  - text\nsource_dirs:\n    - /a\n",
+            "source_dirs",
+            ["/a", "/b"],
+            "note: |\n  key:\n  - text\nsource_dirs:\n    - /a\n    - /b\n",
+        ),
+    ],
+)
+def test_sequence_indent_is_read_from_the_file(
+    tmp_path: Path,
+    before: str,
+    key: str,
+    value: object,
+    after: str,
+) -> None:
+    """Bare dashes, comments after a key and block scalars do not mislead the guess."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(before)
+
+    set_config_value(key, value, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "source_dirs:\n  -\n    /photos\nworkers: 2\n",
+        "paths:\n  output_dir:\nsource_dirs: # my photos\n- /photos\n",
+        "note: |\n  - # just text\nworkers: 2\n",
+    ],
+)
+def test_sequence_indent_guess_is_always_usable(text: str) -> None:
+    """The guessed sequence indent and offset are ones ruamel can dump with."""
+    yaml = _round_trip_yaml(text)
+
+    assert_that(yaml.sequence_indent).is_instance_of(int)
+    assert_that(yaml.sequence_dash_offset).is_instance_of(int)
+    assert_that(yaml.sequence_dash_offset).is_greater_than_or_equal_to(0)
+    assert_that(yaml.sequence_indent).is_greater_than_or_equal_to(
+        yaml.sequence_dash_offset + 2,
+    )
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "source_dirs:\n  -\n    /photos\nworkers: 2\n",
+        "note: >+\n  text\nworkers: 2\n",
+        "cache:\n    enabled: true\nnote: |\n  text\nworkers: 2\n",
+        "workers:    2\ndry_run:    false\n",
+        "paths:\n  output_dir: &n\n  quarantine_dir: *n\nworkers: 2\n",
+    ],
+)
+def test_layout_the_round_trip_would_change_is_refused(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    """A file ruamel would rewrite beyond the key is refused and left as is.
+
+    Bare dashes, ``+`` chomping, a block scalar indented apart from the
+    mappings, aligned values and an anchored null all come back changed.
+    """
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("without changing its layout")
+    assert_that(str(error.value)).contains("by hand")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_specific_refusal_wins_over_the_layout_one(tmp_path: Path) -> None:
+    """An anchor refusal keeps its own message in a file the guard also refuses."""
+    config_path = tmp_path / "c.yaml"
+    original = "workers: &w 2\nother: *w\nlist:\n  -\n    a\n"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("shared through a YAML anchor")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+@pytest.mark.parametrize("ending", ["\n\n", "\n\n\n"])
+def test_blank_lines_at_the_end_are_kept(tmp_path: Path, ending: str) -> None:
+    """Blank lines after the last key survive a set."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(f"workers: 2{ending}")
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(f"workers: 3{ending}")
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (
+            "---\n# comment after doc start\n",
+            "---\n# comment after doc start\nworkers: 3\n",
+        ),
+        (
+            "---\n# comment after doc start\nnull\n",
+            "---\n# comment after doc start\nworkers: 3\n",
+        ),
+        ("# header\n---\n\nworkers: 2\n", "# header\n---\n\nworkers: 3\n"),
+        ("--- # s\n\n# c\nworkers: 2\n", "--- # s\n\n# c\nworkers: 3\n"),
+    ],
+)
+def test_comments_after_the_document_start_are_kept(
+    tmp_path: Path,
+    before: str,
+    after: str,
+) -> None:
+    """Blank and comment lines after one ``---`` survive a set."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(before)
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(after)
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "null\n# footer\n",
+        "{}\n# footer\n",
+        "~\n# footer\n",
+        "null # inline\n",
+        "{} # inline\n",
+        "# header\n---\nnull # inline\n",
+    ],
+)
+def test_empty_document_with_a_comment_is_refused(
+    tmp_path: Path,
+    original: str,
+) -> None:
+    """A ``null`` or ``{}`` document that holds a comment is left as it is."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("comment")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_second_document_start_after_comments_is_refused(tmp_path: Path) -> None:
+    """Only one ``---`` is set aside; a second one still refuses the file."""
+    config_path = tmp_path / "c.yaml"
+    original = "---\n# c\n---\nworkers: 2\n"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(str(error.value)).contains("document markers")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_earlier_cast_string_that_joins_the_value_is_refused(tmp_path: Path) -> None:
+    """The key must hold the value set when read with casts applied, too."""
+    config_path = tmp_path / "c.yaml"
+    original = (
+        "paths:\n"
+        "  include_patterns: '@json [\"*.jpg\"]'\n"
+        'paths.include_patterns: ["*.png"]\n'
+    )
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("paths.include_patterns", ["*.gif"], config_path=config_path)
+
+    assert_that(str(error.value)).contains("cannot change this key")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_next_line_character_ends_a_line_as_the_parser_reads_it(
+    tmp_path: Path,
+) -> None:
+    """U+0085 ends a comment line, so the key after it is set in place."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("# c\x85workers: 2\n", encoding="utf-8")
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(
+        "# c\x85workers: 3\n",
+    )
+
+
+@pytest.mark.parametrize(
+    ("original", "key", "value"),
+    [
+        ("cache: &a {enabled: true}\nrouting: {<<: *a}\n", "cache", {"enabled": False}),
+        ("workers: &w 2\nother: *w\n", "workers", 3),
+        ("workers: &w 2\nother: *w\n", "other", 3),
+        ("cache: {x: &a [1]}\nother: *a\n", "cache", {"enabled": False}),
+    ],
+)
+def test_replacing_a_value_an_alias_refers_to_is_refused(
+    tmp_path: Path,
+    original: str,
+    key: str,
+    value: object,
+) -> None:
+    """A key whose value carries an anchor used elsewhere is not replaced."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value(key, value, config_path=config_path)
+
+    assert_that(str(error.value)).contains("shared through a YAML anchor")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_anchor_nothing_refers_to_does_not_block(tmp_path: Path) -> None:
+    """An anchor without an alias is no reason to refuse."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("workers: &w 2\ndry_run: false\n")
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to("workers: 3\ndry_run: false\n")
+
+
+def test_tuple_is_written_as_a_list(tmp_path: Path) -> None:
+    """A tuple value is set as the list it holds."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("workers: 2\n")
+
+    set_config_value("source_dirs", ("a", "b"), config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(
+        "workers: 2\nsource_dirs:\n  - a\n  - b\n",
+    )
+
+
+def test_layout_check_fails_closed_when_the_dump_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dump error in the round-trip check counts as a changed layout."""
+    text = "workers: 2\n"
+    document = load_document(text, ConfigFormat.YAML, path=Path("c.yaml"))
+
+    def fail(*_args: object, **_kwargs: object) -> str:
+        raise YAMLError("cannot dump")
+
+    monkeypatch.setattr(_editor, "dump_document", fail)
+
+    assert_that(
+        keeps_layout(
+            document,
+            ConfigFormat.YAML,
+            original=text,
+            layout=TextLayout(),
+        ),
+    ).is_false()
+
+
+def test_shared_value_inside_a_plain_mapping_is_found() -> None:
+    """A plain mapping that holds a shared value holds something shared."""
+    shared_value = [1]
+
+    assert_that(_holds_shared({"a": shared_value}, {id(shared_value)})).is_true()
+    assert_that(_holds_shared({"a": [2]}, {id(shared_value)})).is_false()

@@ -15,6 +15,7 @@ from winnow.config._editor import (
     TextLayout,
     check_finite,
     dump_document,
+    keeps_layout,
     load_document,
     set_in_document,
     split_layout,
@@ -125,6 +126,7 @@ def set_config_value(
     )
     file_format = writable_format(target_path)
     _key_parts(key)
+    value = _tuples_as_lists(value)
     check_finite(value, key=key)
     _refuse_unresolvable_link(target_path)
     write_path = Path(os.path.realpath(target_path))
@@ -155,6 +157,7 @@ def set_config_value(
         for update_key, update_value in updates.items()
     ):
         return _validate_new_text(raw, target_path=target_path, updates=updates)
+    faithful = keeps_layout(document, file_format, original=original, layout=layout)
     for update_key, update_value in updates.items():
         set_in_document(document, _key_parts(update_key), _yaml_safe(update_value))
     try:
@@ -177,6 +180,15 @@ def set_config_value(
         target_path=target_path,
         updates=updates,
     )
+    if not faithful:
+        raise ConfigError(
+            "config set cannot rewrite this file without changing its layout "
+            "outside the key, such as a bare '-' item, a block scalar's indent "
+            "or chomping, or extra spaces; edit the file by hand",
+            operation="set_config",
+            file_path=target_path,
+            details={"key": key},
+        )
     _write_text(new_text, config_path=write_path, mode=mode, newline="")
     return updated_config
 
@@ -223,17 +235,33 @@ def _writable_mode(path: Path) -> int:
     return path.stat().st_mode & _PERMISSION_BITS
 
 
+def _tuples_as_lists(value: object) -> object:
+    """Return a value with every tuple in it turned into a list."""
+    if isinstance(value, list | tuple):
+        return [_tuples_as_lists(item) for item in value]
+    if isinstance(value, Mapping):
+        return {key: _tuples_as_lists(item) for key, item in value.items()}
+    return value
+
+
 def _already_set(
-    written: Mapping[str, object],
+    settings: Mapping[str, object],
     key: str,
     value: object,
+    *,
+    cast: bool = False,
 ) -> bool:
-    """Return whether settings read uncast hold exactly ``value`` at ``key``.
+    """Return whether read settings hold exactly ``value`` at ``key``.
 
-    The value is compared as written, so ``"@int 4"`` is not ``4``.
+    Args:
+        settings: Settings read from a file, with or without casts.
+        key: The dotted key.
+        value: The value set.
+        cast: Whether ``settings`` were read with casts applied; ``value``
+            is read the same way. Uncast, ``"@int 4"`` is not ``4``.
     """
-    found, existing = _setting_at(written, key)
-    return found and _same(existing, read_value(_yaml_safe(value), cast=False))
+    found, existing = _setting_at(settings, key)
+    return found and _same(existing, read_value(_yaml_safe(value), cast=cast))
 
 
 def _same(left: object, right: object) -> bool:
@@ -318,9 +346,10 @@ def _validate_new_text(
 ) -> WinnowConfig:
     """Check new file content before it is written.
 
-    The content must set each updated key to exactly its value as written,
-    compared as :func:`_already_set` compares, when read on its own, and give
-    a valid configuration together with the companion file.
+    Read on its own, the content must set each updated key to exactly its
+    value, compared as :func:`_already_set` compares, both as written and
+    with casts applied, so an earlier cast string cannot join the value. It
+    must also give a valid configuration together with the companion file.
 
     Args:
         new_text: The content about to be written.
@@ -336,9 +365,13 @@ def _validate_new_text(
     """
     try:
         written = read_config_text(new_text, target_path, cast=False)
+        cast_read = read_config_text(new_text, target_path)
         layered = read_config_layers(target_path, main_text=new_text)
         for update_key, update_value in updates.items():
-            if not _already_set(written, update_key, update_value):
+            if not (
+                _already_set(written, update_key, update_value)
+                and _already_set(cast_read, update_key, update_value, cast=True)
+            ):
                 raise ConfigError(
                     "config set cannot change this key where the file sets it; "
                     "edit the file by hand",
