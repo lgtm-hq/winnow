@@ -121,15 +121,27 @@ back in its own format:
   round trip allows; indentation may be normalized.
 - JSON files stay JSON with the same keys and values; indentation is kept but spacing
   and number forms may be normalized.
-- TOML files are refused with an error and left untouched.
-- Setting `follow_symlinks` or `symlink_policy` also sets the other when the file would
-  otherwise contradict itself.
-- Setting the same value again leaves the file unchanged.
+- CRLF line endings and a missing final newline are kept, and a symlinked file is
+  written through its link with its permission bits unchanged.
+- Setting `follow_symlinks` or `symlink_policy` also sets the other only when the file
+  would otherwise contradict itself.
+- When the file already sets the key to the value, nothing is written.
 
-The result, read with the companion file, is validated before anything is written; an
-invalid result, or a key a later entry in the file would override, fails with an error
-and leaves the file untouched. A file that does not exist yet is created; a new `.json`
-file is written as JSON and any other as YAML.
+The result, read with the companion file, is validated before anything is written. These
+fail with an error and leave the file untouched:
+
+- a TOML (`.toml`, `.tml`), INI (`.ini`, `.conf`, `.properties`) or Python (`.py`) file;
+- a file you cannot write;
+- a `NaN` or infinite number;
+- a JSON file with a duplicate key, or a YAML file that does not parse;
+- a key inside a mapping a YAML anchor shares with an alias;
+- a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
+  value instead;
+- a key a later entry or a flat key elsewhere in the file would override or merge into;
+- an invalid result.
+
+A file that does not exist yet is created: a `.json` path as JSON, any other path that
+is not refused above as YAML.
 
 ### `winnow config reset`
 

@@ -9,6 +9,8 @@ being turned into the behaviour #429 requires.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -410,3 +412,373 @@ def test_unindented_json_lines_fall_back_to_one_line(tmp_path: Path) -> None:
     set_config_value("workers", 3, config_path=config_path)
 
     assert_that(config_path.read_text()).is_equal_to('{"workers": 3}\n')
+
+
+# --- review findings: one key or a ConfigError, never a crash -------------------
+
+
+@pytest.mark.parametrize("suffix", [".json", ".yaml"])
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), {"x": [float("nan")]}],
+)
+def test_non_finite_number_is_refused(
+    tmp_path: Path,
+    suffix: str,
+    value: object,
+) -> None:
+    """NaN and infinities fail with a clear error and leave the file as it was."""
+    config_path = tmp_path / f"c{suffix}"
+    original = '{"workers": 2}\n'
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("min_similarity", value, config_path=config_path)
+
+    assert_that(error.value.context.operation).is_equal_to("set_config")
+    assert_that(str(error.value)).contains("not a finite number")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_number_on_the_command_line_is_an_error(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    """The CLI reports a non-finite number as an error, not a traceback."""
+    config_path = tmp_path / "c.json"
+    config_path.write_text('{"workers": 2}\n')
+
+    result = CliRunner().invoke(
+        main,
+        ["config", "set", "--config", str(config_path), "--", "min_similarity", raw],
+    )
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("finite")
+    assert_that(config_path.read_text()).is_equal_to('{"workers": 2}\n')
+
+
+def test_unserializable_value_is_a_config_error(tmp_path: Path) -> None:
+    """A value the format cannot hold fails as ``ConfigError``, file untouched."""
+    config_path = tmp_path / "c.json"
+    config_path.write_text('{"workers": 2}\n')
+
+    with pytest.raises(ConfigError):
+        set_config_value("workers", object(), config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to('{"workers": 2}\n')
+
+
+@pytest.mark.parametrize("policy", ["skip", "error"])
+def test_policy_matching_the_default_adds_no_paired_key(
+    tmp_path: Path,
+    policy: str,
+) -> None:
+    """``follow_symlinks`` is written only when the file would contradict itself."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\n")
+
+    _set(tmp_path, "symlink_policy", policy)
+
+    assert_that(_main_file(tmp_path)).is_equal_to(
+        f"workers: 2\nsymlink_policy: {policy}\n",
+    )
+
+
+def test_follow_policy_still_writes_the_paired_key(tmp_path: Path) -> None:
+    """A policy the default ``follow_symlinks`` contradicts still sets it."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\n")
+
+    _set(tmp_path, "symlink_policy", "follow")
+
+    assert_that(_main_file(tmp_path)).is_equal_to(
+        "workers: 2\nsymlink_policy: follow\nfollow_symlinks: true\n",
+    )
+
+
+def test_symlinked_config_file_keeps_its_link(tmp_path: Path) -> None:
+    """Setting through a symlink writes the target and keeps the link."""
+    target = tmp_path / "real" / "settings.yaml"
+    target.parent.mkdir()
+    target.write_text("workers: 2\n")
+    link = tmp_path / "c.yaml"
+    link.symlink_to(target)
+
+    set_config_value("workers", 3, config_path=link)
+
+    assert_that(link.is_symlink()).is_true()
+    assert_that(target.read_text()).is_equal_to("workers: 3\n")
+    assert_that(sorted(path.name for path in target.parent.iterdir())).is_equal_to(
+        ["settings.yaml"],
+    )
+
+
+def test_comment_only_yaml_keeps_its_comments(tmp_path: Path) -> None:
+    """A YAML file holding only comments keeps them when a key is added."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("# Winnow settings\n\n# more\n")
+
+    _set(tmp_path, "workers", 3)
+
+    assert_that(_main_file(tmp_path)).is_equal_to(
+        "# Winnow settings\n\n# more\nworkers: 3\n",
+    )
+
+
+_ANCHORED = "base: &b\n  review: A\nrouting: *b\nworkers: 2\n"
+
+
+@pytest.mark.parametrize("key", ["routing.review", "base.review", "base.x.y"])
+def test_key_shared_through_an_anchor_is_refused(tmp_path: Path, key: str) -> None:
+    """A key inside an anchored mapping that an alias shares is not edited."""
+    (tmp_path / CONFIG_FILE_NAME).write_text(_ANCHORED)
+
+    with pytest.raises(ConfigError) as error:
+        _set(tmp_path, key, "X")
+
+    assert_that(str(error.value)).contains("anchor")
+    assert_that(str(error.value)).contains("by hand")
+    assert_that(_main_file(tmp_path)).is_equal_to(_ANCHORED)
+
+
+def test_unshared_key_in_a_file_with_anchors_can_be_set(tmp_path: Path) -> None:
+    """Keys outside the shared mapping stay settable."""
+    (tmp_path / CONFIG_FILE_NAME).write_text(_ANCHORED)
+
+    _set(tmp_path, "workers", 3)
+
+    assert_that(_main_file(tmp_path)).is_equal_to(
+        "base: &b\n  review: A\nrouting: *b\nworkers: 3\n",
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write read-only files")
+def test_read_only_file_is_refused(tmp_path: Path) -> None:
+    """A file the user cannot write is refused, not replaced."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n")
+    config_path.chmod(0o444)
+
+    with pytest.raises(ConfigError) as error:
+        _set(tmp_path, "workers", 3)
+
+    assert_that(str(error.value)).contains("not writable")
+    assert_that(_main_file(tmp_path)).is_equal_to("workers: 2\n")
+    assert_that(stat.S_IMODE(config_path.stat().st_mode)).is_equal_to(0o444)
+
+
+def test_existing_permission_bits_are_kept(tmp_path: Path) -> None:
+    """The replacement file keeps the permission bits of the file it replaces."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\n")
+    config_path.chmod(0o640)
+
+    _set(tmp_path, "workers", 3)
+
+    assert_that(stat.S_IMODE(config_path.stat().st_mode)).is_equal_to(0o640)
+
+
+def test_new_file_mode_is_unchanged(tmp_path: Path) -> None:
+    """A new file gets the private mode ``config set`` always gave it."""
+    _set(tmp_path, "workers", 3)
+
+    mode = stat.S_IMODE((tmp_path / CONFIG_FILE_NAME).stat().st_mode)
+    assert_that(mode).is_equal_to(0o600)
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "key", "value"),
+    [
+        ("c.json", '{"workers":2}', "workers", 2),
+        ("c.yaml", "workers: 2", "workers", 2),
+        ("c.yaml", "cache: {enabled: true}\n", "cache.enabled", True),
+        ("c.yaml", 'workers: "@int 4"\n', "workers", 4),
+    ],
+)
+def test_value_already_set_writes_nothing(
+    tmp_path: Path,
+    name: str,
+    text: str,
+    key: str,
+    value: object,
+) -> None:
+    """Setting the value a key already has leaves the file byte for byte."""
+    config_path = tmp_path / name
+    config_path.write_text(text)
+    before = config_path.stat().st_mtime_ns
+
+    set_config_value(key, value, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to(text)
+    assert_that(config_path.stat().st_mtime_ns).is_equal_to(before)
+
+
+def test_equal_value_of_another_type_is_written(tmp_path: Path) -> None:
+    """``1`` is not the same value as ``true``, so the file changes."""
+    config_path = tmp_path / "c.yaml"
+    config_path.write_text("dry_run: 1\n")
+
+    set_config_value("dry_run", True, config_path=config_path)
+
+    assert_that(config_path.read_text()).is_equal_to("dry_run: true\n")
+
+
+@pytest.mark.parametrize(
+    ("name", "before", "after"),
+    [
+        (
+            "c.yaml",
+            b"workers: 2\r\ndry_run: false\r\n",
+            b"workers: 3\r\ndry_run: false\r\n",
+        ),
+        ("c.yaml", b"workers: 2", b"workers: 3"),
+        ("c.yaml", b"workers: 2\r\ndry_run: false", b"workers: 3\r\ndry_run: false"),
+        (
+            "c.json",
+            b'{\r\n  "workers": 2\r\n}\r\n',
+            b'{\r\n  "workers": 3\r\n}\r\n',
+        ),
+        ("c.json", b'{\r\n  "workers": 2\r\n}', b'{\r\n  "workers": 3\r\n}'),
+    ],
+)
+def test_line_endings_and_final_newline_are_kept(
+    tmp_path: Path,
+    name: str,
+    before: bytes,
+    after: bytes,
+) -> None:
+    """CRLF files stay CRLF and a missing final newline stays missing."""
+    config_path = tmp_path / name
+    config_path.write_bytes(before)
+
+    set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(config_path.read_bytes()).is_equal_to(after)
+
+
+def test_duplicate_json_key_is_refused(tmp_path: Path) -> None:
+    """A JSON file with a duplicate key is refused, as YAML ones are."""
+    config_path = tmp_path / "c.json"
+    original = '{"workers": 2, "workers": 3}\n'
+    config_path.write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("dry_run", True, config_path=config_path)
+
+    assert_that(error.value.context.operation).is_equal_to("load_config")
+    assert_that(str(error.value.context.details)).contains("duplicate key")
+    assert_that(config_path.read_text()).is_equal_to(original)
+
+
+def test_child_of_a_cast_string_is_refused_with_a_reason(tmp_path: Path) -> None:
+    """A key under a ``@json`` string names the cast and the ways out."""
+    original = 'routing: "@json {\\"review\\": \\"A\\"}"\n'
+    (tmp_path / CONFIG_FILE_NAME).write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        _set(tmp_path, "routing.review", "Later")
+
+    message = str(error.value)
+    assert_that(message).contains("cast string")
+    assert_that(message).contains("set the whole routing")
+    assert_that(message).contains("by hand")
+    assert_that(_main_file(tmp_path)).is_equal_to(original)
+
+
+def test_empty_json_file_is_a_load_error(tmp_path: Path) -> None:
+    """An empty JSON file is invalid JSON, as the reader has always said."""
+    config_path = tmp_path / "c.json"
+    config_path.write_text("")
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(error.value.context.operation).is_equal_to("load_config")
+    assert_that(config_path.read_text()).is_equal_to("")
+
+
+def test_yaml_parse_error_names_the_file(tmp_path: Path) -> None:
+    """A parse error from the editing round trip names the config file."""
+    config_path = tmp_path / CONFIG_FILE_NAME
+    config_path.write_text("workers: 2\nworkers: 3\n")
+
+    with pytest.raises(ConfigError) as error:
+        _set(tmp_path, "dry_run", True)
+
+    assert_that(str(error.value.context.details)).contains(str(config_path))
+
+
+def test_parent_line_with_an_inline_comment_keeps_its_indent(tmp_path: Path) -> None:
+    """A mapping whose key line ends in a comment is not re-indented."""
+    original = "cache:  # note\n    enabled: true\n"
+    (tmp_path / CONFIG_FILE_NAME).write_text(original)
+
+    _set(tmp_path, "workers", 3)
+
+    assert_that(_main_file(tmp_path)).is_equal_to(f"{original}workers: 3\n")
+
+
+def test_whole_mapping_over_a_flat_child_key_says_why(tmp_path: Path) -> None:
+    """Replacing a mapping a flat key also sets names that flat key."""
+    original = "cache.directory: /x\n"
+    (tmp_path / CONFIG_FILE_NAME).write_text(original)
+
+    with pytest.raises(ConfigError) as error:
+        _set(tmp_path, "cache", {"enabled": False})
+
+    assert_that(str(error.value)).contains("cache.directory")
+    assert_that(str(error.value)).contains("by hand")
+    assert_that(_main_file(tmp_path)).is_equal_to(original)
+
+
+def test_interrupted_write_leaves_no_temporary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any exception during the write removes the temporary file."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\n")
+
+    def _interrupt(_fd: int) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("winnow.config._writer.os.fsync", _interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        _set(tmp_path, "workers", 3)
+
+    assert_that(_main_file(tmp_path)).is_equal_to("workers: 2\n")
+    assert_that(sorted(path.name for path in tmp_path.iterdir())).is_equal_to(
+        [CONFIG_FILE_NAME],
+    )
+
+
+def test_unsupported_marker_value_is_refused(tmp_path: Path) -> None:
+    """A value with a marker winnow does not apply fails before writing."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\n")
+
+    with pytest.raises(ConfigError):
+        _set(tmp_path, "workers", "@format {this.x}")
+
+    assert_that(_main_file(tmp_path)).is_equal_to("workers: 2\n")
+
+
+def test_invalid_paired_value_is_replaced(tmp_path: Path) -> None:
+    """A paired value the model cannot read counts as contradicting the change."""
+    (tmp_path / CONFIG_FILE_NAME).write_text("follow_symlinks: maybe\n")
+
+    _set(tmp_path, "symlink_policy", "follow")
+
+    assert_that(_main_file(tmp_path)).is_equal_to(
+        "follow_symlinks: true\nsymlink_policy: follow\n",
+    )
+
+
+def test_directory_that_cannot_be_made_is_a_write_error(tmp_path: Path) -> None:
+    """A new file under a path that is not a directory fails as a write error."""
+    (tmp_path / "f").write_text("")
+    config_path = tmp_path / "f" / "c.yaml"
+
+    with pytest.raises(ConfigError) as error:
+        set_config_value("workers", 3, config_path=config_path)
+
+    assert_that(error.value.context.operation).is_equal_to("write_config")
+    assert_that((tmp_path / "f").read_text()).is_equal_to("")
