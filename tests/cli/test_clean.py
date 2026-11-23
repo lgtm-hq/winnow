@@ -249,7 +249,7 @@ def test_clean_reports_failed_candidates_and_exits_one(
         real_rmdir(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "rmdir", denied_rmdir)
-    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open})
+    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open, os.stat})
 
     result = CliRunner().invoke(main, ["clean", ".", "--yes"])
 
@@ -314,3 +314,171 @@ def test_clean_does_not_report_unreadable_excluded_directory(tmp_path: Path) -> 
     assert_that(result.exit_code).is_equal_to(0)
     assert_that(result.output).is_equal_to("Removed 1 empty directory.\n")
     assert_that(excluded.is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_clean_does_not_follow_root_swapped_during_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A root swapped for a symlink to another tree removes nothing there."""
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    (root / "a" / "b").mkdir(parents=True)
+    (outside / "a" / "b").mkdir(parents=True)
+
+    def confirm_and_swap_root(*args: object, **kwargs: object) -> bool:
+        root.rename(tmp_path / "moved")
+        root.symlink_to(outside, target_is_directory=True)
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm_and_swap_root)
+
+    result = CliRunner().invoke(main, ["clean", str(root)])
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.output).contains(
+        "Removed 0 empty directories.",
+        "Skipped 2 directories.",
+    )
+    assert_that(result.output.count("(path changed)")).is_equal_to(2)
+    assert_that((outside / "a" / "b").is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_clean_accepts_root_reached_through_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A target given as a symlink before the scan is cleaned normally."""
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+    real = tmp_path / "real"
+    (real / "a" / "b").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    result = CliRunner().invoke(main, ["clean", str(link), "--yes"])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).is_equal_to("Removed 2 empty directories.\n")
+    assert_that(list(real.iterdir())).is_empty()
+
+
+def test_clean_exits_zero_when_confirmed_directory_vanished(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A confirmed directory that no longer exists is a benign skip."""
+    # Relative paths keep Rich from wrapping the skipped lines.
+    monkeypatch.chdir(tmp_path)
+    Path("gone").mkdir()
+    Path("other").mkdir()
+
+    def confirm_and_remove(*args: object, **kwargs: object) -> bool:
+        Path("gone").rmdir()
+        return True
+
+    monkeypatch.setattr(click, "confirm", confirm_and_remove)
+
+    result = CliRunner().invoke(main, ["clean", "."])
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output.splitlines()).is_equal_to(
+        [
+            "Removed 1 empty directory.",
+            "Skipped 1 directory.",
+            "Skipped: gone (no longer exists)",
+        ],
+    )
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_clean_reports_unreadable_directories_in_plural(tmp_path: Path) -> None:
+    """Several unreadable directories use the plural notice."""
+    locked = [tmp_path / "a", tmp_path / "b"]
+    for directory in locked:
+        directory.mkdir()
+        directory.chmod(0)
+    (tmp_path / "plain").mkdir()
+    try:
+        result = CliRunner().invoke(main, ["clean", str(tmp_path), "--yes"])
+    finally:
+        for directory in locked:
+            directory.chmod(stat.S_IRWXU)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).is_equal_to(
+        "2 directories could not be read and were left alone.\n"
+        "Removed 1 empty directory.\n",
+    )
+    assert_that(all(directory.is_dir() for directory in locked)).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_clean_reports_unreadable_directory_with_no_candidates(
+    tmp_path: Path,
+) -> None:
+    """An unreadable directory is reported even when nothing is removable."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (tmp_path / "keep.txt").write_text("x")
+    locked.chmod(0)
+    try:
+        result = CliRunner().invoke(main, ["clean", str(tmp_path)])
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output).is_equal_to(
+        "1 directory could not be read and was left alone.\n"
+        "No empty directories found.\n",
+    )
+    assert_that(locked.is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="chmod 000 has no effect on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permissions",
+)
+def test_clean_dry_run_reports_unreadable_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run reports unreadable directories before the candidates."""
+    # Relative paths keep Rich from wrapping the candidate lines.
+    monkeypatch.chdir(tmp_path)
+    locked = Path("locked")
+    locked.mkdir()
+    Path("plain").mkdir()
+    locked.chmod(0)
+    try:
+        result = CliRunner().invoke(main, ["clean", ".", "--dry-run"])
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(result.output.splitlines()).is_equal_to(
+        [
+            "1 directory could not be read and was left alone.",
+            "Would remove: plain",
+            "1 empty directory to remove (dry run).",
+        ],
+    )
+    assert_that(locked.is_dir()).is_true()
+    assert_that(Path("plain").is_dir()).is_true()

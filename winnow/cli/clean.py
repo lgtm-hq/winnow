@@ -72,8 +72,9 @@ def clean(
 
     A confirmed directory that vanished or gained content is reported as
     skipped and the command still succeeds. Any other skip, such as a
-    permission error or a path component swapped for a symlink, is reported
-    the same way and exits with ``ExitCode.FAILURE``.
+    permission error, a path component swapped for a symlink, or DIRECTORY
+    itself no longer being the directory that was scanned, is reported the
+    same way and exits with ``ExitCode.FAILURE``.
     """
     console = console_from_context(ctx)
     scan = scan_empty_directories(directory, exclude_patterns=exclude_patterns)
@@ -105,7 +106,11 @@ def clean(
         console.print("Aborted.")
         return
 
-    result = remove_directories(candidates, root=directory)
+    result = remove_directories(
+        candidates,
+        root=directory,
+        root_identity=scan.root_identity,
+    )
     removed = len(result.removed)
     console.print(f"Removed {removed} empty {_directories(removed)}.")
     if result.skipped:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from contextlib import ExitStack
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -47,8 +48,7 @@ SKIP_REASON_NOT_DIRECTORY = "not a directory"
 BENIGN_SKIP_REASONS = frozenset({SKIP_REASON_MISSING, SKIP_REASON_NOT_EMPTY})
 """Skip reasons that mean the tree changed harmlessly during confirmation."""
 
-_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-_NO_FOLLOW_FLAGS = _DIRECTORY_FLAGS | getattr(os, "O_NOFOLLOW", 0)
+_UNSAFE_PARTS = frozenset({os.curdir, os.pardir})
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,10 +59,15 @@ class EmptyDirScan:
         candidates: Removable directories, children before parents.
         unreadable: Directories the walk could not list. They and their
             ancestors are never candidates.
+        root_identity: ``(st_dev, st_ino)`` of the scanned root, following
+            symlinks, or ``None`` when it could not be read. Pass it to
+            :func:`remove_directories` so a root swapped after the scan is
+            detected.
     """
 
     candidates: tuple[Path, ...]
     unreadable: tuple[Path, ...]
+    root_identity: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +122,23 @@ def _is_excluded(
     return False
 
 
+def _identity(root: Path) -> tuple[int, int] | None:
+    """Return ``root``'s ``(st_dev, st_ino)``, following symlinks.
+
+    Args:
+        root: Directory to identify.
+
+    Returns:
+        The device and inode numbers, or ``None`` when ``root`` cannot be
+        stat'ed.
+    """
+    try:
+        info = os.stat(root)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def scan_empty_directories(
     root: Path,
     *,
@@ -137,10 +159,11 @@ def scan_empty_directories(
 
     Returns:
         The removable directories in ascending sibling-subtree order, with
-        children before parents, and the directories that could not be read,
-        in ascending order. Excluded directories are not walked, so they are
-        never reported as unreadable.
+        children before parents, the directories that could not be read, in
+        ascending order, and the identity of the scanned root. Excluded
+        directories are not walked, so they are never reported as unreadable.
     """
+    root_identity = _identity(root)
     unreadable: list[Path] = []
 
     def record_unreadable(error: OSError) -> None:
@@ -183,6 +206,7 @@ def scan_empty_directories(
     return EmptyDirScan(
         candidates=tuple(ordered),
         unreadable=tuple(sorted(unreadable)),
+        root_identity=root_identity,
     )
 
 
@@ -247,12 +271,15 @@ def _relative_parts(directory: Path, root: Path) -> tuple[str, ...]:
         The path components from ``root`` down to ``directory``.
 
     Raises:
-        ValueError: If ``directory`` is not strictly below ``root``.
+        ValueError: If ``directory`` is not strictly below ``root``, or a
+            component below ``root`` is ``.`` or ``..``. The comparison is
+            lexical, so a ``..`` could otherwise lead outside ``root``.
     """
-    if not directory.is_relative_to(root) or directory == root:
+    parts = directory.relative_to(root).parts if directory.is_relative_to(root) else ()
+    if not parts or not _UNSAFE_PARTS.isdisjoint(parts):
         message = f"{directory} is not below {root}"
         raise ValueError(message)
-    return directory.relative_to(root).parts
+    return parts
 
 
 def _rmdir_below_descriptor(root_fd: int, parts: tuple[str, ...]) -> str | None:
@@ -260,7 +287,8 @@ def _rmdir_below_descriptor(root_fd: int, parts: tuple[str, ...]) -> str | None:
 
     Each intermediate component is opened with ``O_NOFOLLOW`` relative to
     its parent descriptor, so a component swapped for a symlink can never
-    lead outside the root.
+    lead outside the root. Each intermediate descriptor is closed as soon as
+    its child is open, so at most two are open besides ``root_fd``.
 
     Args:
         root_fd: Open descriptor of the scan root.
@@ -269,50 +297,89 @@ def _rmdir_below_descriptor(root_fd: int, parts: tuple[str, ...]) -> str | None:
     Returns:
         ``None`` when the directory was removed, otherwise a skip reason.
     """
-    with ExitStack() as descriptors:
-        parent_fd = root_fd
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd = root_fd
+    try:
         for part in parts[:-1]:
             try:
-                parent_fd = os.open(part, _NO_FOLLOW_FLAGS, dir_fd=parent_fd)
+                child_fd = os.open(part, flags, dir_fd=parent_fd)
             except OSError as exc:
                 if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
                     return SKIP_REASON_PATH_CHANGED
                 return _skip_reason(exc)
-            descriptors.callback(os.close, parent_fd)
-        leaf = parts[-1]
+            previous_fd, parent_fd = parent_fd, child_fd
+            if previous_fd != root_fd:
+                os.close(previous_fd)
+        return _rmdir_leaf(parent_fd, parts[-1])
+    finally:
+        if parent_fd != root_fd:
+            os.close(parent_fd)
+
+
+def _rmdir_leaf(parent_fd: int, leaf: str) -> str | None:
+    """Remove ``leaf`` relative to ``parent_fd`` without following it.
+
+    Args:
+        parent_fd: Open descriptor of the leaf's parent.
+        leaf: Name of the directory to remove.
+
+    Returns:
+        ``None`` when the directory was removed, otherwise a skip reason.
+    """
+    try:
+        os.rmdir(leaf, dir_fd=parent_fd)
+    except NotADirectoryError as exc:
+        # rmdir never follows a final symlink; name that case precisely.
         try:
-            os.rmdir(leaf, dir_fd=parent_fd)
-        except NotADirectoryError as exc:
-            # rmdir never follows a final symlink; name that case precisely.
-            try:
-                mode = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False).st_mode
-            except OSError as stat_exc:
-                # The leaf changed again between the two calls.
-                return _skip_reason(stat_exc)
-            return SKIP_REASON_PATH_CHANGED if stat.S_ISLNK(mode) else _skip_reason(exc)
-        except OSError as exc:
-            return _skip_reason(exc)
+            mode = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False).st_mode
+        except OSError as stat_exc:
+            # The leaf changed again between the two calls.
+            return _skip_reason(stat_exc)
+        return SKIP_REASON_PATH_CHANGED if stat.S_ISLNK(mode) else _skip_reason(exc)
+    except OSError as exc:
+        return _skip_reason(exc)
     return None
 
 
-def _has_symlink_component(root: Path, parts: tuple[str, ...]) -> bool:
-    """Report whether any component below ``root`` is now a symlink.
+def _is_junction(path: Path) -> bool:
+    """Report whether ``path`` is a directory junction.
+
+    Args:
+        path: Path to check.
+
+    Returns:
+        ``True`` for a junction; always ``False`` before Python 3.12, which
+        cannot detect one.
+    """
+    if sys.version_info >= (3, 12):
+        return os.path.isjunction(path)
+    return False  # pragma: no cover - only reached before Python 3.12
+
+
+def _path_changed(root: Path, parts: tuple[str, ...]) -> bool:
+    """Report whether a component below ``root`` no longer matches the plan.
+
+    A component has changed when it is a symlink or a junction, or, for an
+    intermediate component, when it is no longer a directory. A missing
+    component is left for ``rmdir`` to report.
 
     Args:
         root: Scan root the candidate was found under.
         parts: Components of the candidate below the root, leaf included.
 
     Returns:
-        ``True`` when a component, the leaf included, is a symlink.
+        ``True`` when the candidate must be skipped as ``"path changed"``.
     """
     current = root
-    for part in parts:
+    for index, part in enumerate(parts, start=1):
         current = current / part
         try:
             mode = current.lstat().st_mode
         except OSError:
             return False
-        if stat.S_ISLNK(mode):
+        if stat.S_ISLNK(mode) or _is_junction(current):
+            return True
+        if index < len(parts) and not stat.S_ISDIR(mode):
             return True
     return False
 
@@ -334,31 +401,93 @@ def _rmdir_path(directory: Path) -> str | None:
 
 
 def _supports_dir_fd() -> bool:
-    """Report whether descriptor-relative ``open`` and ``rmdir`` are available.
+    """Report whether descriptor-relative removal is fully available.
 
     Returns:
-        ``True`` when both accept ``dir_fd`` on this platform.
+        ``True`` when ``O_DIRECTORY`` and ``O_NOFOLLOW`` exist, ``open``,
+        ``rmdir`` and ``stat`` accept ``dir_fd``, and ``stat`` accepts
+        ``follow_symlinks``.
     """
-    return os.rmdir in os.supports_dir_fd and os.open in os.supports_dir_fd
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.rmdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+    )
 
 
-def _open_root(root: Path) -> int | str:
-    """Open the scan root as a directory descriptor.
+def _identity_mismatch(
+    info: os.stat_result,
+    root_identity: tuple[int, int] | None,
+) -> bool:
+    """Report whether ``info`` names a different directory than the scan.
+
+    Args:
+        info: Current status of the root, following symlinks.
+        root_identity: ``(st_dev, st_ino)`` recorded at scan time, or
+            ``None`` when there is nothing to compare.
+
+    Returns:
+        ``True`` when an identity was recorded and it differs.
+    """
+    return root_identity is not None and (info.st_dev, info.st_ino) != root_identity
+
+
+def _open_root(root: Path, root_identity: tuple[int, int] | None) -> int | str:
+    """Open the scan root as a directory descriptor and check its identity.
+
+    The root is opened following symlinks, so a root the caller reached
+    through a symlink keeps working while it leads to the scanned directory.
 
     Args:
         root: Scan root to open.
+        root_identity: ``(st_dev, st_ino)`` recorded at scan time, or
+            ``None`` to skip the identity check.
 
     Returns:
-        The open descriptor, or the skip reason when it cannot be opened.
+        The open descriptor, or the skip reason when it cannot be opened or
+        is no longer the scanned directory.
     """
     try:
-        return os.open(root, _DIRECTORY_FLAGS)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as exc:
         return _skip_reason(exc)
+    try:
+        info = os.fstat(root_fd)
+    except OSError as exc:
+        os.close(root_fd)
+        return _skip_reason(exc)
+    if _identity_mismatch(info, root_identity):
+        os.close(root_fd)
+        return SKIP_REASON_PATH_CHANGED
+    return root_fd
+
+
+def _check_root_path(root: Path, root_identity: tuple[int, int] | None) -> str | None:
+    """Check the scan root by path where descriptors are unavailable.
+
+    Args:
+        root: Scan root, followed if it is a symlink.
+        root_identity: ``(st_dev, st_ino)`` recorded at scan time, or
+            ``None`` to skip the identity check.
+
+    Returns:
+        ``None`` when the root may be used, otherwise a skip reason.
+    """
+    if root_identity is None:
+        return None
+    try:
+        info = os.stat(root)
+    except OSError as exc:
+        return _skip_reason(exc)
+    return SKIP_REASON_PATH_CHANGED if _identity_mismatch(info, root_identity) else None
 
 
 def _remove_below_root(
     directory: Path,
+    parts: tuple[str, ...],
     *,
     root: Path,
     root_fd: int | str | None,
@@ -367,19 +496,20 @@ def _remove_below_root(
 
     Args:
         directory: Candidate directory, strictly below ``root``.
+        parts: Components of ``directory`` below ``root``.
         root: Scan root the candidate was found under.
-        root_fd: Open root descriptor, the reason the root could not be
-            opened, or ``None`` where ``dir_fd`` is unsupported.
+        root_fd: Open root descriptor, the reason the root cannot be used,
+            or ``None`` where descriptors are unsupported and the root
+            check passed.
 
     Returns:
         ``None`` when the directory was removed, otherwise a skip reason.
     """
-    parts = _relative_parts(directory, root)
     if isinstance(root_fd, int):
         return _rmdir_below_descriptor(root_fd, parts)
     if root_fd is not None:
         return root_fd
-    if _has_symlink_component(root, parts):
+    if _path_changed(root, parts):
         return SKIP_REASON_PATH_CHANGED
     return _rmdir_path(directory)
 
@@ -388,6 +518,7 @@ def remove_directories(
     candidates: Sequence[Path],
     *,
     root: Path | None = None,
+    root_identity: tuple[int, int] | None = None,
 ) -> RemovalResult:
     """Remove exactly ``candidates``, in the given order, with ``rmdir``.
 
@@ -397,40 +528,66 @@ def remove_directories(
     the rest; a parent of a skipped child is then skipped too, because it
     is no longer empty.
 
-    With ``root``, every candidate must lie below it and no component
-    below ``root`` is followed if it became a symlink. Where ``os.rmdir``
-    supports ``dir_fd``, the root is opened once, each intermediate
-    component is opened with ``O_NOFOLLOW`` relative to its parent, and the
-    leaf is removed relative to its parent's descriptor. Elsewhere a
-    candidate with a symlink component below ``root``, the leaf included,
-    is refused. Either way such a candidate is skipped as
+    With ``root``, only directories really below the scanned root are
+    removed. Every candidate is checked before the first removal: one that
+    is not strictly below ``root``, or that has a ``.`` or ``..`` component,
+    raises ``ValueError`` and nothing is removed. With ``root_identity`` as
+    well, the root must still be the directory that was scanned; otherwise
+    every candidate is skipped as ``"path changed"``. The root itself is
+    followed if it is a symlink, so a root reached through one keeps
+    working while it leads to the scanned directory.
+
+    Where ``open``, ``rmdir`` and ``stat`` fully support descriptors, the
+    root is opened once, each intermediate component is opened with
+    ``O_NOFOLLOW`` relative to its parent, and the leaf is removed relative
+    to its parent's descriptor, so a component swapped for a symlink is
+    never followed. Elsewhere the check is best effort: just before each
+    removal, a candidate with a symlink or junction component below
+    ``root``, or with an intermediate component that is no longer a
+    directory, is refused, but a swap between that check and ``rmdir`` is
+    not prevented. Either way a refused candidate is skipped as
     ``"path changed"``.
 
     Args:
         candidates: Directories to remove, children before parents.
         root: Scan root the candidates were found under. Without it each
             candidate is removed by path.
+        root_identity: ``(st_dev, st_ino)`` of the root at scan time, as in
+            :attr:`EmptyDirScan.root_identity`. Used only with ``root``;
+            ``None`` skips the root identity check.
 
     Returns:
         The removed directories and the skipped ones with their reasons.
 
     Raises:
         ValueError: If ``root`` is given and a candidate is not strictly
-            below it.
+            below it or has a ``.`` or ``..`` component.
     """
+    planned = [
+        (directory, () if root is None else _relative_parts(directory, root))
+        for directory in candidates
+    ]
     removed: list[Path] = []
     skipped: list[tuple[Path, str]] = []
     with ExitStack() as stack:
         root_fd: int | str | None = None
-        if root is not None and _supports_dir_fd():
-            root_fd = _open_root(root)
-            if isinstance(root_fd, int):
-                stack.callback(os.close, root_fd)
-        for directory in candidates:
+        if root is not None and planned:
+            if _supports_dir_fd():
+                root_fd = _open_root(root, root_identity)
+                if isinstance(root_fd, int):
+                    stack.callback(os.close, root_fd)
+            else:
+                root_fd = _check_root_path(root, root_identity)
+        for directory, parts in planned:
             if root is None:
                 reason = _rmdir_path(directory)
             else:
-                reason = _remove_below_root(directory, root=root, root_fd=root_fd)
+                reason = _remove_below_root(
+                    directory,
+                    parts,
+                    root=root,
+                    root_fd=root_fd,
+                )
             if reason is None:
                 removed.append(directory)
             else:

@@ -95,6 +95,30 @@ def test_find_empty_directories_orders_sibling_subtrees(
     )
 
 
+def _identity(path: Path) -> tuple[int, int]:
+    """Return the ``(st_dev, st_ino)`` pair a scan records for ``path``.
+
+    Args:
+        path: Directory to identify.
+
+    Returns:
+        The device and inode numbers of ``path``.
+    """
+    info = path.stat()
+    return (info.st_dev, info.st_ino)
+
+
+def _without_dir_fd(monkeypatch: pytest.MonkeyPatch, *, dir_fd: bool) -> None:
+    """Force the path-based fallback when ``dir_fd`` is ``False``.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        dir_fd: Whether to keep descriptor-relative removal available.
+    """
+    if not dir_fd:
+        monkeypatch.setattr(os, "supports_dir_fd", set())
+
+
 def _make_tree(root: Path) -> None:
     """Create a sample directory tree with mixed empty and populated dirs.
 
@@ -388,7 +412,11 @@ def test_find_empty_directories_reports_unreadable_subtree(tmp_path: Path) -> No
         locked.chmod(stat.S_IRWXU)
 
     assert_that(scan).is_equal_to(
-        EmptyDirScan(candidates=(tmp_path / "plain",), unreadable=(locked,)),
+        EmptyDirScan(
+            candidates=(tmp_path / "plain",),
+            unreadable=(locked,),
+            root_identity=_identity(tmp_path),
+        ),
     )
     assert_that(found).is_equal_to([tmp_path / "plain"])
 
@@ -416,7 +444,11 @@ def test_scan_empty_directories_reports_unreadable_root(
     scan = scan_empty_directories(tmp_path)
 
     assert_that(scan).is_equal_to(
-        EmptyDirScan(candidates=(), unreadable=(tmp_path,)),
+        EmptyDirScan(
+            candidates=(),
+            unreadable=(tmp_path,),
+            root_identity=_identity(tmp_path),
+        ),
     )
 
 
@@ -556,10 +588,14 @@ def test_remove_directories_with_root_removes_planned_tree(
     assert_that((tmp_path / "photos" / "2020" / "pic.jpg").is_file()).is_true()
 
 
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
 def test_remove_directories_with_root_reports_file_component(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
 ) -> None:
     """An ancestor replaced by a file counts as a changed path."""
+    _without_dir_fd(monkeypatch, dir_fd=dir_fd)
     (tmp_path / "parent").write_text("data")
 
     result = remove_directories([tmp_path / "parent" / "child"], root=tmp_path)
@@ -628,7 +664,7 @@ def test_remove_directories_with_root_reports_leaf_gone_after_rmdir(
         real_rmdir(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "rmdir", vanishing_rmdir)
-    monkeypatch.setattr(os, "supports_dir_fd", {vanishing_rmdir, os.open})
+    monkeypatch.setattr(os, "supports_dir_fd", {vanishing_rmdir, os.open, os.stat})
 
     result = remove_directories(
         [tmp_path / "gone", tmp_path / "later"],
@@ -657,7 +693,7 @@ def test_remove_directories_with_root_reports_permission_denied(
         real_rmdir(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "rmdir", denied_rmdir)
-    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open})
+    monkeypatch.setattr(os, "supports_dir_fd", {denied_rmdir, os.open, os.stat})
 
     result = remove_directories(
         [tmp_path / "denied", tmp_path / "later"],
@@ -689,7 +725,11 @@ def test_scan_empty_directories_prunes_unreadable_excluded_directory(
         excluded.chmod(stat.S_IRWXU)
 
     assert_that(scan).is_equal_to(
-        EmptyDirScan(candidates=(tmp_path / "plain",), unreadable=()),
+        EmptyDirScan(
+            candidates=(tmp_path / "plain",),
+            unreadable=(),
+            root_identity=_identity(tmp_path),
+        ),
     )
 
 
@@ -739,3 +779,282 @@ def test_remove_directories_with_root_reports_unopenable_ancestor(
         ((locked / "child", "permission denied"),),
     )
     assert_that((locked / "child").is_dir()).is_true()
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+@pytest.mark.parametrize(
+    "parts",
+    [("..", "outside"), ("a", "..", "..", "outside")],
+    ids=["parent", "nested-parent"],
+)
+def test_remove_directories_rejects_dot_dot_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+    parts: tuple[str, ...],
+) -> None:
+    """A ``..`` component is a caller error and never escapes the root."""
+    _without_dir_fd(monkeypatch, dir_fd=dir_fd)
+    root = tmp_path / "root"
+    (root / "a").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="not below"):
+        remove_directories([root.joinpath(*parts)], root=root)
+    assert_that(outside.is_dir()).is_true()
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_validates_every_candidate_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A bad candidate late in the list raises before anything is removed."""
+    _without_dir_fd(monkeypatch, dir_fd=dir_fd)
+    root = tmp_path / "root"
+    (root / "a").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+
+    with pytest.raises(ValueError, match="not below"):
+        remove_directories([root / "a", tmp_path / "elsewhere"], root=root)
+    assert_that((root / "a").is_dir()).is_true()
+    assert_that((tmp_path / "elsewhere").is_dir()).is_true()
+
+
+def test_scan_empty_directories_records_root_identity(tmp_path: Path) -> None:
+    """The scan records the device and inode of the root it walked."""
+    info = tmp_path.stat()
+
+    scan = scan_empty_directories(tmp_path)
+
+    assert_that(scan.root_identity).is_equal_to((info.st_dev, info.st_ino))
+
+
+def test_scan_empty_directories_without_root_has_no_identity(tmp_path: Path) -> None:
+    """A root that cannot be stat'ed has no recorded identity."""
+    scan = scan_empty_directories(tmp_path / "missing")
+
+    assert_that(scan.root_identity).is_none()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_skips_all_when_root_was_swapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A root replaced by a symlink to another tree removes nothing there."""
+    _without_dir_fd(monkeypatch, dir_fd=dir_fd)
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    (root / "a" / "b").mkdir(parents=True)
+    (outside / "a" / "b").mkdir(parents=True)
+    scan = scan_empty_directories(root)
+    root.rename(tmp_path / "moved")
+    root.symlink_to(outside, target_is_directory=True)
+
+    result = remove_directories(
+        scan.candidates,
+        root=root,
+        root_identity=scan.root_identity,
+    )
+
+    assert_that(result.removed).is_empty()
+    assert_that(result.skipped).is_equal_to(
+        ((root / "a" / "b", "path changed"), (root / "a", "path changed")),
+    )
+    assert_that((outside / "a" / "b").is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "lstat"])
+def test_remove_directories_accepts_root_reached_through_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dir_fd: bool,
+) -> None:
+    """A root the caller reached through a symlink before the scan works."""
+    _without_dir_fd(monkeypatch, dir_fd=dir_fd)
+    real = tmp_path / "real"
+    (real / "a" / "b").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    scan = scan_empty_directories(link)
+
+    result = remove_directories(
+        scan.candidates,
+        root=link,
+        root_identity=scan.root_identity,
+    )
+
+    assert_that(result).is_equal_to(
+        RemovalResult(removed=(link / "a" / "b", link / "a"), skipped=()),
+    )
+    assert_that(list(real.iterdir())).is_empty()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["O_DIRECTORY", "O_NOFOLLOW", "stat_dir_fd", "stat_follow_symlinks"],
+)
+def test_supports_dir_fd_requires_every_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+) -> None:
+    """Descriptor removal needs no-follow flags and descriptor-relative stat."""
+    monkeypatch.setattr(os, "O_DIRECTORY", 0x100000, raising=False)
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0x100, raising=False)
+    monkeypatch.setattr(os, "supports_dir_fd", {os.rmdir, os.open, os.stat})
+    monkeypatch.setattr(os, "supports_follow_symlinks", {os.stat})
+    if missing.startswith("O_"):
+        monkeypatch.delattr(os, missing)
+    elif missing == "stat_dir_fd":
+        monkeypatch.setattr(os, "supports_dir_fd", {os.rmdir, os.open})
+    else:
+        monkeypatch.setattr(os, "supports_follow_symlinks", set())
+
+    assert_that(empty_dirs._supports_dir_fd()).is_false()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="symlinks need privileges on Windows")
+def test_remove_directories_falls_back_without_no_follow_flag(
+    swapped_tree: tuple[Path, Path, list[Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``O_NOFOLLOW`` the fallback still refuses a symlinked ancestor."""
+    root, outside, planned = swapped_tree
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+
+    result = remove_directories(planned, root=root)
+
+    assert_that(result.removed).is_empty()
+    assert_that((outside / "real" / "child").is_dir()).is_true()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="isjunction needs 3.12")
+@pytest.mark.parametrize("leaf", [False, True], ids=["ancestor", "leaf"])
+def test_remove_directories_fallback_refuses_junction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    leaf: bool,
+) -> None:
+    """Without descriptors a component that is a junction counts as changed."""
+    monkeypatch.setattr(os, "supports_dir_fd", set())
+    (tmp_path / "parent" / "child").mkdir(parents=True)
+    junction = tmp_path / "parent" / "child" if leaf else tmp_path / "parent"
+
+    def fake_isjunction(path: os.PathLike[str] | str) -> bool:
+        """Report only the chosen component as a junction."""
+        return Path(path) == junction
+
+    monkeypatch.setattr(os.path, "isjunction", fake_isjunction)
+
+    result = remove_directories([tmp_path / "parent" / "child"], root=tmp_path)
+
+    assert_that(result.skipped).is_equal_to(
+        ((tmp_path / "parent" / "child", "path changed"),),
+    )
+    assert_that((tmp_path / "parent" / "child").is_dir()).is_true()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="Windows cannot open a directory descriptor")
+def test_remove_directories_closes_ancestor_descriptors_early(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most the root, one ancestor and its child are open at once."""
+    parts = ["d"] * 40
+    deep = tmp_path.joinpath(*parts)
+    deep.mkdir(parents=True)
+    real_open = os.open
+    real_close = os.close
+    live: set[int] = set()
+    peak = 0
+
+    def counting_open(
+        path: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal peak
+        fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        live.add(fd)
+        peak = max(peak, len(live))
+        return fd
+
+    def counting_close(fd: int) -> None:
+        live.discard(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "open", counting_open)
+    monkeypatch.setattr(os, "close", counting_close)
+    monkeypatch.setattr(
+        os,
+        "supports_dir_fd",
+        {os.rmdir, counting_open, os.stat},
+    )
+
+    result = remove_directories([deep], root=tmp_path)
+
+    assert_that(result.removed).is_equal_to((deep,))
+    assert_that(peak).is_less_than_or_equal_to(3)
+    assert_that(live).is_empty()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="Windows cannot open a directory descriptor")
+def test_remove_directories_closes_root_when_fstat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root that cannot be stat'ed after opening is closed and reported."""
+    (tmp_path / "a").mkdir()
+    identity = _identity(tmp_path)
+    real_fstat = os.fstat
+    real_close = os.close
+    failed: list[int] = []
+    closed: list[int] = []
+
+    def failing_fstat(fd: int) -> os.stat_result:
+        """Fail the first call, made on the root; pytest calls it later too."""
+        if failed:
+            return real_fstat(fd)
+        failed.append(fd)
+        raise OSError(errno.EIO, "I/O error")
+
+    def recording_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+    monkeypatch.setattr(os, "close", recording_close)
+
+    result = remove_directories(
+        [tmp_path / "a"],
+        root=tmp_path,
+        root_identity=identity,
+    )
+
+    assert_that(result.skipped).is_equal_to(((tmp_path / "a", "I/O error"),))
+    assert_that(closed).is_equal_to(failed)
+    assert_that((tmp_path / "a").is_dir()).is_true()
+
+
+def test_remove_directories_fallback_reports_missing_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without descriptors a vanished root skips every candidate as missing."""
+    monkeypatch.setattr(os, "supports_dir_fd", set())
+    root = tmp_path / "root"
+    root.mkdir()
+    identity = _identity(root)
+    root.rmdir()
+
+    result = remove_directories([root / "a"], root=root, root_identity=identity)
+
+    assert_that(result.skipped).is_equal_to(((root / "a", "no longer exists"),))
