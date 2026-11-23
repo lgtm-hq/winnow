@@ -21,6 +21,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.20] - 2026-11-23
+
+### Fixed
+
+- **ci**: fail the GHCR cleanup when the package probe errors (#470) (ae2674e)
+
 ## [0.37.19] - 2026-11-23
 
 ### Changed
