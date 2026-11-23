@@ -219,6 +219,16 @@ def _assert_direct_job(steps: list[dict[str, Any]], where: str) -> None:
             guarded.add(index - 1)
     assert_that(rechecks).described_as(f"{where} stray rechecks").is_equal_to(guarded)
 
+    # A step with its own condition can run after a failed verify or recheck,
+    # and one that may fail quietly hides it. Only the rechecks carry an `if`.
+    for index, step in enumerate(steps):
+        label = f"{where} step {index} ({step.get('name')})"
+        assert_that(step).described_as(label).does_not_contain_key(
+            "continue-on-error",
+        )
+        if index not in rechecks and index != len(steps) - 1:
+            assert_that(step).described_as(label).does_not_contain_key("if")
+
 
 def _assert_direct_jobs(workflows: dict[str, dict[str, Any]]) -> None:
     """Check every job that calls harden-runner directly.
@@ -229,7 +239,19 @@ def _assert_direct_jobs(workflows: dict[str, dict[str, Any]]) -> None:
     jobs = _direct_jobs(workflows)
     assert_that(set(jobs)).contains(*_DIRECT_JOBS)
     for (name, job_id), steps in jobs.items():
-        _assert_direct_job(steps, f"{name}:{job_id}")
+        where = f"{name}:{job_id}"
+        job = workflows[name]["jobs"][job_id]
+        # lgtm-ci's verify and recheck steps pass with a notice on runners
+        # that are not hosted Linux, so any other runner is unprotected.
+        runner = job.get("runs-on")
+        assert_that(runner).described_as(f"{where} runs-on").is_instance_of(str)
+        assert_that(str(runner)).described_as(f"{where} runs-on").starts_with(
+            "ubuntu-",
+        )
+        assert_that(job).described_as(where).does_not_contain_key(
+            "continue-on-error",
+        )
+        _assert_direct_job(steps, where)
 
 
 def _job_steps(
@@ -307,6 +329,54 @@ def test_a_job_without_its_final_recheck_fails(name: str, job_id: str) -> None:
     workflows = copy.deepcopy(_workflows())
     steps = _job_steps(workflows, name, job_id)
     del steps[_index(steps, _RECHECK_NAME)]
+    with pytest.raises(AssertionError):
+        _assert_direct_jobs(workflows)
+
+
+@pytest.mark.parametrize(
+    ("job_id", "step_name"),
+    [
+        ("pypi-upload", "Upload to PyPI"),
+        ("homebrew-dispatch", "Dispatch formula update"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("if", "${{ always() }}"), ("continue-on-error", True)],
+)
+def test_a_publish_that_escapes_its_recheck_fails(
+    job_id: str,
+    step_name: str,
+    key: str,
+    value: object,
+) -> None:
+    """A publish step with its own condition, or allowed to fail, fails the check.
+
+    Args:
+        job_id: Job id in the tag publish workflow.
+        step_name: The irreversible step.
+        key: The step key that lets it run or pass regardless.
+        value: The value given to that key.
+    """
+    workflows = copy.deepcopy(_workflows())
+    steps = _job_steps(workflows, "publish-pypi-on-tag.yml", job_id)
+    steps[_index(steps, step_name)][key] = value
+    with pytest.raises(AssertionError):
+        _assert_direct_jobs(workflows)
+
+
+@pytest.mark.parametrize(("name", "job_id"), sorted(_DIRECT_JOBS))
+@pytest.mark.parametrize("runner", ["macos-latest", "windows-latest", ["self-hosted"]])
+def test_a_job_off_hosted_linux_fails(name: str, job_id: str, runner: object) -> None:
+    """Moving a direct job off hosted Ubuntu fails the check.
+
+    Args:
+        name: Workflow file name.
+        job_id: Job id.
+        runner: A ``runs-on`` value the verify step does not enforce on.
+    """
+    workflows = copy.deepcopy(_workflows())
+    workflows[name]["jobs"][job_id]["runs-on"] = runner
     with pytest.raises(AssertionError):
         _assert_direct_jobs(workflows)
 
