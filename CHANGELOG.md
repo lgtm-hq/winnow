@@ -21,6 +21,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.37.15] - 2026-11-23
+
+### Changed
+
+- **media**: export the runner's time-out exception (#447) (6b602a8)
+- **lint**: teach the spell-checker that caf is a container name (#446) (6e391f9)
+
+### Fixed
+
+- **cli**: make clean remove exactly the directories the user confirmed (#444) (802e805)
+
 ## [0.37.14] - 2026-11-23
 
 ### Changed
