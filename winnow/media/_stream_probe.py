@@ -30,7 +30,7 @@ from winnow.media._ffprobe import (
 )
 from winnow.models.media import MediaType
 
-PROBE_TIMEOUT_SECONDS: Final[float] = 10.0
+PROBE_TIMEOUT_SECONDS: Final[float] = 2.0
 """Longest a stream-type probe may run."""
 
 PROBE_STDOUT_LIMIT: Final[int] = 1024 * 1024

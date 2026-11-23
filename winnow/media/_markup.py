@@ -91,6 +91,11 @@ def skip_xml_prolog(
 def _past_doctype(data: bytes, position: int) -> int | None:
     """Return the position after a DOCTYPE starting at ``position``.
 
+    W3C XML 1.0, 2.8 and 4.2: quoted system and public literals and entity
+    values may hold ``>``, ``[`` or ``]``; comments may hold quotes. The
+    scan skips quoted literals and comments whole and tracks the internal
+    subset's brackets, moving forward only.
+
     Args:
         data: Bytes to scan.
         position: Where ``<!DOCTYPE`` would start.
@@ -101,12 +106,36 @@ def _past_doctype(data: bytes, position: int) -> int | None:
     """
     if not data.startswith(b"<!DOCTYPE", position):
         return -1
-    close = data.find(b">", position)
-    bracket = data.find(b"[", position, close if close >= 0 else len(data))
-    if bracket >= 0:
-        subset_end = data.find(b"]", bracket)
-        close = data.find(b">", subset_end) if subset_end >= 0 else -1
-    return None if close < 0 else close + 1
+    index = position + len(b"<!DOCTYPE")
+    depth = 0
+    while index < len(data):
+        byte = data[index]
+        if byte in _QUOTES:
+            end = data.find(bytes([byte]), index + 1)
+            if end < 0:
+                return None
+            index = end + 1
+            continue
+        if data.startswith(b"<!--", index):
+            end = data.find(b"-->", index + 4)
+            if end < 0:
+                return None
+            index = end + 3
+            continue
+        if byte == _OPEN_SUBSET:
+            depth += 1
+        elif byte == _CLOSE_SUBSET and depth:
+            depth -= 1
+        elif byte == _TAG_END and not depth:
+            return index + 1
+        index += 1
+    return None
+
+
+_QUOTES: Final[frozenset[int]] = frozenset(b"\"'")
+_OPEN_SUBSET: Final[int] = ord("[")
+_CLOSE_SUBSET: Final[int] = ord("]")
+_TAG_END: Final[int] = ord(">")
 
 
 def skip_c_space(data: bytes, position: int) -> int | None:

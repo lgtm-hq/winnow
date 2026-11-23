@@ -11,15 +11,10 @@ from __future__ import annotations
 
 import re
 import struct
+import uuid
 from typing import Final
 
 from winnow.media._detect_base import Content
-from winnow.media._markup import (
-    element_named,
-    skip_c_space,
-    skip_space,
-    skip_xml_prolog,
-)
 from winnow.media._packet_streams import mpeg_video_sequence
 
 TEXT_BYTES: Final[int] = 8 * 1024
@@ -128,149 +123,6 @@ _SGI_HEADER: Final[int] = 512
 """An SGI file starts with a 512-byte header."""
 
 
-_NETPBM_FIELDS: Final[dict[bytes, int]] = {
-    b"P1": 2,
-    b"P2": 3,
-    b"P3": 3,
-    b"P4": 2,
-    b"P5": 3,
-    b"P6": 3,
-}
-"""Header numbers after each Netpbm magic: width, height and maxval."""
-
-_NETPBM_DIGITS: Final[int] = 10
-"""Longest header number; more than ten digits is not a Netpbm dimension."""
-
-
-def _netpbm_number(head: bytes, position: int) -> tuple[int, int] | None:
-    """Read the next Netpbm header number after whitespace and comments.
-
-    Netpbm: whitespace separates the fields and ``#`` starts a comment
-    that runs to the end of the line. The scan moves forward only.
-
-    Args:
-        head: The file's opening bytes.
-        position: Where to start.
-
-    Returns:
-        The number and the position after it, or ``None`` when there is no
-        separator, no number, or a number of more than ten digits.
-    """
-    start = position
-    while True:
-        position = skip_space(head, position)
-        if head[position : position + 1] != b"#":
-            break
-        newline = head.find(b"\n", position)
-        if newline < 0:
-            return None
-        position = newline + 1
-    if position == start:
-        return None
-    end = position
-    while end < len(head) and head[end] in _DIGITS:
-        end += 1
-    if not 0 < end - position <= _NETPBM_DIGITS:
-        return None
-    return int(head[position:end]), end
-
-
-_DIGITS: Final[frozenset[int]] = frozenset(b"0123456789")
-
-
-def netpbm(content: Content) -> bool:
-    """PBM, PGM, PPM or PAM header (Netpbm format specifications).
-
-    P1 to P6 need whitespace after the magic and then positive width and
-    height (and a maxval of 1 to 65535 where the format has one). P7 (PAM)
-    needs ``WIDTH``, ``HEIGHT`` and ``ENDHDR`` header lines.
-
-    Args:
-        content: File content.
-
-    Returns:
-        Whether the file is a Netpbm image.
-    """
-    head = content.head
-    magic = head[:2]
-    if magic == b"P7":
-        header = head[:1024]
-        return (
-            header[2:3] == b"\n"
-            and b"\nWIDTH " in header
-            and b"\nHEIGHT " in header
-            and b"\nENDHDR" in header
-        )
-    fields = _NETPBM_FIELDS.get(magic)
-    if fields is None or head[2:3] not in {b" ", b"\t", b"\n", b"\r", b"#"}:
-        return False
-    position = 2
-    numbers: list[int] = []
-    for _ in range(fields):
-        token = _netpbm_number(head, position)
-        if token is None:
-            return False
-        number, position = token
-        numbers.append(number)
-    width, height = numbers[0], numbers[1]
-    maxval_ok = fields == 2 or 1 <= numbers[2] <= 65535
-    return width > 0 and height > 0 and maxval_ok
-
-
-_XBM_WIDTH: Final[re.Pattern[bytes]] = re.compile(
-    rb"#define[ \t]+(\w{0,256})_width[ \t]+[0-9]{1,10}",
-)
-_XBM_HEIGHT: Final[re.Pattern[bytes]] = re.compile(
-    rb"#define[ \t]+(\w{0,256})_height[ \t]+[0-9]{1,10}",
-)
-
-
-def xbm(content: Content) -> bool:
-    """X11 bitmap (X Window System, Xlib ``XReadBitmapFile`` format).
-
-    The file starts with ``#define <name>_width <n>`` and, after blank
-    lines or comments, ``#define <name>_height <n>``, and holds a
-    ``<name>_bits[]`` array. The space and comments between the defines
-    are skipped by :func:`~winnow.media._markup.skip_c_space`, in one pass.
-
-    Args:
-        content: File content.
-
-    Returns:
-        Whether the file is an XBM.
-    """
-    head = content.head
-    width = _XBM_WIDTH.match(head)
-    if width is None:
-        return False
-    position = skip_c_space(head, width.end())
-    if position is None or position == width.end():
-        return False
-    height = _XBM_HEIGHT.match(head, position)
-    if height is None or height.group(1) != width.group(1):
-        return False
-    bits = re.compile(rb"char[ \t]+" + re.escape(width.group(1)) + rb"_bits[ \t]*\[")
-    return bits.search(head, height.end()) is not None
-
-
-def svg(content: Content) -> bool:
-    """SVG: an ``svg`` root element (W3C SVG 1.1, 5.1.1).
-
-    An XML declaration, processing instructions, comments and a DOCTYPE
-    may come first, anywhere in the opening bytes read; they are skipped
-    by :func:`~winnow.media._markup.skip_xml_prolog`, in one pass.
-
-    Args:
-        content: File content.
-
-    Returns:
-        Whether the document's root element is ``svg``.
-    """
-    head = content.head
-    position = skip_xml_prolog(head, instructions=True, doctype=True)
-    return position is not None and element_named(head, position, b"svg")
-
-
 def icns(content: Content) -> bool:
     """Apple icon image: ``icns`` and a length within the file.
 
@@ -346,7 +198,9 @@ def au(content: Content) -> bool:
     """Sun/NeXT audio: magic, a data offset of at least 24, an encoding.
 
     Sun ``audio_filehdr``: ``.snd`` with big-endian fields, or ``dns.``
-    with little-endian fields as DEC systems wrote it.
+    with little-endian fields as DEC systems wrote it. SoX ``au.c`` also
+    reads DEC's own magic, ``.sd`` and NUL (big-endian) or NUL and ``ds.``
+    (little-endian), with the same header.
 
     Args:
         content: File content.
@@ -355,7 +209,7 @@ def au(content: Content) -> bool:
         Whether the file is an AU file.
     """
     head = content.head
-    order = {b".snd": ">", b"dns.": "<"}.get(head[:4])
+    order = {b".snd": ">", b"dns.": "<", b".sd\x00": ">", b"\x00ds.": "<"}.get(head[:4])
     if len(head) < 24 or order is None:
         return False
     fields: tuple[int, ...] = struct.unpack_from(f"{order}5I", head, 4)
@@ -488,25 +342,6 @@ def mpeg_video(content: Content) -> bool:
     return mpeg_video_sequence(content.head)
 
 
-def eps(content: Content) -> bool:
-    """Encapsulated PostScript (Adobe Technical Note 5002, EPSF 3.0).
-
-    The DSC header line ``%!PS-Adobe-<n> EPSF-<n>`` (section 2), or the
-    DOS EPS binary header ``C5 D0 D3 C6`` (section 5).
-
-    Args:
-        content: File content.
-
-    Returns:
-        Whether the file is EPS.
-    """
-    head = content.head
-    if head.startswith(b"\xc5\xd0\xd3\xc6"):
-        return True
-    first_line = head[:256].split(b"\n", 1)[0].split(b"\r", 1)[0]
-    return first_line.startswith(b"%!PS-Adobe-") and b" EPSF-" in first_line
-
-
 def monkeys_audio(content: Content) -> bool:
     """Monkey's Audio: ``MAC `` and a file version (APE_DESCRIPTOR/APE_HEADER).
 
@@ -632,6 +467,117 @@ def dv(content: Content) -> bool:
     return head[:3] == b"\x1f\x07\x00" and head[3:4] in {b"\x3f", b"\xbf"}
 
 
+WAVE64_RIFF: Final[bytes] = uuid.UUID("66666972-912e-11cf-a5d6-28db04c10000").bytes_le
+"""Sony Wave64 ``riff`` chunk GUID (Sony Wave64 specification)."""
+
+WAVE64_WAVE: Final[bytes] = uuid.UUID("65766177-acf3-11d3-8cd1-00c04f8edb8a").bytes_le
+"""Sony Wave64 ``wave`` form GUID."""
+
+
+def wave64(content: Content) -> bool:
+    """Sony Wave64: the ``riff`` GUID, a 64-bit size, the ``wave`` GUID.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is Wave64.
+    """
+    head = content.head
+    return head[:16] == WAVE64_RIFF and head[24:40] == WAVE64_WAVE
+
+
+def qoi(content: Content) -> bool:
+    """QOI image: ``qoif``, a non-zero size, 3 or 4 channels, colorspace 0/1.
+
+    The Quite OK Image Format specification 1.0, header.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is QOI.
+    """
+    head = content.head
+    if len(head) < 14 or head[:4] != b"qoif":
+        return False
+    return (
+        _u32be(head, 4) > 0
+        and _u32be(head, 8) > 0
+        and head[12] in {3, 4}
+        and head[13] in {0, 1}
+    )
+
+
+def jng(content: Content) -> bool:
+    """JNG: the eight-byte signature then the ``JHDR`` chunk (JNG 1.0, 4).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is JNG.
+    """
+    head = content.head
+    return head[:8] == b"\x8bJNG\r\n\x1a\n" and head[12:16] == b"JHDR"
+
+
+def modi(content: Content) -> bool:
+    """Microsoft Document Imaging (MDI): ``EP*`` NUL and a header offset.
+
+    The MDI header as file(1) (``Magdir/msdos``) records it, a TIFF-like
+    layout: the magic, then a little-endian offset inside the file.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is MODI.
+    """
+    head = content.head
+    return (
+        len(head) >= 8
+        and head[:4] == b"EP*\x00"
+        and 8 <= _u32le(head, 4) < content.size
+    )
+
+
+def openraster(content: Content) -> bool:
+    """OpenRaster: a ZIP whose first entry is ``mimetype``, stored, holding
+    ``image/openraster`` (OpenRaster specification, file layout).
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is OpenRaster.
+    """
+    head = content.head
+    if len(head) < 30 or head[:4] != b"PK\x03\x04" or _u16le(head, 8) != 0:
+        return False
+    name_length = _u16le(head, 26)
+    data = 30 + name_length + _u16le(head, 28)
+    return (
+        head[30 : 30 + name_length] == b"mimetype"
+        and head[data : data + 16] == b"image/openraster"
+    )
+
+
+def adif(content: Content) -> bool:
+    """AAC Audio Data Interchange Format: ``ADIF`` (ISO/IEC 13818-7, 6.2.1).
+
+    The ``adif_id`` magic; the plain-text guard keeps text that happens to
+    start with it from matching.
+
+    Args:
+        content: File content.
+
+    Returns:
+        Whether the file is ADIF.
+    """
+    return content.head[:4] == b"ADIF" and len(content.head) >= 8
+
+
 def is_text(head: bytes, *, size: int) -> bool:
     """Report whether the opening bytes are plain UTF-8 text.
 
@@ -667,6 +613,14 @@ _TEXT_CONTROLS: Final[bytes] = bytes(
 
 
 __all__ = [
+    "WAVE64_RIFF",
+    "WAVE64_WAVE",
+    "wave64",
+    "qoi",
+    "openraster",
+    "modi",
+    "jng",
+    "adif",
     "dv",
     "djvu",
     "fits",
@@ -674,7 +628,6 @@ __all__ = [
     "xcf",
     "musepack",
     "monkeys_audio",
-    "eps",
     "TEXT_BYTES",
     "au",
     "bmp",
@@ -687,15 +640,12 @@ __all__ = [
     "ico",
     "is_text",
     "mpeg_video",
-    "netpbm",
     "pcx",
     "program_stream",
     "realmedia",
     "sgi",
-    "svg",
     "tga",
     "tta",
     "voc",
     "wavpack",
-    "xbm",
 ]

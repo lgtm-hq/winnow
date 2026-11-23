@@ -419,7 +419,7 @@ def test_m2ts_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("data", "expected"),
     [
-        ((b"\x47" + b"\x00" * 187) * 2 + b"\x00" * 100, MediaType.AUDIO),
+        ((b"\x47" + b"\x00" * 187) * 2 + b"\x00" * 100, MediaType.VIDEO),
         (b"\x47" + b"\x00" * 600, None),
     ],
     ids=["two-packets-short-file", "one-sync-byte"],
@@ -431,7 +431,7 @@ def test_sync_points_needed(
     expected: MediaType | None,
 ) -> None:
     """Sync bytes count only in a row; a single ``47`` is not a stream."""
-    _stub_ffprobe(monkeypatch, _ok(AUDIO_ONLY))
+    _stub_ffprobe(monkeypatch, _ok(VIDEO_AND_AUDIO))
     target = tmp_path / "x.bin"
     target.write_bytes(data)
 
@@ -444,10 +444,11 @@ def test_sync_points_needed(
     ("run", "expected", "reason"),
     [
         (None, None, "unknown unavailable: program tables incomplete"),
-        (_ok(AUDIO_ONLY), MediaType.AUDIO, "stream types audio from ffprobe"),
+        (_ok(AUDIO_ONLY), None, "ffprobe read only a window and saw audio"),
+        (_ok(VIDEO_AND_AUDIO), MediaType.VIDEO, "stream types video from ffprobe"),
         (_ok(b'{"streams": []}'), None, "unknown unresolved"),
     ],
-    ids=["no-ffprobe", "ffprobe-audio", "ffprobe-nothing"],
+    ids=["no-ffprobe", "ffprobe-audio", "ffprobe-video", "ffprobe-nothing"],
 )
 def test_ts_without_tables_asks_ffprobe(
     tmp_path: Path,

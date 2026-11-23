@@ -259,15 +259,19 @@ def test_flv_cut_before_its_end_asks_ffprobe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An FLV whose tags do not reach the end exactly is incomplete."""
+    """An FLV whose tags do not reach the end exactly is incomplete.
+
+    ffprobe reads only a window, so its audio-only answer is not taken.
+    """
     asked = _with_ffprobe(monkeypatch, _AUDIO_ONLY)
     data = _flv(0x04, *[_flv_tag(8, 32)] * 4)[:-7]
 
     result = _detect_bytes(tmp_path, data, "song.flv")
 
     assert_that(asked).is_equal_to(["flv"])
+    assert_that(result.media_type).is_none()
     assert_that(_details(result)).contains("streams=incomplete")
-    assert_that(_decision(result)).contains("from ffprobe")
+    assert_that(_decision(result)).contains("ffprobe read only a window")
 
 
 # --- blocker 4: an unrecognised stream asks ffprobe ---------------------------

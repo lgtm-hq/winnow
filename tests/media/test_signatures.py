@@ -88,7 +88,7 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
     ("orf", b"IIRO\x08\x00\x00\x00", "olympus-orf", IMAGE),
     ("orf-be", b"MMOR\x00\x00\x00\x08", "olympus-orf", IMAGE),
     ("rw2", b"IIU\x00\x18\x00\x00\x00", "panasonic-rw2", IMAGE),
-    ("raf", b"FUJIFILMCCD-RAW 0201FF383501", "fujifilm-raf", IMAGE),
+    ("raf", b"FUJIFILMCCD-RAW 0201FF383501" + b"\x00" * 16, "fujifilm-raf", IMAGE),
     ("x3f", bytes.fromhex("464f5662") + b"\x00" * 4, "sigma-x3f", IMAGE),
     ("mrw", b"\x00MRM\x00\x00\x00\x00", "minolta-mrw", IMAGE),
     ("ari", b"ARRI\x12\x34\x56\x78", "arri-ari", IMAGE),
@@ -170,7 +170,7 @@ _HEADERS: list[tuple[str, bytes, str, MediaType]] = [
         "mpeg-video",
         VIDEO,
     ),
-    ("y4m", b"YUV4MPEG2 W2 H2 F25:1\nFRAME\n", "yuv4mpeg", VIDEO),
+    ("y4m", b"YUV4MPEG2 W2 H2 F25:1\nFRAME\n" + b"\x10\x80" * 3, "yuv4mpeg", VIDEO),
     ("mpeg-audio", mpeg_frames(), "mpeg-audio", AUDIO),
     ("adts", adts_frames(), "adts", AUDIO),
     ("adts-crc", adts_frames(crc=True), "adts", AUDIO),
@@ -474,11 +474,11 @@ def test_two_byte_ac3_sync_alone_is_not_audio(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("data", "container"),
     [
-        (riff(b"RIFF", b"CDXA", b"data"), "riff"),
+        (riff(b"RIFF", b"XXXX", b"data"), "riff"),
         (riff(b"BW64", b"XXXX", b"data"), "riff"),
         (b"FORM\x00\x00\x00\x04FTXT", "iff"),
     ],
-    ids=["riff-cdxa", "bw64-other", "form-ftxt"],
+    ids=["riff-other", "bw64-other", "form-ftxt"],
 )
 def test_unlisted_form_type_is_unknown(
     tmp_path: Path, data: bytes, container: str

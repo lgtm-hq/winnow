@@ -324,8 +324,21 @@ _AMR_MAGICS: Final[tuple[bytes, ...]] = (
 """RFC 4867, 5: the AMR and AMR-WB storage format magic numbers."""
 
 
+_AMR_FRAME_TYPES: Final[dict[bytes, frozenset[int]]] = {
+    b"#!AMR\n": frozenset({*range(9), 15}),
+    b"#!AMR-WB\n": frozenset({*range(10), 14, 15}),
+    b"#!AMR_MC1.0\n": frozenset({*range(9), 15}),
+    b"#!AMR-WB_MC1.0\n": frozenset({*range(10), 14, 15}),
+}
+"""Frame types each storage format allows (RFC 4867, 5.3; 3GPP TS 26.101)."""
+
+
 def amr(content: Content) -> bool:
     """AMR or AMR-WB storage format (RFC 4867, section 5).
+
+    The magic, then (for the multichannel forms) a channel description with
+    28 reserved zero bits and 1 to 15 channels, then a frame header whose
+    padding bits are zero and whose frame type is defined (5.3).
 
     Args:
         content: File content.
@@ -333,7 +346,23 @@ def amr(content: Content) -> bool:
     Returns:
         Whether the file is AMR.
     """
-    return content.head.startswith(_AMR_MAGICS)
+    head = content.head
+    magic = next((m for m in _AMR_MAGICS if head.startswith(m)), None)
+    if magic is None:
+        return False
+    position = len(magic)
+    if b"_MC" in magic:
+        description = head[position : position + 4]
+        if len(description) < 4:
+            return False
+        channels: int = struct.unpack(">I", description)[0]
+        if channels >> 4 or not channels & 0x0F:
+            return False
+        position += 4
+    frame = head[position : position + 1]
+    if not frame or frame[0] & 0x83:
+        return False
+    return (frame[0] >> 3) & 0x0F in _AMR_FRAME_TYPES[magic]
 
 
 _MOD_TAGS: Final[frozenset[bytes]] = frozenset(
@@ -347,8 +376,10 @@ def mod(content: Content) -> bool:
     """ProTracker-family module: the format tag at offset 1080.
 
     ProTracker module format (as documented with ModPlug and libxmp): a
-    four-byte tag after the 31 sample headers and the order table, and a
-    song length of 1 to 128 patterns at offset 950.
+    four-byte tag after the 31 sample headers and the order table; a song
+    length of 1 to 128 patterns at offset 950; every order entry (952 to
+    1079) a pattern number below 128; and in each 30-byte sample header a
+    finetune of at most 15 and a volume of at most 64.
 
     Args:
         content: File content.
@@ -360,7 +391,15 @@ def mod(content: Content) -> bool:
     tag = head[_MOD_TAG_AT : _MOD_TAG_AT + 4]
     if len(tag) < 4 or not 1 <= head[950] <= 128:
         return False
-    return tag in _MOD_TAGS or _MOD_CHANNELS.fullmatch(tag) is not None
+    if not (tag in _MOD_TAGS or _MOD_CHANNELS.fullmatch(tag) is not None):
+        return False
+    if max(head[952:1080]) >= 128:
+        return False
+    for sample in range(31):
+        header = 20 + sample * 30
+        if head[header + 24] > 15 or head[header + 25] > 64:
+            return False
+    return True
 
 
 def scream_tracker_3(content: Content) -> bool:
@@ -536,7 +575,9 @@ def smacker(content: Content) -> bool:
 def nsv(content: Content) -> bool:
     """Nullsoft Streaming Video: ``NSVf`` file header or ``NSVs`` sync.
 
-    Nullsoft NSV format specification.
+    Nullsoft NSV format specification: ``NSVf`` and a header size of at
+    least 28 bytes and at most the file size; or ``NSVs``, two format
+    codes, width and height, and a non-zero frame-rate byte at offset 16.
 
     Args:
         content: File content.
@@ -544,7 +585,10 @@ def nsv(content: Content) -> bool:
     Returns:
         Whether the file is NSV.
     """
-    return content.head[:4] in {b"NSVf", b"NSVs"}
+    head = content.head
+    if head[:4] == b"NSVf" and len(head) >= 8:
+        return 28 <= _u32le(head, 4) <= content.size
+    return head[:4] == b"NSVs" and len(head) >= 19 and head[16] != 0
 
 
 def sgi_movie(content: Content) -> bool:

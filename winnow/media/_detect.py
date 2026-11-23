@@ -92,6 +92,7 @@ from winnow.media._header_checks import is_text
 from winnow.media._matroska import inspect_matroska
 from winnow.media._signatures import HEAD_BYTES, TAIL_BYTES, match_signature
 from winnow.media._signatures import MAX_BYTES_READ as SIGNATURE_BYTES_READ
+from winnow.media._text_formats import TEXT_MEDIA_EXTENSIONS
 from winnow.models.media import MediaType
 
 MIN_PUREMAGIC_MATCH_BYTES: Final[int] = 3
@@ -313,7 +314,8 @@ def _unrecognised_content(
     agreeing = _agreeing_puremagic_match(matches, extension_type, hints)
     if agreeing is not None:
         return agreeing
-    if is_text(content.head, size=content.size):
+    text_media = suffix.lstrip(".").casefold() in TEXT_MEDIA_EXTENSIONS
+    if not text_media and is_text(content.head, size=content.size):
         return decide("text", None, "non-media plain text", evidence=hints)
     return _by_extension(extension_type, hints, suffix=suffix)
 

@@ -52,14 +52,55 @@ RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
 )
 """RAW camera extensions missing from the stdlib ``mimetypes`` table."""
 
-DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(
-    dict.fromkeys(RAW_IMAGE_MIME_TYPES, MediaType.IMAGE),
+EXTENSION_ONLY_FORMATS: Mapping[str, MediaType] = MappingProxyType(
+    {
+        "669": MediaType.AUDIO,
+        "koz": MediaType.AUDIO,
+        "fli": MediaType.VIDEO,
+        "flc": MediaType.VIDEO,
+        "pict": MediaType.IMAGE,
+        "pct": MediaType.IMAGE,
+        "pic": MediaType.IMAGE,
+        "tga": MediaType.IMAGE,
+        "vst": MediaType.IMAGE,
+        "dib": MediaType.IMAGE,
+        "fpx": MediaType.IMAGE,
+        "jxl": MediaType.IMAGE,
+        "eps": MediaType.IMAGE,
+        "epsf": MediaType.IMAGE,
+        "epsi": MediaType.IMAGE,
+        "ai": MediaType.IMAGE,
+        "dxf": MediaType.IMAGE,
+        "dwg": MediaType.IMAGE,
+        "fig": MediaType.IMAGE,
+        "sk": MediaType.IMAGE,
+        "sk1": MediaType.IMAGE,
+        "ag": MediaType.IMAGE,
+        "mdi": MediaType.IMAGE,
+        "ora": MediaType.IMAGE,
+    },
 )
-"""RAW-format supplement seeded into default registries.
+"""Formats typed by extension only (#393, ruling item 2).
+
+They have no magic detection can rely on (FLIC, PICT, 669, TGA without a
+footer, a bare JPEG XL codestream, a raw DIB, FlashPix's shared OLE
+container) or are drawings and documents (DWG, DXF, xfig, Skencil, Applix
+Graphics, EPS and AI without ``EPSF``). Listing them here makes "typed by
+extension" hold on every host, not only where the MIME table knows the
+extension; each has the type ``main`` gave it.
+"""
+
+DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(
+    {
+        **dict.fromkeys(RAW_IMAGE_MIME_TYPES, MediaType.IMAGE),
+        **EXTENSION_ONLY_FORMATS,
+    },
+)
+"""Supplement seeded into default registries: RAW and extension-only formats.
 
 Mainstream formats (JPEG, PNG, MP4, MP3, ...) are intentionally absent; they
 resolve through content sniffing or the stdlib ``mimetypes`` table instead of a
-hand-maintained list.
+hand-maintained list. The defaults are name fallbacks, never overrides.
 """
 
 
@@ -452,6 +493,7 @@ default; use :func:`create_default_format_registry` for an isolated registry."""
 __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_FORMATS",
+    "EXTENSION_ONLY_FORMATS",
     "FormatRegistry",
     "RAW_IMAGE_MIME_TYPES",
     "create_default_format_registry",

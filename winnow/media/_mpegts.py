@@ -15,6 +15,17 @@ with a ``stream_type`` (13818-1, table 2-34) and descriptors. Any video
 stream gives video; audio streams with no video and nothing unrecognised
 give audio. When the tables are missing from the bytes read, or a stream
 cannot be classified, ffprobe is asked; without it the answer is unknown.
+All of the opening bytes are read, so a newer PMT version later on is seen.
+
+ffprobe reads only a window of a stream. When the tables were incomplete,
+its audio-only answer does not establish that no video follows, so it is
+unknown; a video answer decides. Tables that are hostile on their face
+(more than :data:`MAX_PROGRAMS` programs or :data:`MAX_PAT_SECTIONS` PAT
+sections) are unknown without asking ffprobe at all.
+
+Worst case: the native walk is linear in the 64 KiB head (about 15 ms);
+the only slower step is the ffprobe call, bounded by
+:data:`winnow.media._stream_probe.PROBE_TIMEOUT_SECONDS` (2 s).
 """
 
 from __future__ import annotations
@@ -43,6 +54,12 @@ _PAT_TABLE: Final[int] = 0x00
 _PMT_TABLE: Final[int] = 0x02
 _SECTION_HEADER: Final[int] = 3
 _CRC_BYTES: Final[int] = 4
+
+MAX_PROGRAMS: Final[int] = 64
+"""Programs a PAT may name before its tables count as hostile."""
+
+MAX_PAT_SECTIONS: Final[int] = 16
+"""PAT sections (``last_section_number`` + 1) allowed before it is hostile."""
 _STUFFING: Final[int] = 0xFF
 _DEMUXER: Final[str] = "mpegts"
 
@@ -183,6 +200,19 @@ class _Tables:
         return set(range(self.pat_last + 1)) <= self.pat_sections
 
     @property
+    def hostile(self) -> bool:
+        """Report whether the tables exceed the documented caps.
+
+        Returns:
+            ``True`` for more than :data:`MAX_PROGRAMS` programs or more than
+            :data:`MAX_PAT_SECTIONS` PAT sections.
+        """
+        too_many_sections = (
+            self.pat_last is not None and self.pat_last >= MAX_PAT_SECTIONS
+        )
+        return len(self.programs) > MAX_PROGRAMS or too_many_sections
+
+    @property
     def complete(self) -> bool:
         """Report whether the PAT and the PMT of every program were read.
 
@@ -251,9 +281,37 @@ def inspect_transport_stream(content: Content) -> Outcome | None:
             "unknown unresolved: pmt lists no audio or video stream",
             evidence=signals,
         )
+    if tables.hostile:
+        return decide(
+            container,
+            None,
+            "unknown unresolved: program tables exceed their caps; ffprobe not asked",
+            evidence=signals,
+        )
+    return _ask_ffprobe(content, container, signals, tables)
+
+
+def _ask_ffprobe(
+    content: Content,
+    container: str,
+    signals: tuple[TypeSignal, ...],
+    tables: _Tables,
+) -> Outcome:
+    """Settle a stream the tables did not, with ffprobe.
+
+    Args:
+        content: File content.
+        container: ``mpeg-ts`` or ``m2ts``.
+        signals: Evidence gathered so far.
+        tables: The tables read.
+
+    Returns:
+        The outcome; ffprobe's audio-only answer counts only when the
+        tables were complete.
+    """
     if not tables.complete:
         why = "program tables incomplete"
-    elif kinds:
+    elif tables.streams:
         why = "unrecognised stream type"
     else:
         why = "pmt lists no streams"
@@ -262,13 +320,20 @@ def inspect_transport_stream(content: Content) -> Outcome | None:
         *signals,
         evidence(probe.detail, probe.media_type, source="track-handler"),
     )
-    if probe.media_type is not None:
-        reason = f"stream types {probe.media_type.value} from ffprobe"
+    media_type = probe.media_type
+    if media_type == MediaType.AUDIO and not tables.complete:
+        media_type = None
+        reason = (
+            "unknown unresolved: ffprobe read only a window and saw audio;"
+            " that does not establish that no video follows"
+        )
+    elif media_type is not None:
+        reason = f"stream types {media_type.value} from ffprobe"
     elif not probe.available:
         reason = f"unknown unavailable: {why}, ffprobe needed"
     else:
         reason = "unknown unresolved: no audio or video stream established"
-    return decide(container, probe.media_type, reason, evidence=probed)
+    return decide(container, media_type, reason, evidence=probed)
 
 
 def _stream_signals(tables: _Tables) -> tuple[TypeSignal, ...]:
@@ -308,8 +373,6 @@ def _read_tables(head: bytes, *, start: int, stride: int) -> _Tables:
         if packet[0] != SYNC_BYTE:
             break
         _feed_packet(tables, packet)
-        if tables.complete:
-            break
     return tables
 
 

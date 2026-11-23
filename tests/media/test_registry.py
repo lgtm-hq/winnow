@@ -19,6 +19,7 @@ from winnow.media import (
     media_type_for_extension,
     normalize_extension,
 )
+from winnow.media.registry import EXTENSION_ONLY_FORMATS
 from winnow.models.media import MediaType
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00" + b"\x00" * 20
@@ -56,9 +57,11 @@ def test_default_registry_maps_representative_formats(
 
 
 def test_default_formats_shrunk_to_raw_supplement() -> None:
-    """DEFAULT_FORMATS only carries the RAW image supplement."""
-    assert_that(set(DEFAULT_FORMATS)).is_equal_to(set(RAW_IMAGE_MIME_TYPES))
-    assert_that(set(DEFAULT_FORMATS.values())).is_equal_to({MediaType.IMAGE})
+    """DEFAULT_FORMATS carries the RAW and extension-only supplements."""
+    expected = set(RAW_IMAGE_MIME_TYPES) | set(EXTENSION_ONLY_FORMATS)
+    assert_that(set(DEFAULT_FORMATS)).is_equal_to(expected)
+    for extension in RAW_IMAGE_MIME_TYPES:
+        assert_that(DEFAULT_FORMATS[extension]).is_equal_to(MediaType.IMAGE)
     assert_that(DEFAULT_FORMATS).does_not_contain_key("jpg", "mp4", "mp3")
 
 

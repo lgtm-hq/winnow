@@ -7,11 +7,15 @@ smallest valid body. They are used for detection only.
 
 from __future__ import annotations
 
+import io
 import struct
+import uuid
+import zipfile
 import zlib
 
 from tests.media.signature_support import ogg_page, riff
 from winnow.media._format_checks import NIFF_MAGIC
+from winnow.media._header_checks import WAVE64_RIFF, WAVE64_WAVE
 from winnow.models.media import MediaType
 
 IMAGE = MediaType.IMAGE
@@ -219,6 +223,67 @@ def _ogm_video() -> bytes:
     return ogg_page(header) + ogg_page(b"\x00" * 8, bos=False)
 
 
+def _openraster() -> bytes:
+    """Build an OpenRaster file: ``mimetype`` stored first, then a stack.
+
+    Returns:
+        The file.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(zipfile.ZipInfo("mimetype"), b"image/openraster")
+        archive.writestr("stack.xml", '<image w="1" h="1"><stack/></image>')
+    return buffer.getvalue()
+
+
+def _qoi() -> bytes:
+    """Build a 1x1 RGB QOI: header, one QOI_OP_RGB, end marker.
+
+    Returns:
+        The file.
+    """
+    header = b"qoif" + struct.pack(">II", 1, 1) + bytes([3, 0])
+    return header + b"\xfe\x80\x40\x20" + b"\x00" * 7 + b"\x01"
+
+
+def _jng() -> bytes:
+    """Build a JNG signature and JHDR chunk (JNG 1.0, 4.1).
+
+    Returns:
+        The file.
+    """
+    jhdr = struct.pack(">II", 1, 1) + bytes([10, 8, 8, 0, 0, 0, 0, 0])
+    return b"\x8bJNG\r\n\x1a\n" + _png_chunk(b"JHDR", jhdr) + _png_chunk(b"IEND", b"")
+
+
+def _wave64() -> bytes:
+    """Build a Sony Wave64 file with a ``fmt `` chunk and empty data.
+
+    Returns:
+        The file.
+    """
+    fmt_guid = uuid.UUID("20746d66-acf3-11d3-8cd1-00c04f8edb8a").bytes_le
+    data_guid = uuid.UUID("61746164-acf3-11d3-8cd1-00c04f8edb8a").bytes_le
+    fmt = struct.pack("<HHIIHH", 1, 1, 8000, 16000, 2, 16)
+    chunks = fmt_guid + struct.pack("<Q", 24 + len(fmt)) + fmt
+    chunks += data_guid + struct.pack("<Q", 24 + 4) + b"\x00\x01\x00\x02"
+    body = WAVE64_WAVE + chunks
+    return WAVE64_RIFF + struct.pack("<Q", 24 + len(body)) + body
+
+
+def _video_cd() -> bytes:
+    """Build a RIFF CDXA file holding one Mode 2 sector.
+
+    Returns:
+        The file.
+    """
+    fmt = b"\x00" * 16
+    sector = b"\x00" + b"\xff" * 10 + b"\x00" + b"\x00\x02\x00\x02" + b"\x00" * 2336
+    chunks = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack("<I", len(sector)) + sector
+    return riff(b"RIFF", b"CDXA", chunks)
+
+
 LIBRARY_SAMPLES: list[tuple[str, str, bytes, str, MediaType]] = [
     ("psd", "psd", _psd(1), "psd", IMAGE),
     ("psb", "psb", _psd(2), "psd", IMAGE),
@@ -342,6 +407,32 @@ LIBRARY_SAMPLES: list[tuple[str, str, bytes, str, MediaType]] = [
     ),
     ("ogm", "ogm", _ogm_video(), "ogg", VIDEO),
     ("sgi-movie", "movie", b"MOVI\x03" + b"\x00" * 59, "sgi-movie", VIDEO),
+    ("openraster", "ora", _openraster(), "openraster", IMAGE),
+    ("qoi", "qoi", _qoi(), "qoi", IMAGE),
+    ("jng", "jng", _jng(), "jng", IMAGE),
+    (
+        "modi",
+        "mdi",
+        b"EP*\x00" + struct.pack("<I", 8) + b"\x00\x01" * 40,
+        "modi",
+        IMAGE,
+    ),
+    ("wave64", "w64", _wave64(), "wave64", AUDIO),
+    (
+        "adif",
+        "aac",
+        b"ADIF" + b"\x00\x00\x01\xf4\x00\x10\x00" + b"\x00" * 24,
+        "adif",
+        AUDIO,
+    ),
+    ("video-cd", "dat", _video_cd(), "video-cd", VIDEO),
+    (
+        "dec-au",
+        "au",
+        b".sd\x00" + struct.pack(">5I", 24, 32, 3, 8000, 1) + b"\x00\x01" * 16,
+        "au",
+        AUDIO,
+    ),
 ]
 """``(name, extension, bytes, container, media type)`` of each sample."""
 

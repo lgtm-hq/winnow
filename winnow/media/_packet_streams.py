@@ -9,6 +9,7 @@ complete differs per format and is stated on each walk.
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import Final
 
@@ -29,15 +30,19 @@ _FLV_SCRIPT_TAG: Final[int] = 18
 _FLV_TAG_HEADER: Final[int] = 11
 _FLV_PREVIOUS_SIZE: Final[int] = 4
 
+MAX_FLV_TAGS: Final[int] = 23_000
+"""FLV tag headers the walk may read before its list counts as incomplete."""
+
 
 def flv_streams(content: Content) -> StreamList:
     """Read FLV's header flags and the types of its tags (E.2, E.4.1).
 
     ``TypeFlagsVideo`` or any video tag gives video. The header flags are
     not trusted for audio: the list is complete only when the walk visits
-    every tag and ends exactly at the end of the file. Tag headers past the
-    opening bytes are read one by one, within the read budget and
-    :data:`~winnow.media._containers.MAX_CHUNKS`.
+    every tag and ends exactly at the end of the file. Only the 11-byte tag
+    headers are read, seeking past each payload, up to :data:`MAX_FLV_TAGS`
+    tags: about nine minutes of audio-only FLV (AAC or MP3 at about 43
+    tags a second) or five minutes with 30 fps video.
 
     Args:
         content: File content, ``FLV`` first.
@@ -51,7 +56,7 @@ def flv_streams(content: Content) -> StreamList:
     has_video = bool(flags & 0x01)
     has_audio = bool(flags & 0x04)
     has_other = False
-    budget = WalkBudget()
+    tags = 0
     data_offset: int = struct.unpack_from(">I", head, 5)[0]
     offset = data_offset + _FLV_PREVIOUS_SIZE
     complete = False
@@ -59,7 +64,8 @@ def flv_streams(content: Content) -> StreamList:
         if offset == content.size:
             complete = True
             break
-        if offset + _FLV_TAG_HEADER > content.size or not budget.visit():
+        tags += 1
+        if offset + _FLV_TAG_HEADER > content.size or tags > MAX_FLV_TAGS:
             break
         header = _tag_header(content, offset)
         if header is None:
@@ -87,17 +93,26 @@ def flv_streams(content: Content) -> StreamList:
 def _tag_header(content: Content, offset: int) -> bytes | None:
     """Return the 11-byte FLV tag header at ``offset``.
 
+    Past the opening bytes the header is read with a positioned read of the
+    open descriptor (``os.pread``), which reads exactly 11 bytes and leaves
+    the shared handle's position alone; where ``pread`` does not exist, the
+    shared reader is used within its budget.
+
     Args:
         content: File content.
         offset: File offset of the tag.
 
     Returns:
-        The header, or ``None`` when it is past the read budget.
+        The header, or ``None`` when it cannot be read.
     """
     if offset + _FLV_TAG_HEADER <= len(content.head):
         return content.head[offset : offset + _FLV_TAG_HEADER]
+    pread = getattr(os, "pread", None)
     try:
-        header = content.reader.read_at(offset, _FLV_TAG_HEADER)
+        if pread is not None and content.descriptor >= 0:
+            header: bytes = pread(content.descriptor, _FLV_TAG_HEADER, offset)
+        else:
+            header = content.reader.read_at(offset, _FLV_TAG_HEADER)
     except BudgetExceededError:
         return None
     return header if len(header) == _FLV_TAG_HEADER else None
@@ -324,6 +339,7 @@ def ogg_streams(content: Content) -> StreamList:
 
 
 __all__ = [
+    "MAX_FLV_TAGS",
     "OGG_CODECS",
     "flv_streams",
     "mpeg_video_sequence",
