@@ -165,7 +165,8 @@ def program_stream_streams(content: Content) -> StreamList:
     A program stream has no stream list: packets interleave. The list counts
     as complete only when a system header (2.5.3.5) gives ``video_bound``
     0, so no video stream can follow, and the walk read every packet: it
-    reached the ``program_end_code`` or the exact end of the file. Past the
+    reached the exact end of the file. A ``program_end_code`` is stepped
+    over, since a second program stream can follow it. Past the
     opening bytes only the pack and PES headers are read (24 bytes each,
     with positioned reads), seeking past each payload, up to
     :data:`MAX_PROGRAM_STREAM_PACKETS` headers. In 2,048-byte packs (a
@@ -197,8 +198,10 @@ def program_stream_streams(content: Content) -> StreamList:
             break
         stream_id = window[3]
         if stream_id == _PROGRAM_END:
-            whole = True
-            break
+            # Another program stream can follow an end code in the same
+            # file, so the code ends nothing: only the end of the file does.
+            offset += 4
+            continue
         length = _packet_length(content, offset, window, streams)
         if length is None:
             break

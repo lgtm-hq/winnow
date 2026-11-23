@@ -158,7 +158,8 @@ def _flashpix(content: Content) -> bool:
     elif clsid_at + 16 <= content.size:
         try:
             clsid = content.reader.read_at(clsid_at, 16)
-        except BudgetExceededError:
+        except (BudgetExceededError, OSError):
+            # Over budget or unreadable: the marker is not established.
             return False
     else:
         return False

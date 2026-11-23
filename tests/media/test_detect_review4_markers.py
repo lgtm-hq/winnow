@@ -18,6 +18,7 @@ from assertpy import assert_that
 
 from winnow.media import _detect, _stream_probe
 from winnow.media._detect import DetectionResult, detect
+from winnow.media._detect_base import Reader
 from winnow.media.registry import FormatRegistry, create_default_format_registry
 from winnow.models.media import MediaType
 
@@ -288,6 +289,26 @@ def test_flashpix_directory_past_the_head(tmp_path: Path) -> None:
     assert_that(_detect_bytes(tmp_path, bytes(data), "x.fpx").media_type).is_equal_to(
         IMAGE
     )
+
+
+def test_flashpix_read_error_past_the_head_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An I/O error while reading the far directory never leaves ``detect``."""
+    data = bytearray(_ole(_FLASHPIX_CLSID)[:512])
+    data[0x30:0x34] = struct.pack("<I", 200)
+    data += b"\x00" * (201 * 512)
+    real_read_at = Reader.read_at
+    root_entry_clsid = (201 << 9) + 0x50
+
+    def failing_read_at(self: Reader, offset: int, length: int) -> bytes:
+        if offset == root_entry_clsid:
+            raise OSError(5, "Input/output error")
+        return real_read_at(self, offset, length)
+
+    monkeypatch.setattr(Reader, "read_at", failing_read_at)
+
+    assert_that(_detect_bytes(tmp_path, bytes(data), "x.fpx").media_type).is_none()
 
 
 @pytest.mark.parametrize(

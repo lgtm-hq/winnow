@@ -318,6 +318,27 @@ def test_audio_program_stream_past_the_head_is_audio(tmp_path: Path) -> None:
     assert_that(_details(result)).contains("streams=complete")
 
 
+def test_program_end_code_does_not_end_the_walk(tmp_path: Path) -> None:
+    """Video in a second program stream after an end code is never audio."""
+    audio = program_stream((0xC0, b"\x00" * 2000), video_bound=0)
+    video = program_stream((0xE0, b"\x00" * 2000))
+
+    result = _detect_bytes(tmp_path, audio + video, "both.mpg")
+
+    assert_that(result.media_type).is_not_equal_to(AUDIO)
+
+
+def test_audio_program_stream_ending_in_its_end_code_is_audio(tmp_path: Path) -> None:
+    """An end code as the last four bytes still leaves the walk complete."""
+    data = program_stream((0xC0, b"\x00" * 2000), video_bound=0)
+    assert_that(data[-4:]).is_equal_to(b"\x00\x00\x01\xb9")
+
+    result = _detect_bytes(tmp_path, data, "song.mpg")
+
+    assert_that(result.media_type).is_equal_to(AUDIO)
+    assert_that(_details(result)).contains("streams=complete")
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="ffmpeg not installed")
 def test_ffmpeg_audio_program_stream_is_audio(tmp_path: Path) -> None:
     """A 60-second MPEG-1 Layer II program stream from ffmpeg is audio."""
