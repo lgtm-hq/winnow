@@ -101,6 +101,36 @@ Creates a configuration file through guided prompts.
 `init` uses the standard `--yes` flag rather than a bespoke `--force`; without it the
 command asks before overwriting an existing file.
 
+### `winnow config set`
+
+Sets one dotted key (`winnow config set cache.enabled false`) in the configuration file.
+The value is read as JSON when it is valid JSON and kept as a string otherwise.
+
+| Flag            | Description                 |
+| --------------- | --------------------------- |
+| `--config FILE` | Path to configuration file. |
+
+The target is the `--config` path, else the discovered configuration file, else the
+working-directory default. `set` reads the file as written, changes only that key where
+the file sets it (in a nested mapping or a flat `a.b`/`a__b` key), and writes the file
+back in its own format:
+
+- Values from the `.local` companion file and `WINNOW_*` variables never reach the file,
+  and other keys keep their cast markers (`workers: "@int 4"`).
+- YAML files keep their comments, quoting, flow lists and key order as far as the YAML
+  round trip allows; indentation may be normalized.
+- JSON files stay JSON with the same keys and values; indentation is kept but spacing
+  and number forms may be normalized.
+- TOML files are refused with an error and left untouched.
+- Setting `follow_symlinks` or `symlink_policy` also sets the other when the file would
+  otherwise contradict itself.
+- Setting the same value again leaves the file unchanged.
+
+The result, read with the companion file, is validated before anything is written; an
+invalid result, or a key a later entry in the file would override, fails with an error
+and leaves the file untouched. A file that does not exist yet is created; a new `.json`
+file is written as JSON and any other as YAML.
+
 ### `winnow config reset`
 
 Resets the configuration file to validated defaults.

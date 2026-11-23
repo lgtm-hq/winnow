@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Mapping
+from enum import StrEnum, auto
 from pathlib import Path
 from typing import Final
 
@@ -64,6 +65,42 @@ _MERGE_TOKENS: Final = frozenset({"dynaconf_merge", "dynaconf_merge_unique"})
 _FOR_DYNACONF_SUFFIX: Final = "_for_dynaconf"
 
 
+class ConfigFormat(StrEnum):
+    """The format a config file is read in, chosen by its suffix."""
+
+    YAML = auto()
+    TOML = auto()
+    JSON = auto()
+
+
+def config_format(path: Path) -> ConfigFormat:
+    """Return the format a config file is read in.
+
+    Args:
+        path: The config file; it need not exist.
+
+    Returns:
+        TOML for ``.toml``/``.tml``, JSON for ``.json`` and YAML otherwise,
+        whatever the suffix's letter case.
+
+    Raises:
+        ConfigError: If the suffix names a format winnow does not read.
+    """
+    suffix = path.suffix.lower()
+    unsupported = _UNSUPPORTED_SUFFIXES.get(suffix)
+    if unsupported is not None:
+        raise ConfigError(
+            f"{unsupported} config files are not supported; use YAML",
+            operation="load_config",
+            file_path=path,
+        )
+    if suffix in _TOML_SUFFIXES:
+        return ConfigFormat.TOML
+    if suffix in _JSON_SUFFIXES:
+        return ConfigFormat.JSON
+    return ConfigFormat.YAML
+
+
 def companion_path(config_path: Path) -> Path | None:
     """Return the ``.local`` companion of a config file, as Dynaconf named it.
 
@@ -83,11 +120,17 @@ def companion_path(config_path: Path) -> Path | None:
     return config_path.with_name(f"{stem}{_LOCAL_INFIX}{extension}")
 
 
-def read_config_layers(config_path: Path) -> dict[str, object]:
+def read_config_layers(
+    config_path: Path,
+    *,
+    main_text: str | None = None,
+) -> dict[str, object]:
     """Read a config file and its ``.local`` companion into one mapping.
 
     Args:
         config_path: The config file.
+        main_text: Content to read in place of ``config_path``'s, which then
+            need not exist; used to check a change before writing it.
 
     Returns:
         The merged settings, all mapping keys lowercase.
@@ -103,8 +146,48 @@ def read_config_layers(config_path: Path) -> dict[str, object]:
     for path in (config_path, companion):
         if path is None or (path is companion and not path.is_file()):
             continue
-        _apply_file(store, _read_document(path), path=path)
+        document = (
+            _parse_document(main_text, path)
+            if path is config_path and main_text is not None
+            else _read_document(path)
+        )
+        _apply_file(store, document, path=path)
     return store
+
+
+def read_config_text(text: str, path: Path) -> dict[str, object]:
+    """Read one config file's content on its own, without its companion.
+
+    Args:
+        text: The content, in the format ``path``'s suffix names.
+        path: The file the content belongs to.
+
+    Returns:
+        The file's settings, read as :func:`read_config_layers` reads them.
+
+    Raises:
+        ConfigError: If the content uses a Dynaconf feature winnow does not
+            keep, or ``path`` names a format winnow does not read.
+        ValueError: If the content is invalid or not a mapping.
+    """
+    store: dict[str, object] = {}
+    _apply_file(store, _parse_document(text, path), path=path)
+    return store
+
+
+def read_value(value: object) -> object:
+    """Return a value as reading it from a config file gives it.
+
+    Args:
+        value: A value as written in a file.
+
+    Returns:
+        The value with cast markers applied and mapping keys lowercased.
+
+    Raises:
+        ValueError: If the value uses a cast marker winnow does not support.
+    """
+    return _lowercase_keys(cast_markers_in(value))
 
 
 def _read_document(path: Path) -> Mapping[str, object]:
@@ -120,21 +203,33 @@ def _read_document(path: Path) -> Mapping[str, object]:
         ConfigError: If the extension names a format winnow does not read.
         ValueError: If the content is invalid or not a mapping.
     """
-    suffix = path.suffix.lower()
-    unsupported = _UNSUPPORTED_SUFFIXES.get(suffix)
-    if unsupported is not None:
-        raise ConfigError(
-            f"{unsupported} config files are not supported; use YAML",
-            operation="load_config",
-            file_path=path,
-        )
+    if config_format(path) is ConfigFormat.TOML:
+        return _parse_document(path.read_bytes().decode("utf-8"), path)
+    return _parse_document(path.read_text(encoding="utf-8"), path)
+
+
+def _parse_document(text: str, path: Path) -> Mapping[str, object]:
+    """Parse config file content in the format ``path``'s extension names.
+
+    Args:
+        text: The content.
+        path: The file it belongs to.
+
+    Returns:
+        Its top-level mapping; an empty document reads as an empty mapping.
+
+    Raises:
+        ConfigError: If the extension names a format winnow does not read.
+        ValueError: If the content is invalid or not a mapping.
+    """
+    file_format = config_format(path)
     document: object
-    if suffix in _TOML_SUFFIXES:
-        document = tomli.loads(path.read_bytes().decode("utf-8"))
-    elif suffix in _JSON_SUFFIXES:
-        document = json.loads(path.read_text(encoding="utf-8"))
+    if file_format is ConfigFormat.TOML:
+        document = tomli.loads(text)
+    elif file_format is ConfigFormat.JSON:
+        document = json.loads(text)
     else:
-        stream = io.StringIO(path.read_text(encoding="utf-8"))
+        stream = io.StringIO(text)
         stream.name = str(path)
         document = YAML(typ="safe", pure=True).load(stream)
     if document is None:

@@ -4,8 +4,8 @@ Every test above the "Not on main" marker records what ``main`` (Dynaconf
 3.3.5) returned and passed against ``main``'s ``winnow/config`` before the
 reader was changed (with ``_load_config_data`` read as ``_load_dynaconf_data``
 there): the ``.local`` companion file and how it merges, flat ``a.b`` and
-``a__b`` keys, ``@`` cast markers in file values, ``config set`` on such files,
-and YAML errors naming the file. The tests below the marker cover what
+``a__b`` keys, ``@`` cast markers in file values, and YAML errors naming the
+file. The tests below the marker cover what
 ``main`` did not do the same way, each saying what it did.
 """
 
@@ -240,21 +240,6 @@ def test_invalid_companion_is_a_config_error_naming_it(tmp_path: Path) -> None:
     )
 
 
-def test_config_set_writes_companion_values_into_the_file(tmp_path: Path) -> None:
-    """As on main, ``config set`` writes the merged settings to the target file."""
-    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\ndry_run: false\n")
-    (tmp_path / _LOCAL_NAME).write_text("dry_run: true\nworkers: 5\n")
-
-    set_config_value("workers", "3", cwd=tmp_path, home_config_dir=tmp_path / "home")
-
-    written = yaml.safe_load((tmp_path / CONFIG_FILE_NAME).read_text())
-    assert_that(written).contains_entry({"dry_run": True})
-    assert_that(written).contains_entry({"workers": "3"})
-    assert_that((tmp_path / _LOCAL_NAME).read_text()).is_equal_to(
-        "dry_run: true\nworkers: 5\n",
-    )
-
-
 # --- flat keys ------------------------------------------------------------------
 
 
@@ -336,26 +321,6 @@ def test_flat_keys_load_as_nested_settings(
     assert_that(_layers(tmp_path, {CONFIG_FILE_NAME: text})).is_equal_to(expected)
 
 
-def test_flat_keys_survive_config_set(tmp_path: Path) -> None:
-    """``config set`` rewrites flat keys as nested ones and keeps their values."""
-    (tmp_path / CONFIG_FILE_NAME).write_text(
-        "routing.screenshots: Shots\nrouting__review: Rev\nworkers: 2\n",
-    )
-
-    set_config_value("workers", "3", cwd=tmp_path, home_config_dir=tmp_path / "home")
-
-    written = yaml.safe_load((tmp_path / CONFIG_FILE_NAME).read_text())
-    assert_that(written["routing"]).is_equal_to(
-        {"screenshots": "Shots", "review": "Rev"},
-    )
-    config = load_config(
-        cwd=tmp_path, home_config_dir=tmp_path / "home", load_env=False
-    )
-    assert_that(config.routing.screenshots).is_equal_to("Shots")
-    assert_that(config.routing.review).is_equal_to("Rev")
-    assert_that(config.workers).is_equal_to(3)
-
-
 # --- markers in file values -----------------------------------------------------
 
 
@@ -433,6 +398,46 @@ def test_yaml_error_names_the_config_file(tmp_path: Path) -> None:
 
 
 # --- Not on main: differences, each with what main did ----------------------
+
+
+def test_config_set_keeps_companion_values_out_of_the_file(tmp_path: Path) -> None:
+    """``config set`` changes only its key (#429).
+
+    On main it wrote the merged settings, so ``dry_run: true`` from the
+    companion landed in the file.
+    """
+    (tmp_path / CONFIG_FILE_NAME).write_text("workers: 2\ndry_run: false\n")
+    (tmp_path / _LOCAL_NAME).write_text("dry_run: true\nworkers: 5\n")
+
+    set_config_value("workers", "3", cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    written = yaml.safe_load((tmp_path / CONFIG_FILE_NAME).read_text())
+    assert_that(written).is_equal_to({"workers": "3", "dry_run": False})
+    assert_that((tmp_path / _LOCAL_NAME).read_text()).is_equal_to(
+        "dry_run: true\nworkers: 5\n",
+    )
+
+
+def test_flat_keys_survive_config_set(tmp_path: Path) -> None:
+    """``config set`` keeps flat keys as written (#429).
+
+    On main it rewrote them as nested ones.
+    """
+    (tmp_path / CONFIG_FILE_NAME).write_text(
+        "routing.screenshots: Shots\nrouting__review: Rev\nworkers: 2\n",
+    )
+
+    set_config_value("workers", "3", cwd=tmp_path, home_config_dir=tmp_path / "home")
+
+    assert_that((tmp_path / CONFIG_FILE_NAME).read_text()).is_equal_to(
+        "routing.screenshots: Shots\nrouting__review: Rev\nworkers: '3'\n",
+    )
+    config = load_config(
+        cwd=tmp_path, home_config_dir=tmp_path / "home", load_env=False
+    )
+    assert_that(config.routing.screenshots).is_equal_to("Shots")
+    assert_that(config.routing.review).is_equal_to("Rev")
+    assert_that(config.workers).is_equal_to(3)
 
 
 @pytest.mark.parametrize(
