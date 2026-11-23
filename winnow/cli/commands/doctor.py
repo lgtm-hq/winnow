@@ -1,8 +1,10 @@
 """``winnow doctor`` environment diagnostics command.
 
 The command inspects the local environment and reports on the pieces Winnow
-relies on: the Python runtime, the FFmpeg binary, optional feature extras, the
-cache directory, and any discovered configuration file. Results render as a Rich
+relies on: the Python runtime, the FFmpeg and ffprobe binaries (with the
+ffprobe version and whether it is in the range the audio rules were measured
+on), optional feature extras, the cache directory, and any discovered
+configuration file. Results render as a Rich
 table and the process exits non-zero when any hard check fails, so the command
 is usable both interactively and in CI health checks.
 """
@@ -27,11 +29,17 @@ from winnow.cli.console import StatusLevel, console_from_context, status_text
 from winnow.cli.errors import ExitCode
 from winnow.config import find_config_path, load_config
 from winnow.exceptions import ConfigError
+from winnow.media import (
+    TESTED_FFPROBE_MAJORS,
+    ffprobe_version,
+    parse_ffprobe_major,
+)
 from winnow.models.config import WinnowConfig
 
 __all__ = [
     "CheckResult",
     "CheckStatus",
+    "check_ffprobe",
     "doctor_command",
     "run_checks",
 ]
@@ -151,6 +159,65 @@ def check_ffmpeg() -> CheckResult:
     version_line = _ffmpeg_version(executable)
     detail = version_line if version_line is not None else f"found at {executable}."
     return CheckResult(name="FFmpeg", status=CheckStatus.PASS, detail=detail)
+
+
+def _tested_range_text() -> str:
+    """Describe the ffprobe versions the audio rules were measured on.
+
+    Returns:
+        Text such as ``FFmpeg 9.x``.
+    """
+    majors = ", ".join(f"{major}.x" for major in sorted(TESTED_FFPROBE_MAJORS))
+    return f"FFmpeg {majors}"
+
+
+def check_ffprobe() -> CheckResult:
+    """Check that ffprobe is available and report its version.
+
+    Audio facts and video metadata come only from ffprobe. Its stderr
+    handling is pinned per FFmpeg major version, so a version outside the
+    tested range warns.
+
+    Returns:
+        A failing result when ffprobe is missing, a warning when its version
+        is unreadable or outside the tested range, otherwise a passing result
+        with the version banner.
+    """
+    executable = shutil.which("ffprobe")
+    tested = _tested_range_text()
+    if executable is None:
+        return CheckResult(
+            name="ffprobe",
+            status=CheckStatus.FAIL,
+            detail=(
+                "ffprobe not found on PATH; audio facts and video metadata "
+                "are reported as unknown without it."
+            ),
+        )
+    banner = ffprobe_version(str(Path(executable).absolute()))
+    if banner is None:
+        return CheckResult(
+            name="ffprobe",
+            status=CheckStatus.WARN,
+            detail=(
+                f"found at {executable} but its version could not be read; "
+                f"tested range is {tested}."
+            ),
+        )
+    if parse_ffprobe_major(banner) in TESTED_FFPROBE_MAJORS:
+        return CheckResult(
+            name="ffprobe",
+            status=CheckStatus.PASS,
+            detail=f"{banner} (in the tested range, {tested}).",
+        )
+    return CheckResult(
+        name="ffprobe",
+        status=CheckStatus.WARN,
+        detail=(
+            f"{banner} is outside the tested range ({tested}); any ffprobe "
+            "warning makes audio facts unknown."
+        ),
+    )
 
 
 def check_optional_extras() -> list[CheckResult]:
@@ -274,13 +341,14 @@ def run_checks() -> list[CheckResult]:
     """Run every doctor check in report order.
 
     Returns:
-        Ordered results for the Python runtime, FFmpeg, configuration, cache
-        directory, and each optional extra.
+        Ordered results for the Python runtime, FFmpeg, ffprobe,
+        configuration, cache directory, and each optional extra.
     """
     config, config_result = _load_config_for_checks()
     results = [
         check_python_version(),
         check_ffmpeg(),
+        check_ffprobe(),
         config_result,
         check_cache_dir(config),
     ]

@@ -302,7 +302,7 @@ def test_video_content_identifier_none_without_ffprobe(
     """Missing ffprobe makes the video reader return None."""
     video = tmp_path / "clip.mov"
     video.write_bytes(b"fake")
-    monkeypatch.setattr("winnow.media.video.shutil.which", lambda name: None)
+    monkeypatch.setattr("winnow.media._ffprobe.shutil.which", lambda name: None)
 
     assert_that(video_content_identifier(video)).is_none()
 

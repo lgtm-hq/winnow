@@ -1,8 +1,9 @@
-"""Shared numeric coercion helpers for media metadata processors.
+"""Numeric coercion helpers for the video metadata processor.
 
-Backend probes (mutagen, tinytag, ffprobe) surface loosely typed numeric
-fields. These helpers normalise such values into non-negative numbers,
-mapping missing or invalid inputs to ``None`` instead of raising.
+ffprobe surfaces loosely typed numeric fields for video. These helpers
+normalise such values into non-negative numbers, mapping missing or invalid
+inputs to ``None`` instead of raising. The audio reader does not use them: it
+parses ffprobe values strictly in :mod:`winnow.media.audio`.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def coerce_non_negative_int(value: object, *, via_float: bool = False) -> int | 
         via_float: When ``True``, parse through ``float`` first so decimal
             strings such as ``"12.5"`` truncate to an integer (ffprobe
             semantics). When ``False``, such strings are rejected as
-            invalid (mutagen/tinytag semantics).
+            invalid.
 
     Returns:
         Parsed integer, or ``None`` when missing, invalid, or negative.

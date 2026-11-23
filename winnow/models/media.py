@@ -7,9 +7,9 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-MEDIA_METADATA_SCHEMA_VERSION: Final[int] = 1
+MEDIA_METADATA_SCHEMA_VERSION: Final[int] = 2
 """Schema version of :class:`MediaMetadata`.
 
 Bump on any field change (add, remove, rename, or retype); consumed by the
@@ -25,8 +25,88 @@ class MediaType(StrEnum):
     AUDIO = auto()
 
 
+class AudioFlag(StrEnum):
+    """Why an audio fact is missing or how far it can be trusted.
+
+    ``truncated`` is not a flag: it has three states and lives in
+    :attr:`MediaMetadata.truncated`. ``truncated=True`` and ``CORRUPT``
+    claim damage; ``INCONSISTENT``, ``ESTIMATED``, ``UNRECOGNIZED_OUTPUT``,
+    ``UNSUPPORTED`` and ``NO_AUDIO_STREAM`` only say the evidence does not
+    establish a value, and a healthy file may carry them.
+    """
+
+    INCONSISTENT = auto()
+    """The evidence contradicts itself, so the value is not established.
+
+    Packet times contradict each other or the declared duration, an MP4
+    packet spans a gap, an FLV packet has no time, the file changed while
+    it was read, or the primary audio stream has no codec, sample rate, or
+    channel count. Some cuts of fragmented MP4 get this (in the fixtures,
+    AAC cut to 35 or 40 %, Opus to 20 %, Vorbis to 55 %).
+    """
+
+    NO_AUDIO_STREAM = auto()
+    """The header is clean but lists no audio stream besides cover art.
+
+    A video-only file, or an empty M4A or MOV (ffprobe lists no stream),
+    gets this. It is not a damage claim.
+    """
+
+    CORRUPT = auto()
+    """The packet walk established damage.
+
+    The walk exited non-zero after an accepted header, or ffprobe flagged a
+    packet corrupt and wrote no stderr line off the benign list.
+    ``corrupt`` is a claim about the file, never about ffprobe or about a
+    format winnow does not accept. On FFmpeg 9.0.2 a packet flagged corrupt
+    always comes with a ``Packet corrupt`` stderr line, so that file is
+    ``unrecognized_output`` instead. A cut file is ``truncated``,
+    ``unrecognized_output``, ``unsupported``, ``estimated`` or
+    ``inconsistent``; a cut no longer than the A5 tolerance is
+    ``truncated=False``, except in fragmented MP4 (A15a) and in MP4 whose
+    ``nb_frames`` counts packets when the cut removed one (A15f-1), where
+    it is ``estimated``.
+    """
+
+    UNRECOGNIZED_OUTPUT = auto()
+    """ffprobe wrote a stderr line that is not benign for this file.
+
+    An unexpected line is not proof of damage, so it is not ``corrupt``; it
+    still makes every value it could affect unknown. Header output that is
+    not valid UTF-8 or JSON, or JSON without the shape ffprobe writes, is
+    also unrecognized: output ffprobe cannot render says nothing about the
+    file.
+    """
+
+    UNSUPPORTED = auto()
+    """No accepted format recognised the file: the header call exited non-zero.
+
+    This covers formats outside the allow-list, garbage, and playlists. It is
+    not a damage claim.
+    """
+
+    ESTIMATED = auto()
+    """The duration was measured from packets; nothing declared it."""
+
+    TIMEOUT = auto()
+    """An ffprobe run breached its time or output bound and was killed."""
+
+    BACKEND_UNAVAILABLE = auto()
+    """ffprobe is missing, could not be started, or failed as a program.
+
+    A signal, exit 126 or 127, or an unreadable ``ffprobe -version`` says
+    nothing about the file.
+    """
+
+
 class MediaMetadata(BaseModel):
-    """Extended metadata extracted from a media file."""
+    """Extended metadata extracted from a media file.
+
+    The audio reader also fills :attr:`container`, :attr:`audio_stream_count`,
+    :attr:`probe_score`, :attr:`truncated`, :attr:`audio_flags`, and
+    :attr:`audio_backend_reason`. ``truncated`` is ``True`` or ``False`` only
+    when a packet walk checked it; ``None`` means not checked.
+    """
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -43,6 +123,31 @@ class MediaMetadata(BaseModel):
     bit_depth: int | None = Field(default=None, ge=0)
     has_alpha: bool | None = None
     captured_at: datetime | None = None
+    container: str | None = None
+    audio_stream_count: int | None = Field(default=None, ge=0)
+    probe_score: int | None = Field(default=None, ge=0, le=100)
+    truncated: bool | None = None
+    audio_flags: tuple[AudioFlag, ...] | None = None
+    audio_backend_reason: str | None = None
+
+    @field_validator("audio_flags")
+    @classmethod
+    def _normalize_audio_flags(
+        cls,
+        value: tuple[AudioFlag, ...] | None,
+    ) -> tuple[AudioFlag, ...] | None:
+        """Sort audio flags and drop repeats.
+
+        Args:
+            value: Flags as given.
+
+        Returns:
+            The flags in declaration order without repeats, or ``None``.
+        """
+        if value is None:
+            return None
+        order = list(AudioFlag)
+        return tuple(sorted(set(value), key=order.index))
 
 
 class MediaFile(BaseModel):

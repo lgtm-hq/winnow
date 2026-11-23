@@ -1,0 +1,11 @@
+{
+  "calls": [
+    {
+      "kind": "header",
+      "returncode": 1,
+      "stderr": "fd:: Invalid data found when processing input\n",
+      "stdout": "{\n\n}\n"
+    }
+  ],
+  "ffprobe_version": "ffprobe version 9.0.2 Copyright (c) 2007-2026 the FFmpeg developers"
+}

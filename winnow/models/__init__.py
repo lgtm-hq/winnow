@@ -21,6 +21,7 @@ from winnow.models.enums import (
 )
 from winnow.models.media import (
     MEDIA_METADATA_SCHEMA_VERSION,
+    AudioFlag,
     MediaFile,
     MediaMetadata,
     MediaType,
@@ -29,6 +30,7 @@ from winnow.models.pipeline import PipelineResult, PipelineStep, RunMetadata
 
 __all__ = [
     "MEDIA_METADATA_SCHEMA_VERSION",
+    "AudioFlag",
     "CacheSettings",
     "DuplicateGroup",
     "DuplicatePair",

@@ -12,9 +12,9 @@ from winnow.media import service as service_module
 from winnow.media.registry import FormatRegistry, detect_media_type
 from winnow.media.service import DefaultMetadataService, create_metadata_service
 from winnow.models.config import WinnowConfig
-from winnow.models.media import MediaMetadata, MediaType
+from winnow.models.media import AudioFlag, MediaMetadata, MediaType
 
-_WHICH_TARGET = "winnow.media.video.shutil.which"
+_WHICH_TARGET = "winnow.media._ffprobe.shutil.which"
 
 
 @pytest.fixture
@@ -54,11 +54,18 @@ def test_extract_dispatches_video_without_ffprobe(
 def test_extract_dispatches_audio(
     service: DefaultMetadataService,
     fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An MP3 fixture is routed to the audio processor."""
+    """An MP3 fixture is routed to the audio processor.
+
+    Without ffprobe the audio reader reports the backend as unavailable,
+    which only the audio reader does.
+    """
+    monkeypatch.setattr(_WHICH_TARGET, lambda name: None)
+
     metadata = service.extract(fixtures_dir / "sample.mp3")
 
-    assert_that(metadata.duration_seconds).is_not_none()
+    assert_that(metadata.audio_flags).is_equal_to((AudioFlag.BACKEND_UNAVAILABLE,))
 
 
 def test_extract_rejects_directory(

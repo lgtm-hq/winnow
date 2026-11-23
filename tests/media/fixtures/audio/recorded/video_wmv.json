@@ -1,0 +1,17 @@
+{
+  "calls": [
+    {
+      "kind": "header",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"wmv2\",\n            \"codec_type\": \"video\",\n            \"time_base\": \"1/1000\",\n            \"duration\": \"2.046000\",\n            \"disposition\": {\n                \"default\": 0,\n                \"attached_pic\": 0\n            }\n        },\n        {\n            \"index\": 1,\n            \"codec_name\": \"wmav2\",\n            \"codec_type\": \"audio\",\n            \"sample_rate\": \"22050\",\n            \"channels\": 1,\n            \"bits_per_sample\": 0,\n            \"time_base\": \"1/1000\",\n            \"duration\": \"2.046000\",\n            \"bit_rate\": \"24000\",\n            \"disposition\": {\n                \"default\": 0,\n                \"attached_pic\": 0\n            }\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"asf\",\n        \"start_time\": \"0.000000\",\n        \"duration\": \"2.092000\",\n        \"probe_score\": 100\n    }\n}\n"
+    },
+    {
+      "kind": "walk",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "0.000000,0.046000,K__\n0.046000,0.046000,K__\n0.092000,0.046000,K__\n0.139000,0.046000,K__\n0.185000,0.046000,K__\n0.232000,0.046000,K__\n0.278000,0.046000,K__\n0.325000,0.046000,K__\n0.371000,0.046000,K__\n0.418000,0.046000,K__\n0.464000,0.046000,K__\n0.510000,0.046000,K__\n0.557000,0.046000,K__\n0.603000,0.046000,K__\n0.650000,0.046000,K__\n0.696000,0.046000,K__\n0.743000,0.046000,K__\n0.789000,0.046000,K__\n0.835000,0.046000,K__\n0.882000,0.046000,K__\n0.928000,0.046000,K__\n0.975000,0.046000,K__\n"
+    }
+  ],
+  "ffprobe_version": "ffprobe version 9.0.2 Copyright (c) 2007-2026 the FFmpeg developers"
+}

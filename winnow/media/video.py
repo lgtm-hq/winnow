@@ -1,7 +1,9 @@
 """Video metadata extraction and frame capture via FFmpeg.
 
-FFmpeg and ffprobe are external binaries invoked through ``subprocess`` with a
-fixed argument vector (never ``shell=True``). When the binaries are absent,
+FFmpeg and ffprobe are external binaries started through
+:mod:`winnow.media._ffprobe` with a fixed argument vector (never
+``shell=True``). Media paths are passed as absolute paths so a file name that
+starts with ``-`` is never read as an option. When the binaries are absent,
 metadata extraction degrades gracefully to empty metadata and callers can probe
 availability with :func:`ffmpeg_available` / :func:`ffprobe_available`.
 """
@@ -9,8 +11,6 @@ availability with :func:`ffmpeg_available` / :func:`ffprobe_available`.
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess  # nosec B404 - fixed argv lists only; never shell=True
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
@@ -24,30 +24,18 @@ from winnow.media._coerce import (
     coerce_non_negative_int,
 )
 from winnow.media._dates import parse_iso_datetime
+from winnow.media._ffprobe import (
+    FFMPEG,
+    FFPROBE,
+    ffmpeg_available,
+    ffprobe_available,
+    find_binary,
+    run_command,
+)
 from winnow.models.media import MediaMetadata
 
-_FFPROBE: Final[str] = "ffprobe"
-_FFMPEG: Final[str] = "ffmpeg"
 _PROBE_TIMEOUT_SECONDS: Final[float] = 30.0
 _FRAME_TIMEOUT_SECONDS: Final[float] = 60.0
-
-
-def ffprobe_available() -> bool:
-    """Report whether the ``ffprobe`` binary is on ``PATH``.
-
-    Returns:
-        ``True`` when ffprobe can be resolved.
-    """
-    return shutil.which(_FFPROBE) is not None
-
-
-def ffmpeg_available() -> bool:
-    """Report whether the ``ffmpeg`` binary is on ``PATH``.
-
-    Returns:
-        ``True`` when ffmpeg can be resolved.
-    """
-    return shutil.which(_FFMPEG) is not None
 
 
 def extract_video_metadata(path: Path) -> MediaMetadata:
@@ -76,7 +64,7 @@ def extract_video_metadata(path: Path) -> MediaMetadata:
             file_path=path,
         )
 
-    binary = shutil.which(_FFPROBE)
+    binary = find_binary(FFPROBE)
     if binary is None:
         logger.warning(
             "ffprobe not found; returning empty metadata for {}",
@@ -92,9 +80,9 @@ def extract_video_metadata(path: Path) -> MediaMetadata:
         "json",
         "-show_format",
         "-show_streams",
-        str(path),
+        str(path.absolute()),
     ]
-    completed = _run(
+    completed = run_command(
         argv=argv,
         timeout=_PROBE_TIMEOUT_SECONDS,
         operation="extract_video_metadata",
@@ -137,7 +125,7 @@ def read_video_tags(path: Path) -> dict[str, str]:
             file_path=path,
         )
 
-    binary = shutil.which(_FFPROBE)
+    binary = find_binary(FFPROBE)
     if binary is None:
         logger.debug("ffprobe not found; returning no tags for {}", path)
         return {}
@@ -149,10 +137,10 @@ def read_video_tags(path: Path) -> dict[str, str]:
         "-print_format",
         "json",
         "-show_format",
-        str(path),
+        str(path.absolute()),
     ]
     try:
-        completed = _run(
+        completed = run_command(
             argv=argv,
             timeout=_PROBE_TIMEOUT_SECONDS,
             operation="read_video_tags",
@@ -208,7 +196,7 @@ def extract_frame(
             details={"timestamp_seconds": timestamp_seconds},
         )
 
-    binary = shutil.which(_FFMPEG)
+    binary = find_binary(FFMPEG)
     if binary is None:
         raise MediaError(
             "ffmpeg not found; cannot extract frame",
@@ -231,12 +219,12 @@ def extract_frame(
         "-ss",
         str(timestamp_seconds),
         "-i",
-        str(path),
+        str(path.absolute()),
         "-frames:v",
         "1",
-        str(destination),
+        str(destination.absolute()),
     ]
-    completed = _run(
+    completed = run_command(
         argv=argv,
         timeout=_FRAME_TIMEOUT_SECONDS,
         operation="extract_frame",
@@ -250,50 +238,6 @@ def extract_frame(
             details={"stderr": completed.stderr.strip()},
         )
     return destination
-
-
-def _run(
-    *,
-    argv: list[str],
-    timeout: float,
-    operation: str,
-    path: Path,
-) -> subprocess.CompletedProcess[str]:
-    """Run an FFmpeg-family command with a fixed argument vector.
-
-    Args:
-        argv: Fully-resolved command and arguments; ``argv[0]`` is an absolute
-            binary path from ``shutil.which``.
-        timeout: Maximum seconds to wait for completion.
-        operation: Operation name used in raised errors.
-        path: Media path used in raised errors.
-
-    Returns:
-        The completed process, including captured stdout and stderr.
-
-    Raises:
-        MediaError: If the process cannot be launched or times out.
-    """
-    try:
-        return subprocess.run(  # nosec B603 - fixed argv list from which(); no shell
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise MediaError(
-            "FFmpeg command timed out",
-            operation=operation,
-            file_path=path,
-        ) from exc
-    except OSError as exc:
-        raise MediaError(
-            "failed to launch FFmpeg command",
-            operation=operation,
-            file_path=path,
-        ) from exc
 
 
 def _parse_ffprobe_output(*, payload: str, path: Path) -> MediaMetadata:
@@ -427,3 +371,12 @@ def _parse_frame_rate(value: object) -> float | None:
     if fraction <= 0:
         return None
     return float(fraction)
+
+
+__all__ = [
+    "extract_frame",
+    "extract_video_metadata",
+    "ffmpeg_available",
+    "ffprobe_available",
+    "read_video_tags",
+]

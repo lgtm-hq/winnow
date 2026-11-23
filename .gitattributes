@@ -1,2 +1,24 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Generated media fixtures are binary even when they hold no NUL byte.
+tests/media/fixtures/**/*.aac binary
+tests/media/fixtures/**/*.ac3 binary
+tests/media/fixtures/**/*.aiff binary
+tests/media/fixtures/**/*.avi binary
+tests/media/fixtures/**/*.eac3 binary
+tests/media/fixtures/**/*.flac binary
+tests/media/fixtures/**/*.flv binary
+tests/media/fixtures/**/*.m2ts binary
+tests/media/fixtures/**/*.m4a binary
+tests/media/fixtures/**/*.mka binary
+tests/media/fixtures/**/*.mkv binary
+tests/media/fixtures/**/*.mov binary
+tests/media/fixtures/**/*.mp3 binary
+tests/media/fixtures/**/*.mp4 binary
+tests/media/fixtures/**/*.mpg binary
+tests/media/fixtures/**/*.ogg binary
+tests/media/fixtures/**/*.tta binary
+tests/media/fixtures/**/*.wav binary
+tests/media/fixtures/**/*.wma binary
+tests/media/fixtures/**/*.wv binary

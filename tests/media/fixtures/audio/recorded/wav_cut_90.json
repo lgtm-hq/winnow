@@ -1,0 +1,11 @@
+{
+  "calls": [
+    {
+      "kind": "header",
+      "returncode": 0,
+      "stderr": "[wav @ 0x757cc10000] Packet corrupt (stream = 0, dts = NOPTS).\n[wav @ 0x757cc10000] Estimating duration from bitrate, this may be inaccurate\n",
+      "stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"pcm_u8\",\n            \"codec_type\": \"audio\",\n            \"sample_rate\": \"8000\",\n            \"channels\": 1,\n            \"bits_per_sample\": 8,\n            \"time_base\": \"1/8000\",\n            \"duration\": \"0.899375\",\n            \"bit_rate\": \"64000\",\n            \"disposition\": {\n                \"default\": 0,\n                \"attached_pic\": 0\n            }\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"wav\",\n        \"duration\": \"0.899375\",\n        \"probe_score\": 99\n    }\n}\n"
+    }
+  ],
+  "ffprobe_version": "ffprobe version 9.0.2 Copyright (c) 2007-2026 the FFmpeg developers"
+}

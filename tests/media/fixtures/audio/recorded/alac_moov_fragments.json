@@ -1,0 +1,17 @@
+{
+  "calls": [
+    {
+      "kind": "header",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "{\n    \"programs\": [\n\n    ],\n    \"stream_groups\": [\n\n    ],\n    \"streams\": [\n        {\n            \"index\": 0,\n            \"codec_name\": \"alac\",\n            \"codec_type\": \"audio\",\n            \"sample_rate\": \"48000\",\n            \"channels\": 1,\n            \"bits_per_sample\": 0,\n            \"id\": \"0x1\",\n            \"time_base\": \"1/48000\",\n            \"duration\": \"1.000000\",\n            \"bit_rate\": \"1400\",\n            \"bits_per_raw_sample\": \"16\",\n            \"nb_frames\": \"3\",\n            \"disposition\": {\n                \"default\": 1,\n                \"attached_pic\": 0\n            }\n        }\n    ],\n    \"format\": {\n        \"format_name\": \"mov,mp4,m4a,3gp,3g2,mj2\",\n        \"start_time\": \"0.000000\",\n        \"duration\": \"1.000000\",\n        \"probe_score\": 100\n    }\n}\n"
+    },
+    {
+      "kind": "walk",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "0.000000,0.085333,K__\n0.085333,0.085333,K__\n0.170667,0.085333,K__\n0.256000,0.085333,K__\n0.341333,0.085333,K__\n0.426667,0.085333,K__\n0.512000,0.085333,K__\n0.597333,0.085333,K__\n0.682667,0.085333,K__\n0.768000,0.085333,K__\n0.853333,0.085333,K__\n0.938667,0.061333,K__\n"
+    }
+  ],
+  "ffprobe_version": "ffprobe version 9.0.2 Copyright (c) 2007-2026 the FFmpeg developers"
+}
