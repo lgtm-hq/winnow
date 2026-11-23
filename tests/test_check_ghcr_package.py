@@ -59,6 +59,10 @@ transport() {
 	echo "error connecting to api.github.com (token $GH_TOKEN)" >&2
 	exit 1
 }
+padded() {
+	printf '%285s(token %s)\n' "" "$GH_TOKEN" >&2
+	exit 1
+}
 if [[ " $* " == *" --jq "* ]]; then
 	case "$MOCK_LOOKUP" in
 	transport) transport ;;
@@ -72,6 +76,7 @@ if [[ " $* " == *" --jq "* ]]; then
 fi
 case "$MOCK_PACKAGE" in
 transport) transport ;;
+padded) padded ;;
 malformed)
 	echo "<html>upstream proxy error</html>"
 	exit 0
@@ -275,6 +280,14 @@ def test_transport_failure_fails_and_redacts_token(tmp_path: Path) -> None:
     )
 
 
+def test_token_across_the_clip_point_is_redacted(tmp_path: Path) -> None:
+    """A token that straddles the 300-character clip leaves no part behind."""
+    run = _run_probe(tmp_path, lookup="Organization", package="padded")
+
+    _assert_failed_without_output(run)
+    assert_that(run.stderr).contains("[redacte").does_not_contain(_TOKEN[:8])
+
+
 def test_malformed_output_fails(tmp_path: Path) -> None:
     """Output without an HTTP status line fails even when gh exits 0."""
     run = _run_probe(tmp_path, lookup="Organization", package="malformed")
@@ -329,6 +342,20 @@ def test_owner_outside_login_syntax_fails(tmp_path: Path) -> None:
     _assert_failed_without_output(run)
     assert_that(run.stderr).contains("OWNER must be a GitHub login")
     assert_that(run.calls).is_empty()
+
+
+def test_owner_login_with_underscore_is_accepted(tmp_path: Path) -> None:
+    """A managed-user login, which has an underscore, is a valid OWNER."""
+    run = _run_probe(
+        tmp_path,
+        overrides={"OWNER": "mona_acme", "OWNER_TYPE": "user"},
+    )
+
+    assert_that(run.returncode).described_as(run.stderr).is_equal_to(0)
+    assert_that(run.output).is_equal_to("exists=true\n")
+    assert_that(run.calls).is_equal_to(
+        ["api --include users/mona_acme/packages/container/winnow"],
+    )
 
 
 def test_slash_package_name_is_encoded(tmp_path: Path) -> None:

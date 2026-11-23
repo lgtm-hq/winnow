@@ -60,8 +60,8 @@ fail() {
 }
 
 # An owner is a GitHub login; anything else could address another endpoint.
-if [[ ! "${OWNER}" =~ ^[A-Za-z0-9-]+$ ]]; then
-	fail "OWNER must be a GitHub login (letters, digits and hyphens)"
+if [[ ! "${OWNER}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+	fail "OWNER must be a GitHub login (letters, digits, hyphens and underscores)"
 fi
 
 # Package names containing slashes must be URL-encoded for the Packages API.
@@ -81,6 +81,8 @@ gh_detail() {
 	local line detail="" count=0
 	while ((count < 3)) && { IFS= read -r line || [[ -n "$line" ]]; }; do
 		line="${line%$'\r'}"
+		# Redact first: clipping could cut a token so it no longer matches.
+		line="$(redact "$line")"
 		detail+="${detail:+; }${line:0:300}"
 		count=$((count + 1))
 	done <"${workdir}/err"

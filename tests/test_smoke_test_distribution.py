@@ -38,13 +38,16 @@ def test_smoke_test_distribution_installs_wheel_and_reports_version(
     uv_bin = _require_executable("uv")
     bash_bin = _require_executable("bash")
 
-    run_script(
+    build = run_script(
         [uv_bin, "build", "--out-dir", str(dist_dir)],
         env=os.environ,
         cwd=_REPO_ROOT,
         timeout=_TIMEOUT_SECONDS,
-        check=True,
     )
+    # The helper captures output, so a failed build must print it here.
+    assert_that(build.returncode).described_as(
+        f"uv build failed\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}",
+    ).is_equal_to(0)
 
     result = run_script(
         [bash_bin, str(_SMOKE_SCRIPT)],
@@ -58,5 +61,7 @@ def test_smoke_test_distribution_installs_wheel_and_reports_version(
         timeout=_TIMEOUT_SECONDS,
     )
 
-    assert_that(result.returncode).described_as(result.stderr).is_equal_to(0)
+    assert_that(result.returncode).described_as(
+        f"smoke test failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    ).is_equal_to(0)
     assert_that(result.stdout).contains("Smoke test passed")
