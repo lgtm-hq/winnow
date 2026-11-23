@@ -200,6 +200,19 @@ def test_amr_frames_must_follow_each_other(tmp_path: Path) -> None:
     assert_that(_detect_bytes(tmp_path, data).media_type).is_none()
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"#!AMR\n$ donation\n",
+        b"#!AMR\n" + _amr_frames(2) + b"$" + b"A" * 5,
+    ],
+    ids=["short-note", "cut-last-frame"],
+)
+def test_amr_frame_must_fit_in_the_file(tmp_path: Path, data: bytes) -> None:
+    """A frame whose speech bytes run past the end of the file is not AMR."""
+    assert_that(_detect_bytes(tmp_path, data).media_type).is_none()
+
+
 def test_amr_walk_stops_after_its_frames(tmp_path: Path) -> None:
     """Only the first frames are checked: garbage after them does not matter."""
     data = b"#!AMR\n" + _amr_frames(AMR_FRAMES_CHECKED, speech=b"\x00") + b"\x83" * 8
@@ -439,7 +452,10 @@ def test_amr_frame_types(
     tmp_path: Path, magic: bytes, frame_type: int, expected: MediaType | None
 ) -> None:
     """Only the frame types RFC 4867 defines for the format are accepted."""
-    data = magic + bytes([frame_type << 3 | 0x04]) + b"\x00" * 64
+    # Speech bytes after the header: 5 for the comfort-noise types, none for
+    # the lost-frame and no-data types (RFC 4867, 5.3). Four whole frames.
+    speech = 5 if frame_type in {8, 9} else 0
+    data = magic + (bytes([frame_type << 3 | 0x04]) + b"\x00" * speech) * 4
 
     assert_that(_detect_bytes(tmp_path, data).media_type).is_equal_to(expected)
 

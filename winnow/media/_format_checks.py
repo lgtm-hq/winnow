@@ -402,6 +402,9 @@ def _amr_frames_follow(content: Content, position: int, magic: bytes) -> bool:
         if header & 0x83 or frame_type not in allowed:
             return False
         position += 1 + sizes[frame_type]
+        if position > content.size:
+            # The frame's speech bytes run past the end of the file.
+            return False
     return True
 
 

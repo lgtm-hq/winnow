@@ -195,8 +195,11 @@ def _dxf(content: Content) -> bool:
     )
 
 
-_DIB_HEADER_SIZES: Final[frozenset[int]] = frozenset({12, 40, 52, 56, 64, 108, 124})
-"""BITMAPCOREHEADER, BITMAPINFOHEADER and its V2 to V5 successors."""
+_DIB_HEADER_SIZES: Final[frozenset[int]] = frozenset(
+    {12, 16, 40, 52, 56, 64, 108, 124},
+)
+"""BITMAPCOREHEADER, the short and full OS/2 2.x headers (16 and 64 bytes),
+BITMAPINFOHEADER and its V2 to V5 successors: the sizes the BMP check takes."""
 
 _DIB_BIT_COUNTS: Final[frozenset[int]] = frozenset({1, 4, 8, 16, 24, 32})
 

@@ -395,6 +395,7 @@ def test_structural_checks_reject_near_misses(
             IMAGE,
         ),
         ("dib", struct.pack("<IHHHH", 12, 1, 1, 1, 8) + b"\x00" * 8, IMAGE),
+        ("dib", struct.pack("<IiiHH", 16, 1, 1, 1, 8), IMAGE),
         (
             "pict",
             b"\x00" * 512 + b"\x00\x0a" + b"\x00" * 8 + b"\x11\x01" + b"\xff",
@@ -408,6 +409,7 @@ def test_structural_checks_reject_near_misses(
     ids=[
         "tga-colour-mapped",
         "dib-core-header",
+        "dib-os2-short-header",
         "pict-version-1",
         "dxf-binary",
         "eps-dos",
