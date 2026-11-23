@@ -72,11 +72,12 @@ because...
 
 ## Index of ADRs
 
-| ADR                                | Title                                              | Status   | Date       |
-| ---------------------------------- | -------------------------------------------------- | -------- | ---------- |
-| [0001](0001-api-first-platform.md) | API-First Platform, CLI-First Phasing              | Accepted | 2026-06-30 |
-| [0002](0002-native-hashing.md)     | Native Hashing — Rust Batch Hasher vs imagehash    | Accepted | 2026-07-18 |
-| [0003](0003-evidence-model.md)     | Evidence Model — Observations Apart from Decisions | Accepted | 2026-11-23 |
+| ADR                                   | Title                                              | Status   | Date       |
+| ------------------------------------- | -------------------------------------------------- | -------- | ---------- |
+| [0001](0001-api-first-platform.md)    | API-First Platform, CLI-First Phasing              | Accepted | 2026-06-30 |
+| [0002](0002-native-hashing.md)        | Native Hashing — Rust Batch Hasher vs imagehash    | Accepted | 2026-07-18 |
+| [0003](0003-evidence-model.md)        | Evidence Model — Observations Apart from Decisions | Accepted | 2026-11-23 |
+| [0004](0004-capture-date-resolver.md) | Capture-Date Resolver — Named Rules and Certainty  | Accepted | 2026-11-24 |
 
 ## Template
 

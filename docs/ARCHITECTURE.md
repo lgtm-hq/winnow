@@ -137,6 +137,34 @@ Standards (enforced in code review and ADR 0001):
 Map domain errors to CLI exit codes or HTTP problem details in adapters only — do not
 leak transport concerns into core modules.
 
+## How winnow dates a file
+
+`winnow/media/resolve_date.py` decides a file's capture date from its evidence
+([ADR 0003](adr/0003-evidence-model.md)). It is a pure function: it reads no file, no
+clock and no host timezone. Each decision names its rule, the observations it used, the
+ones it set aside with a reason, and a certainty (CONFIRMED, PROBABLE, WEAK or NONE).
+The full rules are in [ADR 0004](adr/0004-capture-date-resolver.md).
+
+Edit, copy, arrival, upload, release, digitizing, recording, container and filesystem
+times never date a file. The first rule below with usable evidence fires:
+
+1. `exif-original-offset`: EXIF or XMP `DateTimeOriginal` with an offset from the file.
+2. `quicktime-creationdate`: `com.apple.quicktime.creationdate` with its offset.
+3. `exif-original-wallclock`: `DateTimeOriginal` without an offset, kept as a wall
+   clock.
+4. `iptc-xmp-date-created`: IPTC 2:55/2:60 or XMP `photoshop:DateCreated`.
+5. `gps-only`: the GPS fix, only when it is the only capture evidence (WEAK).
+6. `sidecar-takeout`: an associated Google Takeout `photoTakenTime`.
+7. `sidecar-xmp`: an associated XMP sidecar's original or created date.
+8. `png-creation-time`: PNG text `Creation Time` (WEAK).
+9. `filename-pattern`: a camera file-name pattern, when the policy allows it (WEAK).
+10. `undated`: nothing above.
+
+Candidates of one rule that disagree give `conflicting-capture` and no date. A lower
+value that disagrees lowers certainty one level. A wall clock is never compared with an
+instant, and no timezone is derived. A digitized time is decided separately and never
+fills the capture date. Nothing prints decisions yet (#397).
+
 ## Planned domain modules
 
 The table maps **planned** package areas to GitHub epics. Paths follow domain names from
