@@ -7,16 +7,21 @@ with text holding other comments; blank lines; quoted strings holding
 `` #``; anchors and aliases on keys and values; merge keys; flow
 collections with and without inner spaces; block scalars with every
 chomping indicator; bare ``-`` items; aligned values; trailing spaces;
-``True``, ``~`` and ``null`` spellings; wrapped scalars; and document
-markers.
+``True``, ``~`` and ``null`` spellings; wrapped scalars; document
+markers; anchored and tagged mappings and empty values; explicit ``?``
+keys; flow mappings with trailing commas, spanning lines and holding
+comments; block scalars holding only spaces; CRLF line ends, a byte order
+mark and U+0085.
 
 The oracle shares no code with the editor. It finds what changed by
 comparing the texts, reads values with ``ruamel.yaml``'s safe loader and
 comments with its scanner. An accepted edit must change only text inside
 the key's old value, or insert whole lines for a new key; keep every
 comment token, in order and in number; leave every other key equal; give
-the key the value set; and be a no-op when made again. A refused edit must
-raise :class:`ConfigError` and leave the file as it was.
+the key the value set; start every line it inserts or replaces at the
+file's own indent; keep the file's line ends and byte order mark; and be a
+no-op when made again. A refused edit must raise :class:`ConfigError` for a
+listed reason and leave the file as it was.
 
 ``WINNOW_FUZZ_SEEDS`` sets how many seeds the run covers.
 """
@@ -27,6 +32,7 @@ import hashlib
 import io
 import os
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from pathlib import Path
@@ -47,8 +53,12 @@ _MIN_ACCEPTED = 0.8
 _EXPECTED_REFUSALS = (
     "a comment inside its old value",
     "shared through a YAML anchor",
+    "holds a comment, which would then follow the new key",
+    "explicit '?' key or a key without ':'",
+    "U+0085, U+2028 or U+2029",
 )
 """The only reasons a generated edit may be refused."""
+_BOM = "\ufeff"
 
 
 class Shape(StrEnum):
@@ -63,10 +73,23 @@ class Shape(StrEnum):
     SET_NULL = auto()
     NULL_TO_LIST = auto()
     NULL_TO_MAPPING = auto()
+    LIST_TO_SCALAR = auto()
+    MAPPING_TO_SCALAR = auto()
+    EMPTY_LIST = auto()
+    FLOW_INSERT = auto()
+    EXPLICIT_KEY = auto()
+    PROPERTY_INSERT = auto()
+    BLOCK_SCALAR = auto()
 
 
 _SHAPES = list(Shape)
-_INSERTS = frozenset({Shape.NEW_TOP_KEY, Shape.NEW_NESTED_KEY})
+_INSERTS = frozenset(
+    {Shape.NEW_TOP_KEY, Shape.NEW_NESTED_KEY, Shape.EXPLICIT_KEY}
+    | {Shape.PROPERTY_INSERT},
+)
+_ADDS_GRAPHICS = _INSERTS - {Shape.NEW_TOP_KEY} | {Shape.FLOW_INSERT}
+_MIN_ACCEPTED_BY_SHAPE = {Shape.FLOW_INSERT: 0.5, Shape.EXPLICIT_KEY: 0.3}
+"""Shapes whose files hold what refuses an edit by design, more often."""
 _EDITS: dict[Shape, tuple[str, object]] = {
     Shape.TOP_SCALAR: ("workers", 3),
     Shape.NESTED_SCALAR: ("cache.enabled", False),
@@ -77,6 +100,13 @@ _EDITS: dict[Shape, tuple[str, object]] = {
     Shape.SET_NULL: ("paths.output_dir", None),
     Shape.NULL_TO_LIST: ("source_dirs", ["/a", "/b"]),
     Shape.NULL_TO_MAPPING: ("cache.enabled", True),
+    Shape.LIST_TO_SCALAR: ("paths.output_dir", "/new"),
+    Shape.MAPPING_TO_SCALAR: ("paths.output_dir", "/new"),
+    Shape.EMPTY_LIST: ("source_dirs", []),
+    Shape.FLOW_INSERT: ("routing.graphics", "Drawings"),
+    Shape.EXPLICIT_KEY: ("routing.graphics", "Drawings"),
+    Shape.PROPERTY_INSERT: ("routing.graphics", "Drawings"),
+    Shape.BLOCK_SCALAR: ("paths.output_dir", "/new"),
 }
 """The key and value each shape sets."""
 
@@ -128,6 +158,13 @@ class Case:
     shape: Shape
     key: str
     value: object
+    crlf: bool = False
+    bom: bool = False
+
+    def raw(self, text: str) -> str:
+        """Return ``\\n``-ended text laid out as this case's file is."""
+        text = text.replace("\n", "\r\n") if self.crlf else text
+        return _BOM + text if self.bom else text
 
 
 _COMMENTS = ["  # note", " # note", "  # note # note", " # x: y", "  #"]
@@ -197,6 +234,8 @@ class _Generator:
         pad = " " * depth
         body = " " * (depth + self.style.mapping)
         header = self.rng.pick(["|", ">", "|-", ">-", "|+", ">+"])
+        if self.rng.chance(6):
+            return [f"{pad}{key}: {header}{self.style.mapping}", f"{body}   "]
         if self.rng.chance(4):
             header += str(self.style.mapping)
         if self.rng.chance(4):
@@ -245,9 +284,13 @@ class _Generator:
             merge = "{<<: *base, b: 2}" if self.base else "&base {a: 1}"
             self.base = True
             return [f"{' ' * depth}{key}: {merge}"]
-        lines = [f"{' ' * depth}{key}:{self.comment()}"]
+        props = self.rng.pick(["", "", "", " !!map", f" &m_{name}"])
+        lines = [f"{' ' * depth}{key}:{props}{self.comment()}"]
         for index in range(1 + self.rng.below(3)):
             lines += self.entry(depth + self.style.mapping, f"{name}_{index}")
+        if self.rng.chance(6):
+            inner = " " * (depth + self.style.mapping)
+            lines += [f"{inner}? {name}_q", f"{inner}: v"]
         return lines + self.after_block(depth)
 
     def _scalar_entry(self, pad: str, key: str) -> list[str]:
@@ -256,7 +299,8 @@ class _Generator:
 
     def _null_entry(self, pad: str, key: str) -> list[str]:
         """Return an entry holding a null in the file's spelling."""
-        return [f"{pad}{key}:{self.style.null}{self.comment()}{self.tail()}"]
+        null = " !!null" if self.rng.chance(6) else self.style.null
+        return [f"{pad}{key}:{null}{self.comment()}{self.tail()}"]
 
     def _flow_entry(self, pad: str, key: str) -> list[str]:
         """Return an entry holding a flow collection."""
@@ -265,11 +309,23 @@ class _Generator:
     _LEAVES = (_scalar_entry, _scalar_entry, _scalar_entry, _null_entry, _flow_entry)
     """The one-line entries, by kind."""
 
-    def mapping(self, key: str, entries: list[str], comments: int = 8) -> list[str]:
-        """Return an edited top-level block mapping of ``entries``."""
+    def mapping(
+        self,
+        key: str,
+        entries: Sequence[str | list[str]],
+        comments: int = 8,
+        props: str = "",
+    ) -> list[str]:
+        """Return an edited top-level block mapping of ``entries``.
+
+        An entry given as lines is written as they are, under the pad.
+        """
         pad = " " * self.style.mapping
-        lines = [f"{key}:{self.comment(comments)}"]
+        lines = [f"{key}:{props}{self.comment(comments)}"]
         for entry in entries:
+            if isinstance(entry, list):
+                lines += [f"{pad}{line}" for line in entry]
+                continue
             if self.rng.chance(10):
                 lines.append(f"{pad}# about {entry.partition(':')[0]}")
             lines.append(f"{pad}{entry}{self.comment(comments)}{self.tail()}")
@@ -318,17 +374,52 @@ class _Generator:
 
     def _routing(self) -> list[str]:
         """Return ``routing``, without ``graphics`` when the edit adds it."""
-        routing = ["review: Review"]
-        if self.shape is not Shape.NEW_NESTED_KEY and self.rng.chance(2):
+        routing: list[str | list[str]] = ["review: Review"]
+        if self.shape not in _ADDS_GRAPHICS and self.rng.chance(2):
             routing.append("graphics: Art")
-        return self.mapping("routing", routing)
+        if self.shape is Shape.FLOW_INSERT:
+            return self._flow_routing([str(entry) for entry in routing])
+        if self.shape is Shape.EXPLICIT_KEY and self.rng.chance(2):
+            routing.insert(self.rng.below(2), ["? screenshots", ": Shots"])
+        props = ""
+        if self.shape is Shape.PROPERTY_INSERT or self.rng.chance(6):
+            props = self.rng.pick([" &r", " !!map", " &r !!map"])
+        return self.mapping("routing", routing, props=props)
+
+    def _flow_routing(self, entries: list[str]) -> list[str]:
+        """Return ``routing`` as a flow mapping, perhaps over several lines."""
+        trailing = self.rng.pick(["", "", ",", " ,", ", "])
+        if self.rng.chance(2):
+            body = self.rng.pick([", ", ","]).join(entries) + trailing
+            return [f"routing: {{{body}}}{self.comment()}"]
+        note = "  # note" if self.rng.chance(3) else ""
+        first, *rest = entries
+        return [
+            f"routing: {{{first},{note}",
+            *(f"  {entry}," for entry in rest),
+            "  }",
+        ]
 
     def _paths(self) -> list[str]:
-        """Return ``paths``, its output perhaps quoted, anchored or null."""
-        output = self.rng.pick(["/out", '"/tmp/dir #1"', "&o /out", "~"])
-        if output.startswith("&"):
+        """Return ``paths``, its output perhaps quoted, anchored, null or a block."""
+        output: str | list[str] = self.rng.pick(
+            ["/out", '"/tmp/dir #1"', "&o /out", "~", "!!null"],
+        )
+        item = " " * self.style.offset
+        nested = " " * self.style.mapping
+        if self.shape is Shape.LIST_TO_SCALAR:
+            output = self.rng.pick(["[/a, /b]", "[]"])
+            if self.rng.chance(2):
+                output = ["output_dir:", f"{item}- /a", f"{item}- /b"]
+        elif self.shape is Shape.MAPPING_TO_SCALAR:
+            output = ["output_dir:", f"{nested}dir: /a", f"{nested}name: x"]
+        elif self.shape is Shape.BLOCK_SCALAR:
+            header = self.rng.pick(["|", ">", "|-", "|+"]) + str(self.style.mapping)
+            output = [f"output_dir: {header}", f"{nested}{' ' * self.rng.below(4)}"]
+        if isinstance(output, str) and output.startswith("&"):
             self.anchors.append("o")
-        return self.mapping("paths", [f"output_dir: {output}", "quarantine_dir: /q"])
+        entry = f"output_dir: {output}" if isinstance(output, str) else output
+        return self.mapping("paths", [entry, "quarantine_dir: /q"])
 
 
 _SECTIONS = ["workers", "source_dirs", "cache", "routing", "paths"]
@@ -336,6 +427,11 @@ _SECTIONS = ["workers", "source_dirs", "cache", "routing", "paths"]
 
 def generate(seed: int) -> Case:
     """Return a generated file and the edit its seed makes."""
+    return generate_with_style(seed)[0]
+
+
+def generate_with_style(seed: int) -> tuple[Case, _Style]:
+    """Return a generated file, the edit its seed makes and the file's layout."""
     shape = _SHAPES[seed % len(_SHAPES)]
     rng = _Picker(seed)
     style = _Style(
@@ -362,8 +458,18 @@ def generate(seed: int) -> Case:
     if generator.anchors and rng.chance(2):
         lines.append(f"ref: *{rng.pick(generator.anchors)}")
     lines += [[], [], [""], ["# end"], ["..."]][rng.below(5)]
+    if rng.chance(40):
+        lines.insert(0, "# next line\x85")
     key, value = _EDITS[shape]
-    return Case(text="\n".join(lines) + "\n", shape=shape, key=key, value=value)
+    case = Case(
+        text="\n".join(lines) + "\n",
+        shape=shape,
+        key=key,
+        value=value,
+        crlf=rng.chance(8),
+        bom=rng.chance(8),
+    )
+    return case, style
 
 
 def _load(text: str) -> dict[str, object]:
@@ -404,10 +510,11 @@ def _without(settings: dict[str, object], key: str) -> dict[str, object]:
     return copied
 
 
-def _value_region(text: str, key: str) -> tuple[int, int]:
-    """Return where a key's old value may change: the key's end to its last leaf.
+def _value_region(text: str, key: str) -> tuple[int, int, int]:
+    """Return where a key's old value may change, and the key's column.
 
-    A key below a ``null`` counts from the key that holds the ``null``.
+    The range runs from the key's end to its value's last leaf; a key below
+    a ``null`` counts from the key that holds the ``null``.
     """
     node: Node = YAML().compose(io.StringIO(text))
     key_node: Node | None = None
@@ -425,7 +532,38 @@ def _value_region(text: str, key: str) -> tuple[int, int]:
         last = node.value[-1]
         node = last[1] if isinstance(node, MappingNode) else last
     assert_that(key_node).is_not_none()
-    return cast("Node", key_node).end_mark.index, node.end_mark.index
+    found = cast("Node", key_node)
+    return found.end_mark.index, node.end_mark.index, found.start_mark.column
+
+
+def _sequence_offsets(text: str, style: _Style) -> set[int]:
+    """Return the dash offsets a new block sequence in the file may use.
+
+    The file's own offset when it has a block sequence under a key whose
+    first item is on its dash's line, else that or the default of 2.
+    """
+    pending: list[Node] = [YAML().compose(io.StringIO(text))]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, SequenceNode):
+            pending.extend(node.value)
+        if not isinstance(node, MappingNode):
+            continue
+        for _name, value in node.value:
+            pending.append(value)
+            if (
+                isinstance(value, SequenceNode)
+                and not value.flow_style
+                and value.value
+                and value.value[0].start_mark.line == value.start_mark.line
+            ):
+                return {style.offset}
+    return {style.offset, 2}
+
+
+def _indent(line: str) -> int:
+    """Return how many spaces start a line."""
+    return len(line) - len(line.lstrip(" "))
 
 
 def _changed(before: str, after: str) -> tuple[int, int, str]:
@@ -440,7 +578,57 @@ def _changed(before: str, after: str) -> tuple[int, int, str]:
     return start, len(before) - end, after[start : len(after) - end]
 
 
-def _check_accepted(case: Case, after: str) -> None:
+def _check_inserted(case: Case, before: str, after: str) -> None:
+    """Check an inserted entry: whole lines, at its siblings' column."""
+    start, end, _ = _changed(before, after)
+    assert_that(end).is_equal_to(start)
+    line_start = before.rfind("\n", 0, start) + 1
+    lines = after[line_start : line_start + len(after) - len(before)]
+    assert_that(after).is_equal_to(before[:line_start] + lines + before[line_start:])
+    assert_that(lines).ends_with("\n")
+    root = YAML().compose(io.StringIO(before))
+    parent = root
+    for part in case.key.split(".")[:-1]:
+        parent = next(value for name, value in parent.value if name.value == part)
+    sibling = parent.value[0][0].start_mark.line
+    column = _indent(before.splitlines()[sibling])
+    for line in lines.splitlines():
+        assert_that(_indent(line)).described_as(line).is_equal_to(column)
+
+
+def _check_flow_insert(case: Case, before: str, after: str) -> None:
+    """Check an entry added to a flow mapping: on its line, inside the braces."""
+    start, end, text = _changed(before, after)
+    assert_that(end).is_equal_to(start)
+    assert_that(text).does_not_contain("\n")
+    root = YAML().compose(io.StringIO(before))
+    routing = next(value for name, value in root.value if name.value == "routing")
+    assert_that(start).is_greater_than(routing.start_mark.index)
+    assert_that(start).is_less_than(routing.end_mark.index)
+    assert_that(after).does_not_contain(",,").does_not_contain(", ,")
+
+
+def _check_replaced(case: Case, before: str, after: str, style: _Style) -> None:
+    """Check a replaced value: inside the old one, its new lines at the indent."""
+    start, end, text = _changed(before, after)
+    region_start, region_end, column = _value_region(before, case.key)
+    assert_that(start).is_greater_than_or_equal_to(region_start)
+    assert_that(end).is_less_than_or_equal_to(region_end)
+    offsets = _sequence_offsets(before, style)
+    line_start = after.rfind("\n", 0, start) + 1
+    new_lines = after[line_start : start + len(text)].split("\n")[1:]
+    for line in new_lines:
+        if not line.strip():
+            continue
+        allowed = (
+            {column + offset for offset in offsets}
+            if line.lstrip().startswith("-")
+            else {column + style.mapping}
+        )
+        assert_that(allowed).described_as(line).contains(_indent(line))
+
+
+def _check_accepted(case: Case, after: str, style: _Style) -> None:
     """Check an accepted edit with the oracle."""
     before = case.text
     old_settings, new_settings = _load(before), _load(after)
@@ -456,22 +644,21 @@ def _check_accepted(case: Case, after: str) -> None:
     assert_that(_comments(after)).is_equal_to(_comments(before))
     if after == before:
         return
-    start, end, _ = _changed(before, after)
-    if case.shape in _INSERTS:
-        assert_that(end).is_equal_to(start)
-        line_start = before.rfind("\n", 0, start) + 1
-        lines = after[line_start : line_start + len(after) - len(before)]
-        assert_that(after).is_equal_to(
-            before[:line_start] + lines + before[line_start:]
-        )
-        assert_that(lines).ends_with("\n")
-        return
-    region_start, region_end = _value_region(before, case.key)
-    assert_that(start).is_greater_than_or_equal_to(region_start)
-    assert_that(end).is_less_than_or_equal_to(region_end)
+    if case.shape is Shape.FLOW_INSERT:
+        _check_flow_insert(case, before, after)
+    elif case.shape in _INSERTS:
+        _check_inserted(case, before, after)
+    else:
+        _check_replaced(case, before, after, style)
 
 
-def check(case: Case, directory: Path) -> str | None:
+def _read_raw(path: Path) -> str:
+    """Return a file's text with its line ends and byte order mark."""
+    with path.open(encoding="utf-8", newline="") as stream:
+        return stream.read()
+
+
+def check(case: Case, directory: Path, style: _Style) -> str | None:
     """Make a case's edit on its file and check the result.
 
     Returns:
@@ -479,16 +666,20 @@ def check(case: Case, directory: Path) -> str | None:
     """
     _load(case.text)
     config_path = directory / "c.yaml"
-    config_path.write_text(case.text, encoding="utf-8")
+    raw = case.raw(case.text)
+    with config_path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(raw)
     try:
         set_config_value(case.key, case.value, config_path=config_path)
     except ConfigError as error:
-        assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(case.text)
+        assert_that(_read_raw(config_path)).is_equal_to(raw)
         return error.message
-    after = config_path.read_text(encoding="utf-8")
-    _check_accepted(case, after)
+    after_raw = _read_raw(config_path)
+    after = after_raw.removeprefix(_BOM).replace("\r\n", "\n")
+    assert_that(after_raw).is_equal_to(case.raw(after))
+    _check_accepted(case, after, style)
     set_config_value(case.key, case.value, config_path=config_path)
-    assert_that(config_path.read_text(encoding="utf-8")).is_equal_to(after)
+    assert_that(_read_raw(config_path)).is_equal_to(after_raw)
     return None
 
 
@@ -500,11 +691,11 @@ def run(seeds: range, directory: Path) -> dict[Shape, Counter[str]]:
     """
     outcomes: dict[Shape, Counter[str]] = {shape: Counter() for shape in Shape}
     for seed in seeds:
-        case = generate(seed)
+        case, style = generate_with_style(seed)
         seed_directory = directory / str(seed)
         seed_directory.mkdir()
         try:
-            refusal = check(case, seed_directory)
+            refusal = check(case, seed_directory, style)
         except AssertionError as error:
             message = f"seed {seed} ({case.shape}): {case.text!r}\n{error}"
             raise AssertionError(message) from error
@@ -518,9 +709,10 @@ def test_generated_files_change_only_the_value_or_refuse(tmp_path: Path) -> None
 
     for shape, counts in outcomes.items():
         total = sum(counts.values())
+        minimum = _MIN_ACCEPTED_BY_SHAPE.get(shape, _MIN_ACCEPTED)
         assert_that(counts["accepted"]).described_as(
             f"{shape}: {dict(counts)}",
-        ).is_greater_than_or_equal_to(int(total * _MIN_ACCEPTED))
+        ).is_greater_than_or_equal_to(int(total * minimum))
         refusals = [reason for reason in counts if reason != "accepted"]
         for refusal in refusals:
             assert_that(
