@@ -117,12 +117,17 @@ back in its own format:
 
 - Values from the `.local` companion file and `WINNOW_*` variables never reach the file,
   and other keys keep their cast markers (`workers: "@int 4"`).
-- YAML files keep their comments, quoting, flow lists and key order as far as the YAML
-  round trip allows; indentation may be normalized.
-- JSON files stay JSON with the same keys and values; indentation is kept but spacing
-  and number forms may be normalized.
-- CRLF line endings, a UTF-8 byte order mark, a missing final newline and comments above
-  a leading `---` are kept.
+- In a YAML file only the key's line changes: comments, quoting, indentation, flow
+  lists, anchors, key order and the file's spelling of null (empty, `null`, `~`, `Null`
+  or `NULL`) are kept. A null that `set` writes uses that spelling, or the empty form in
+  a file that spells none. A file the YAML round trip would change elsewhere is refused
+  (see below).
+- A JSON file is re-serialised with the indent it uses. Keys, their order and values are
+  kept, while spacing, number forms and escapes can change: a compact one-line file
+  `{"workers":2}` comes back as `{"workers": 3}`, and an inline array such as
+  `"source_dirs": ["/a", "/b"]` in an indented file is spread over one line per item.
+- CRLF line endings, a UTF-8 byte order mark, a missing final newline, blank lines at
+  the end, and comments and blank lines around one leading `---` are kept.
 - The file is replaced, not rewritten in place, so the user running `set` becomes its
   owner. It keeps its permission bits, but not setuid, setgid or sticky bits. A
   symlinked file is written through its link; a link to a missing file creates that file
@@ -140,16 +145,24 @@ fail with an error and leave the file untouched:
 - a symlink loop;
 - a file that mixes CRLF and LF line endings or holds a lone CR;
 - a YAML file with a `%` directive, a `...` document end, or a `---` other than one
-  after its leading comments;
+  among its leading comments;
+- a YAML file that is an empty document (`null`, `~` or `{}`) holding a comment;
+- a YAML file the round trip would change beyond the key: bare `-` items, an empty `-`
+  included; `+` chomping on a block scalar; block scalar text indented differently from
+  the mappings; values aligned with extra spaces (`workers:    2`); trailing spaces;
+  null spellings mixed in one file (`null` with `~` or empty values); an empty null in a
+  flow map (`{output_dir: }`); and an anchored empty null (`a: &n` with `b: *n`);
 - a `NaN` or infinite number, or a value the file's format cannot hold;
 - a JSON file with a duplicate key or a byte order mark, or a YAML file that does not
   parse;
 - a key inside a mapping a YAML anchor shares with an alias, or merges into another
-  mapping with a `<<` merge key;
+  mapping with a `<<` merge key, and a key whose value carries an anchor that an alias
+  or merge key elsewhere refers to;
 - a key below a value written as a cast string (`routing: "@json {...}"`); set the whole
   value instead;
 - a key a later entry or a flat key elsewhere in the file would override or merge into,
-  or that would not read back as exactly the value given;
+  or that would not read back as exactly the value given, both as written and with cast
+  markers applied (an earlier `'@json ["*.jpg"]'` for the same key would join the list);
 - an invalid result.
 
 A file that does not exist yet is created: a `.json` path as JSON, any other path that
