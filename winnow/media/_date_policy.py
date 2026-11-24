@@ -45,7 +45,9 @@ class DatePolicy:
     """Inputs to the resolver that are not evidence.
 
     Args:
-        now: The scan start time, timezone-aware. A value later than this
+        now: The scan start time. Any timezone-aware datetime is accepted
+            and converted to UTC (:attr:`now_utc`); #396 types it as aware
+            UTC, which callers such as #55 supply. A value later than this
             is rejected as ``future``. Injected, never read from the clock.
         allow_filename_dates: Whether a camera file-name pattern may date a
             file (owner decision of 2026-11-14: on by default, WEAK).
@@ -271,8 +273,11 @@ class Reason(StrEnum):
     FUTURE = "future"
     """Later than the policy's ``now``."""
 
-    EPOCH_CONTAINER = "epoch-container"
-    """A QuickTime creation field read directly as the integer 0 (unset)."""
+    ZERO_CONTAINER_TIME = "zero-container-time"
+    """A QuickTime container creation field read directly as the integer 0.
+    It never dates a file. The issue's ``epoch-container`` code (a writer
+    profile establishing an unset clock) is reserved until such a profile
+    is documented (#395 PR B, #398)."""
 
     NO_RULE = "no-rule"
     """A date of the right claim that no rule in this ruleset reads."""
@@ -283,17 +288,24 @@ class Reason(StrEnum):
     FOREIGN_ORIGIN = "foreign-origin"
     """An embedded field whose origin is not the file itself."""
 
-    UNASSOCIATED_SIDECAR = "unassociated-sidecar"
-    """A sidecar value whose file is not a recorded association."""
+    SIDECAR_UNVERIFIED = "sidecar-unverified"
+    """A sidecar value without a verified unique association to this file.
+    Evidence schema version 1 has no such signal, so every sidecar date is
+    a hint until #402 adds it."""
 
-    AMBIGUOUS_SIDECAR = "ambiguous-sidecar"
-    """More than one sidecar file of one kind offers a value."""
+    STALE_EVIDENCE = "stale-evidence"
+    """The file changed while its evidence was collected; the observations
+    describe a previous file state."""
 
     FILENAME_DISABLED = "filename-disabled"
     """A file-name date while ``allow_filename_dates`` is off; a hint."""
 
     LOWER_RANK = "lower-rank"
     """Eligible, but not compared because no value was chosen."""
+
+    FILENAME_DIFFERS = "filename-differs"
+    """A file-name date that disagrees with an embedded date; a hint, since
+    a name proves no capture clock."""
 
     GPS_DISAGREES = "gps-disagrees"
     """A GPS fix that does not agree with the chosen value; a GPS fix need
@@ -321,20 +333,43 @@ class WarningCode(StrEnum):
     1970, 1980, 2000) with no documented reset profile; certainty is capped
     at WEAK."""
 
-    SOFTWARE_RECORDED = "software-recorded"
-    """The file names software that wrote it; it may have been edited, so
-    the result cannot be CONFIRMED."""
+    EDITING_SOFTWARE = "editing-software"
+    """A ``software`` observation names a known editing or conversion
+    program (:data:`KNOWN_EDITORS`); the result cannot be CONFIRMED."""
 
     READ_ISSUES = "read-issues"
-    """Some evidence is missing or may be stale; the result cannot be
-    CONFIRMED."""
+    """A reader failed or was unavailable, so some evidence is missing; the
+    result cannot be CONFIRMED."""
+
+    STALE_EVIDENCE = "stale-evidence"
+    """The file changed during collection; nothing is dated from it."""
 
 
 BLOCKS_CONFIRMED: Final[frozenset[WarningCode]] = frozenset(
     {
         WarningCode.SUSPICIOUS_CLOCK_DEFAULT,
-        WarningCode.SOFTWARE_RECORDED,
+        WarningCode.EDITING_SOFTWARE,
         WarningCode.READ_ISSUES,
     },
 )
 """Warnings under which a result is never CONFIRMED."""
+
+KNOWN_EDITORS: Final[tuple[str, ...]] = (
+    # Adobe Photoshop and Photoshop Lightroom write "Adobe Photoshop ...";
+    # ExifTool's test output t/Photoshop_2.out shows "Adobe Photoshop 7.0":
+    # https://github.com/exiftool/exiftool/blob/master/t/Photoshop_2.out
+    "adobe photoshop",
+    # GIMP writes its PACKAGE_STRING, "GIMP <version>", to Exif.Image.Software:
+    # https://gitlab.gnome.org/GNOME/gimp/-/blob/master/libgimp/gimpimagemetadata-save.c
+    "gimp ",
+    # darktable writes darktable_package_string, "darktable <version>":
+    # https://github.com/darktable-org/darktable/blob/master/src/common/exif.cc
+    "darktable ",
+    # RawTherapee writes "RawTherapee " RTVERSION:
+    # https://github.com/Beep6581/RawTherapee/blob/dev/rtengine/metadata.cc
+    "rawtherapee ",
+)
+"""Case-folded prefixes of ``Software`` values written by editing or
+conversion programs. Only these block CONFIRMED; any other text, including
+camera firmware such as ``10.0.2`` or ``HDR+ 1.0.570503588zd``, does not.
+Each entry cites a public source for its string; add one only with a source."""

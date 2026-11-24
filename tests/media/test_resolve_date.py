@@ -81,15 +81,14 @@ FIRES: dict[str, tuple[Scenario, Certainty]] = {
         Certainty.PROBABLE,
     ),
     "gps-only": (lambda: [gps("2019-07-04T01:10:12")], Certainty.WEAK),
-    "sidecar-takeout": (
-        lambda: [takeout("2019-07-04T01:10:10")],
-        Certainty.PROBABLE,
-    ),
-    "sidecar-xmp": (lambda: [sidecar_xmp("2019-07-04T10:10:10")], Certainty.PROBABLE),
     "png-creation-time": (lambda: [png("2019-07-04T10:10:10")], Certainty.WEAK),
     "filename-pattern": (lambda: [filename("2019-07-04T10:10:10")], Certainty.WEAK),
 }
 """Per rule: evidence where it is the only rule with input, and its certainty."""
+
+AWAITING_ASSOCIATION: tuple[str, ...] = ("sidecar-takeout", "sidecar-xmp")
+"""Rules that cannot fire until #402 records a verified unique sidecar
+association; until then their inputs are hints (see the rulings tests)."""
 
 PREEMPTED: dict[str, tuple[Scenario, str]] = {
     "quicktime-creationdate": (
@@ -116,12 +115,12 @@ PREEMPTED: dict[str, tuple[Scenario, str]] = {
         "iptc-xmp-date-created",
     ),
     "sidecar-xmp": (
-        lambda: [sidecar_xmp("2019-07-04T10:10:10"), takeout("2019-07-04T01:10:10")],
-        "sidecar-takeout",
+        lambda: [sidecar_xmp("2019-07-04T10:10:10"), iptc("2019-07-04T10:10:10")],
+        "iptc-xmp-date-created",
     ),
     "png-creation-time": (
-        lambda: [png("2019-07-04T10:10:10"), sidecar_xmp("2019-07-04T10:10:10")],
-        "sidecar-xmp",
+        lambda: [png("2019-07-04T10:10:10"), iptc("2019-07-04T10:10:10")],
+        "iptc-xmp-date-created",
     ),
     "filename-pattern": (
         lambda: [filename("2019-07-04T10:10:10"), png("2019-07-04T10:10:10")],
@@ -142,10 +141,10 @@ def default_policy() -> DatePolicy:
 
 
 def test_every_rule_has_cases() -> None:
-    """Every capture rule has a firing case; all but the first a pre-emptied one."""
+    """Each rule fires in a case or awaits #402; all but the first can be preempted."""
     rule_ids = [rule.rule_id for rule in CAPTURE_RULES]
 
-    assert_that(sorted(FIRES)).is_equal_to(sorted(rule_ids))
+    assert_that(sorted([*FIRES, *AWAITING_ASSOCIATION])).is_equal_to(sorted(rule_ids))
     assert_that(sorted(PREEMPTED)).is_equal_to(sorted(rule_ids[1:]))
 
 
@@ -564,7 +563,7 @@ def test_editor_resave_keeps_the_original(default_policy: DatePolicy) -> None:
             60,
             family="xmp",
         ),
-        software("Adobe Photoshop 25.0"),
+        software("Adobe Photoshop 25.0 (Macintosh)"),
         gps("2019-07-04T01:10:10"),
     ]
 
@@ -572,7 +571,7 @@ def test_editor_resave_keeps_the_original(default_policy: DatePolicy) -> None:
 
     assert_that(decision.value).is_equal_to(observations[0].value)
     assert_that(decision.certainty).is_equal_to(Certainty.PROBABLE)
-    assert_that(decision.warnings).contains("software-recorded")
+    assert_that(decision.warnings).contains("editing-software")
     assert_that(reasons(decision)).is_equal_to({1: "not-capture", 2: "not-capture"})
 
 
@@ -678,16 +677,6 @@ def test_copied_xmp_does_not_raise_certainty(default_policy: DatePolicy) -> None
     assert_that(decision.chosen).is_length(2)
 
 
-def test_mixed_domain_same_rank_abstains(default_policy: DatePolicy) -> None:
-    """An IPTC instant and an XMP wall date of one rank cannot be ordered."""
-    observations = [iptc("2019-07-04T10:10:10", 540), xmp_created("2019-07-04")]
-
-    decision = resolve_capture_date(evidence(*observations), policy=default_policy)
-
-    assert_that(decision.rule_id).is_equal_to("conflicting-capture")
-    assert_that(decision.conflicts).is_length(2)
-
-
 @pytest.mark.parametrize(
     ("other", "rule_id", "value_index"),
     [
@@ -735,13 +724,13 @@ def test_same_rank_values_compare_at_stated_precision(
     ],
 )
 def test_agreement_tolerance_boundary(tolerance: timedelta, conflict: bool) -> None:
-    """A lower-rank value two seconds later conflicts unless tolerated.
+    """A lower-rank embedded value two seconds later conflicts unless tolerated.
 
     Args:
         tolerance: The agreement tolerance.
         conflict: Whether the lower-rank value is a conflict.
     """
-    observations = [dto("2019-07-04T10:10:10"), filename("2019-07-04T10:10:12")]
+    observations = [dto("2019-07-04T10:10:10"), xmp_created("2019-07-04T10:10:12")]
 
     decision = resolve_capture_date(
         evidence(*observations),
@@ -756,7 +745,7 @@ def test_agreement_tolerance_boundary(tolerance: timedelta, conflict: bool) -> N
 
 def test_weak_winner_with_conflict_is_undated(default_policy: DatePolicy) -> None:
     """A WEAK value with a conflict drops to NONE and dates nothing."""
-    observations = [png("2019-07-04T10:10:10"), filename("2018-01-01T00:00:00")]
+    observations = [xmp_created("2019"), png("2018-01-01T00:00:00")]
 
     decision = resolve_capture_date(evidence(*observations), policy=default_policy)
 
@@ -826,7 +815,7 @@ def test_unusable_values_are_rejected(
                 "2019-07-04T10:10:10",
                 origin=TAKEOUT_JSON.with_suffix(".AAE"),
             ),
-            "no-rule",
+            "sidecar-unverified",
             id="aae-timestamp",
         ),
         pytest.param(
@@ -868,7 +857,7 @@ def test_screening_codes(
 @pytest.mark.parametrize(
     ("raw", "reason"),
     [
-        pytest.param("0", "epoch-container", id="integer-zero"),
+        pytest.param("0", "zero-container-time", id="integer-zero"),
         pytest.param("1970-01-01T00:00:00Z", "not-capture", id="demuxed-epoch"),
     ],
 )
@@ -891,43 +880,15 @@ def test_unset_container_time(
     assert_that(reasons(decision)).is_equal_to({0: reason})
 
 
-def test_unassociated_sidecar_is_rejected(default_policy: DatePolicy) -> None:
-    """A sidecar value without a recorded association cannot date the file."""
-    decision = resolve_capture_date(
-        evidence(takeout("2019-07-04T01:10:10"), associate=False),
-        policy=default_policy,
-    )
-
-    assert_that(reasons(decision)).is_equal_to({0: "unassociated-sidecar"})
-
-
-def test_ambiguous_sidecars_are_rejected(default_policy: DatePolicy) -> None:
-    """Two Takeout files offering a date make both ambiguous."""
-    observations = [
-        takeout("2019-07-04T01:10:10"),
-        takeout(
-            "2019-07-04T01:10:10", origin=TAKEOUT_JSON.with_name("IMG_0001(1).json")
-        ),
-    ]
-
-    decision = resolve_capture_date(evidence(*observations), policy=default_policy)
-
-    assert_that(reasons(decision)).is_equal_to(
-        {0: "ambiguous-sidecar", 1: "ambiguous-sidecar"},
-    )
-
-
 @pytest.mark.parametrize(
     "extra",
     [
-        pytest.param(software("17.1"), id="software"),
-        pytest.param(
-            dto("2019-07-04T10:10:10", source=SourceKind.XMP), id="incomparable"
-        ),
+        pytest.param(software("Adobe Photoshop 25.0 (Macintosh)"), id="editor"),
+        pytest.param(iptc("2019-07-04T10:10:10"), id="incomparable-other-field"),
     ],
 )
 def test_warnings_and_incomparable_block_confirmed(extra: Observation) -> None:
-    """Software or an incomparable original keeps an agreeing GPS from confirming.
+    """An editor or an incomparable capture field keeps GPS from confirming.
 
     Args:
         extra: The observation added to otherwise confirming evidence.
@@ -1158,11 +1119,11 @@ def test_month_span_ends_at_the_next_month(
     """A month-precision original spans the whole month, December included.
 
     Args:
-        other: A lower-rank file-name value.
+        other: A lower-rank XMP ``DateCreated`` value.
         conflict: Whether it conflicts.
         default_policy: The default policy.
     """
-    observations = [dto("2019-12"), filename(other)]
+    observations = [dto("2019-12"), xmp_created(other)]
 
     decision = resolve_capture_date(evidence(*observations), policy=default_policy)
 

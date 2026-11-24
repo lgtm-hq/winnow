@@ -81,6 +81,70 @@ def span_of(value: TimeValue) -> Span:
     )
 
 
+def written_span(value: TimeValue) -> Span:
+    """Return the span of the clock reading a value writes, ignoring its offset.
+
+    Used only to compare two representations of one property (an IPTC
+    timestamp and the XMP date of the same ``DateCreated``, an original and
+    its naive copy), never to give a wall clock a zone.
+
+    Args:
+        value: The value.
+
+    Returns:
+        The naive span of ``value.wall`` at its precision.
+    """
+    return Span(
+        start=value.wall,
+        end=_span_end(value.wall, value),
+        is_instant=False,
+    )
+
+
+def same_instant(first: TimeValue, second: TimeValue) -> bool:
+    """Tell whether two values state exactly the same instant.
+
+    Args:
+        first: One value.
+        second: The other.
+
+    Returns:
+        Whether both have offsets, the same UTC instant and the same
+        precision and fraction digits: one value written in two zones.
+    """
+    first_instant, second_instant = first.instant(), second.instant()
+    return (
+        first_instant is not None
+        and first_instant == second_instant
+        and first.precision is second.precision
+        and first.fraction_digits == second.fraction_digits
+    )
+
+
+def written_dates_differ(first: TimeValue, second: TimeValue) -> bool:
+    """Tell whether two values write different calendar dates.
+
+    Compared at the coarser of the two precisions, and never finer than a
+    day: ``2019`` and ``2019-07-31`` write the same year.
+
+    Args:
+        first: One value.
+        second: The other.
+
+    Returns:
+        Whether their written year, month or day differ where both state it.
+    """
+    order = list(Precision)
+    shared = min(
+        order.index(first.precision),
+        order.index(second.precision),
+        order.index(Precision.DAY),
+    )
+    first_parts = (first.wall.year, first.wall.month, first.wall.day)
+    second_parts = (second.wall.year, second.wall.month, second.wall.day)
+    return first_parts[: shared + 1] != second_parts[: shared + 1]
+
+
 def _span_end(start: datetime, value: TimeValue) -> datetime:
     """Return the first moment after the span starting at ``start``.
 

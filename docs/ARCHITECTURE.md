@@ -146,7 +146,8 @@ ones it set aside with a reason, and a certainty (CONFIRMED, PROBABLE, WEAK or N
 The full rules are in [ADR 0004](adr/0004-capture-date-resolver.md).
 
 Edit, copy, arrival, upload, release, digitizing, recording, container and filesystem
-times never date a file. The first rule below with usable evidence fires:
+times never date a file. Evidence collected while the file changed dates nothing
+(`stale-evidence`). The first rule below with usable evidence fires:
 
 1. `exif-original-offset`: EXIF or XMP `DateTimeOriginal` with an offset from the file.
 2. `quicktime-creationdate`: `com.apple.quicktime.creationdate` with its offset.
@@ -154,16 +155,22 @@ times never date a file. The first rule below with usable evidence fires:
    clock.
 4. `iptc-xmp-date-created`: IPTC 2:55/2:60 or XMP `photoshop:DateCreated`.
 5. `gps-only`: the GPS fix, only when it is the only capture evidence (WEAK).
-6. `sidecar-takeout`: an associated Google Takeout `photoTakenTime`.
-7. `sidecar-xmp`: an associated XMP sidecar's original or created date.
+6. `sidecar-takeout`: Google Takeout `photoTakenTime`, once #402 records a verified
+   unique association; until then sidecar dates are hints.
+7. `sidecar-xmp`: an XMP sidecar's original or created date, on the same condition.
 8. `png-creation-time`: PNG text `Creation Time` (WEAK).
 9. `filename-pattern`: a camera file-name pattern, when the policy allows it (WEAK).
 10. `undated`: nothing above.
 
-Candidates of one rule that disagree give `conflicting-capture` and no date. A lower
-value that disagrees lowers certainty one level. A wall clock is never compared with an
-instant, and no timezone is derived. A digitized time is decided separately and never
-fills the capture date. Nothing prints decisions yet (#397).
+Candidates of one rule must overlap exactly and write the same calendar date, unless
+they state the same instant. When an original and its UTC copy state one instant, the
+camera's written value is kept. Candidates that disagree give `conflicting-capture` and
+no date. A lower embedded value that disagrees lowers certainty one level. A disagreeing
+GPS fix or file name is only a hint, and a reset-like midnight that is contradicted
+dates nothing. A wall clock is compared with an instant only as two representations of
+one property (an IPTC timestamp and the XMP date of the same `DateCreated`), by the
+readings they write. No timezone is ever derived. A digitized time is decided separately
+and never fills the capture date. Nothing prints decisions yet (#397).
 
 ## Planned domain modules
 

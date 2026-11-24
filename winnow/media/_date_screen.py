@@ -2,17 +2,18 @@
 
 Every observation with a date claim is screened on its own: it either
 reaches a rule of the ruleset or gets one stable rejection code. Screening
-never looks at another observation's value; the only set-wide inputs are
-the file's device names (for documented clock resets) and which sidecar
-files offer values (for ambiguity).
+never looks at another observation's value; the only set-wide input is
+the file's camera make and model (for documented clock resets).
+
+Sidecar values are hints: evidence schema version 1 records no verified,
+unique association between a sidecar and this file (ADR 0003 leaves that
+to #402), so no sidecar date is rated.
 
 Which rule reads a field is decided in ``_date_fields``.
 """
 
 from __future__ import annotations
 
-import re
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,10 +56,10 @@ _SIDECARS: Final[frozenset[SourceKind]] = frozenset(
     {SourceKind.SIDECAR_XMP, SourceKind.SIDECAR_AAE, SourceKind.SIDECAR_TAKEOUT},
 )
 
-_UNSET_INTEGER: Final[re.Pattern[str]] = re.compile(r"\s*0+\s*")
-"""A QuickTime creation field read directly as the integer 0, which the
-QuickTime specification leaves for "not set". A demuxed date string never
-matches, so FFmpeg's epoch heuristic cannot trigger it."""
+_ZERO_INTEGER: Final[str] = "0"
+"""The raw text of a QuickTime creation field read directly as the integer
+0. A demuxed date string never equals it, so FFmpeg's epoch heuristic cannot
+produce it."""
 
 _EMPTY_STATUSES: Final[frozenset[ParseStatus]] = frozenset(
     {ParseStatus.EMPTY, ParseStatus.PLACEHOLDER},
@@ -93,18 +94,16 @@ class _Context:
         target: The claim being decided.
         rules: The rules for that claim, in firing order.
         file_path: The file the evidence is about.
-        associated: Sidecar files with a recorded association.
-        ambiguous: Sidecar files whose kind more than one file offers.
-        devices: The file's device names (make and model texts).
+        makes: The file's camera make texts.
+        models: The file's camera model texts.
     """
 
     policy: DatePolicy
     target: Claim
     rules: tuple[DateRule, ...]
     file_path: Path | None
-    associated: frozenset[Path]
-    ambiguous: frozenset[Path]
-    devices: frozenset[str]
+    makes: frozenset[str]
+    models: frozenset[str]
 
 
 def screen(
@@ -130,9 +129,8 @@ def screen(
         target=target,
         rules=rules,
         file_path=None if evidence.snapshot is None else evidence.snapshot.path,
-        associated=_associated(evidence),
-        ambiguous=_ambiguous_sidecars(evidence),
-        devices=_devices(evidence),
+        makes=_device_texts(evidence, field="make"),
+        models=_device_texts(evidence, field="model"),
     )
     return tuple(
         _screen_one(index, observation, context=context)
@@ -188,17 +186,16 @@ def _claim_reason(observation: Observation, *, context: _Context) -> Reason | No
         context: Set-wide inputs.
 
     Returns:
-        ``epoch-container`` for a QuickTime creation field read as integer
-        0, the not-this-claim code for any other claim, the status code for
+        ``zero-container-time`` for a QuickTime creation field read as
+        integer 0, the not-this-claim code for any other claim, the status code for
         an unparsed value, otherwise ``None``.
     """
     if (
         observation.claim is Claim.CONTAINER_CREATED_TIME
         and observation.source is SourceKind.QUICKTIME
-        and observation.raw is not None
-        and _UNSET_INTEGER.fullmatch(observation.raw)
+        and observation.raw == _ZERO_INTEGER
     ):
-        return Reason.EPOCH_CONTAINER
+        return Reason.ZERO_CONTAINER_TIME
     if observation.claim is not context.target:
         if context.target is Claim.CAPTURE_TIME:
             return Reason.NOT_CAPTURE
@@ -228,7 +225,7 @@ def _check_origin(
     value: TimeValue,
     context: _Context,
 ) -> Reason | None:
-    """Check that the value comes from the file or an associated sidecar.
+    """Check that the value comes from the file itself.
 
     Args:
         observation: The observation.
@@ -236,17 +233,15 @@ def _check_origin(
         context: Set-wide inputs.
 
     Returns:
-        A rejection code, or ``None`` when the origin is acceptable.
+        ``sidecar-unverified`` for any sidecar value (no verified unique
+        association exists in evidence schema version 1), ``foreign-origin``
+        for an embedded field read from another file, otherwise ``None``.
     """
     del value
-    if observation.source not in _SIDECARS:
-        if observation.origin != context.file_path:
-            return Reason.FOREIGN_ORIGIN
-        return None
-    if observation.origin not in context.associated:
-        return Reason.UNASSOCIATED_SIDECAR
-    if observation.origin in context.ambiguous:
-        return Reason.AMBIGUOUS_SIDECAR
+    if observation.source in _SIDECARS:
+        return Reason.SIDECAR_UNVERIFIED
+    if observation.origin != context.file_path:
+        return Reason.FOREIGN_ORIGIN
     return None
 
 
@@ -298,8 +293,8 @@ def _check_reset(
         if (
             default.locator == observation.locator
             and default.raw == observation.raw
-            and default.make in context.devices
-            and default.model in context.devices
+            and default.make in context.makes
+            and default.model in context.models
         ):
             return Reason.PLACEHOLDER
     return None
@@ -361,54 +356,25 @@ _CHECKS: Final[tuple[_Check, ...]] = (
 """Screening checks in order; the first rejection wins."""
 
 
-def _associated(evidence: EvidenceSet) -> frozenset[Path]:
-    """Return the sidecar files with a recorded association.
+def _device_texts(evidence: EvidenceSet, *, field: str) -> frozenset[str]:
+    """Return the file's camera make or model texts.
 
     Args:
         evidence: The file's evidence.
+        field: ``"make"`` or ``"model"``; matched in the locator, so a make
+            written in the model field never selects a reset profile.
 
     Returns:
-        The dependency paths when an association fingerprint is recorded,
-        otherwise nothing.
-    """
-    if evidence.association_fingerprint is None:
-        return frozenset()
-    return frozenset(snapshot.path for snapshot in evidence.dependencies)
-
-
-def _ambiguous_sidecars(evidence: EvidenceSet) -> frozenset[Path]:
-    """Return sidecar files whose kind more than one file offers.
-
-    Args:
-        evidence: The file's evidence.
-
-    Returns:
-        Every origin of a sidecar kind that has observations from more than
-        one origin.
-    """
-    origins: dict[SourceKind, set[Path]] = defaultdict(set)
-    for observation in evidence.observations:
-        if observation.source in _SIDECARS:
-            origins[observation.source].add(observation.origin)
-    return frozenset(
-        path for paths in origins.values() if len(paths) > 1 for path in paths
-    )
-
-
-def _devices(evidence: EvidenceSet) -> frozenset[str]:
-    """Return the file's device names.
-
-    Args:
-        evidence: The file's evidence.
-
-    Returns:
-        The stripped text of every parsed ``device`` observation.
+        The stripped text of every parsed ``device`` observation whose
+        locator names that field.
     """
     names: set[str] = set()
     for observation in evidence.observations:
         if observation.claim is not Claim.DEVICE:
             continue
         if observation.status is not ParseStatus.OK:
+            continue
+        if field not in observation.locator.lower():
             continue
         text = observation.value if isinstance(observation.value, str) else None
         text = text if text is not None else observation.raw

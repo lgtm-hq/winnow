@@ -209,6 +209,8 @@ def dto(
 def gps(wall: str) -> Observation:
     """Build an EXIF GPS date-and-time observation, UTC by specification.
 
+    Its family is ``exif-gps``, as the EXIF reader of #395 (PR #485) writes.
+
     Args:
         wall: The UTC value text.
 
@@ -221,6 +223,7 @@ def gps(wall: str) -> Observation:
         "GPS:GPSDateStamp+GPSTimeStamp#0",
         wall,
         0,
+        family="exif-gps",
         offset_origin="utc-by-spec",
     )
 

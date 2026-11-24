@@ -24,11 +24,18 @@ selection and grading in ``_date_select``:
    Agreeing ones join ``chosen``; a wall clock and an instant are
    ``incomparable``; a disagreeing one is a conflict and lowers certainty
    by one level (a GPS fix that disagrees is ``gps-disagrees`` instead,
-   because a fix need not be contemporaneous with the shutter). Container
-   creation is compared as a hint only.
+   because a fix need not be contemporaneous with the shutter, and a file
+   name that disagrees is ``filename-differs``, because a name proves no
+   capture clock). A reset-like value with a conflict dates nothing.
+   Container creation is compared as a hint only.
 4. **Certainty.** A lone timestamp is at most PROBABLE. CONFIRMED needs an
-   explicit-offset rule, an agreeing GPS fix, no conflict, nothing
-   incomparable and no warning in :data:`BLOCKS_CONFIRMED`.
+   explicit-offset rule, an agreeing GPS fix from another provenance family,
+   no conflict, no incomparable capture field other than a file name and no
+   warning in :data:`BLOCKS_CONFIRMED`.
+
+Evidence collected while the file changed (a ``file-changed`` issue) dates
+nothing: the decision is ``undated`` with ``stale-evidence``. Sidecar dates
+are hints until #402 records a verified unique association.
 
 Wall clocks stay naive with no offset: no zone is derived from GPS,
 siblings, rounding or the host.
@@ -72,6 +79,9 @@ from winnow.models.evidence import (
 
 _UNRANKED: Final[int] = 1_000
 """Sort rank of an observation no rule reads."""
+
+_FILE_CHANGED: Final[str] = "file-changed"
+"""The collector's file-level issue: the file changed while it was read."""
 
 
 def resolve_capture_date(evidence: EvidenceSet, *, policy: DatePolicy) -> Decision:
@@ -139,10 +149,12 @@ def _resolve(
         The decision.
     """
     screened = screen(evidence, policy=policy, target=claim, rules=rules)
+    if any(issue.status == _FILE_CHANGED for issue in evidence.issues):
+        return _stale(screened, claim=claim)
     top = top_candidates(screened)
     if not top:
         return _without_value(evidence, screened, claim=claim, rule_id=UNDATED)
-    value = single_value(top, policy=policy)
+    value = single_value(top)
     if value is None:
         return _without_value(
             evidence,
@@ -214,6 +226,34 @@ def _without_value(
         rejected=_rejections(rejected),
         conflicts=_indices(conflicts),
         warnings=warnings,
+    )
+
+
+def _stale(screened: Sequence[Screened], *, claim: Claim) -> Decision:
+    """Build the undated decision for evidence of a previous file state.
+
+    A failed optional reader leaves the rest of the evidence valid; a
+    ``file-changed`` issue means every observation may describe a file that
+    is no longer there, so none of them dates the file.
+
+    Args:
+        screened: Every screened entry.
+        claim: The claim decided.
+
+    Returns:
+        An ``undated`` decision with every date observation rejected as
+        ``stale-evidence`` and the ``stale-evidence`` warning.
+    """
+    return Decision(
+        claim=claim,
+        value=None,
+        certainty=Certainty.NONE,
+        rule_id=UNDATED,
+        rule_version=RULESET_VERSION,
+        chosen=(),
+        rejected=_rejections((entry, Reason.STALE_EVIDENCE) for entry in screened),
+        conflicts=(),
+        warnings=(WarningCode.STALE_EVIDENCE.value,),
     )
 
 
