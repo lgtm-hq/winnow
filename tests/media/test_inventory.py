@@ -6,6 +6,7 @@ import contextlib
 import os
 import shutil
 import struct
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from winnow.media import registry as registry_module
 from winnow.media import service as service_module
 from winnow.media._detect_base import DetectionResult
 from winnow.media.inventory import (
+    LINK_CHANGED,
     Classification,
     DirectoryStats,
     ExtensionCheck,
@@ -1256,14 +1258,15 @@ def test_decided_by_name_needs_a_deciding_signal() -> None:
     assert_that(decided_by_name(result)).is_false()
 
 
-def test_follow_never_resolves_names_to_pair_them(
+def test_follow_reports_a_name_that_no_longer_resolves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under FOLLOW files are paired by the opened file, not by resolving names.
+    """A name whose resolution loops after it was read is unreadable, once.
 
     ``Path.resolve`` raising for ``b.jpg`` (a loop on Python 3.11 and 3.12)
-    does not matter: the inventory never resolves a name to dedupe it.
+    means the name cannot be paired with the file it read: it counts nothing
+    and the walk goes on.
     """
     _write_jpeg(tmp_path / "a.jpg")
     looping = _write_jpeg(tmp_path / "b.jpg")
@@ -1279,10 +1282,12 @@ def test_follow_never_resolves_names_to_pair_them(
 
     entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
 
-    assert_that([entry.path for entry in entries]).is_equal_to(
-        [tmp_path / "a.jpg", looping],
+    assert_that([entry.path for entry in entries]).is_equal_to([tmp_path / "a.jpg"])
+    assert_that(
+        [(event.kind, event.path, event.message) for event in events]
+    ).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, looping, "symlink loop")],
     )
-    assert_that(events).is_empty()
 
 
 def test_fast_skips_a_file_replaced_by_a_fifo_before_it_is_opened(
@@ -1352,10 +1357,11 @@ def test_follow_pairs_a_retargeted_link_with_the_file_it_opened(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A link retargeted after it was read still counts the file it read.
+    """A link retargeted after it was read is unreadable; both files count once.
 
     ``a-preview.jpg`` points at the JPEG when it is opened and at the video
-    just afterwards. The JPEG is counted once, the video is not lost.
+    just afterwards. The link counts nothing and is reported once; the JPEG
+    and the video are each counted under their own names.
     """
     cover = _write_jpeg(tmp_path / "z-cover.jpg")
     movie = tmp_path / "b-movie.mp4"
@@ -1385,8 +1391,15 @@ def test_follow_pairs_a_retargeted_link_with_the_file_it_opened(
     assert_that(stats.total_bytes).is_equal_to(
         cover.stat().st_size + movie.stat().st_size,
     )
-    assert_that(stats.complete).is_true()
-    assert_that({entry.path for entry in entries}).contains(movie)
+    assert_that(stats.unreadable_count).is_equal_to(1)
+    assert_that(stats.unreadable_examples).is_equal_to((preview,))
+    assert_that(stats.complete).is_false()
+    assert_that([entry.path for entry in entries]).is_equal_to([movie, cover])
+    assert_that(
+        [(event.kind, event.path, event.message) for event in events]
+    ).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, preview, LINK_CHANGED)],
+    )
 
 
 def test_follow_does_not_detect_a_name_whose_target_is_counted(
@@ -1443,12 +1456,17 @@ def test_follow_trusts_the_opened_file_over_the_pre_check(
     )
 
 
-def test_follow_holds_one_entry_per_untyped_file() -> None:
+def test_follow_holds_one_entry_per_untyped_file(tmp_path: Path) -> None:
     """Only the first untyped name keeps its entry; later names keep a path."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("just text\n")
+    names = [tmp_path / "a_link", tmp_path / "c_link", notes]
+    for link in names[:2]:
+        link.symlink_to(notes)
+    status = notes.stat()
     events: list[WalkEvent] = []
     claims = inventory._FollowClaims(events.append)
     moment = datetime.fromtimestamp(_EARLY, tz=UTC)
-    names = [Path(f"/x/{name}") for name in ("a", "b", "c")]
     for name in names:
         entry = InventoryEntry(
             path=name,
@@ -1457,16 +1475,40 @@ def test_follow_holds_one_entry_per_untyped_file() -> None:
             media_type=None,
             detection=None,
         )
-        assert_that(
-            list(claims.offer(inventory._Classified(entry=entry, identity=(1, 2)))),
-        ).is_empty()
+        classified = inventory._Classified(
+            entry=entry,
+            identity=(status.st_dev, status.st_ino),
+        )
+        assert_that(list(claims.offer(classified))).is_empty()
 
-    held = claims._pending[(1, 2)]
+    held = claims._pending[notes.resolve()]
 
     assert_that(held.first.path).is_equal_to(names[0])
     assert_that(held.others).is_equal_to(names[1:])
     assert_that([entry.path for entry in claims.unclaimed()]).is_equal_to(names[:1])
     assert_that([event.path for event in events]).is_equal_to(names[1:])
+
+
+def _rewrite_keeping_size_and_mtime(path: Path) -> None:
+    """Rewrite a file with the same bytes and restore its mtime.
+
+    The rewrite repeats until the inode change time moves, so the test does
+    not depend on the filesystem's timestamp granularity (ext4's clock is
+    coarse), and fails rather than hangs if it never moves.
+
+    Args:
+        path: The file.
+    """
+    original = path.stat()
+    content = path.read_bytes()
+    deadline = time.monotonic() + 5
+    while True:
+        path.write_bytes(content)
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        if path.stat().st_ctime_ns != original.st_ctime_ns:
+            return
+        if time.monotonic() > deadline:
+            pytest.fail("ctime did not change within 5 seconds")
 
 
 def test_inspect_file_rechecks_a_same_size_rewrite_with_its_mtime_restored(
@@ -1481,12 +1523,7 @@ def test_inspect_file_rechecks_a_same_size_rewrite_with_its_mtime_restored(
         calls.append(path)
         result = detect(path, **kwargs)
         if len(calls) == 1:
-            before = target.stat()
-            target.write_bytes(target.read_bytes())
-            # ext4 and others keep a coarse clock: wait until ctime moves.
-            while target.stat().st_ctime_ns == before.st_ctime_ns:
-                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
-            os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            _rewrite_keeping_size_and_mtime(target)
         return result
 
     monkeypatch.setattr(inventory, "detect", rewriting_detect)
@@ -1500,24 +1537,27 @@ def test_inspect_file_rechecks_a_same_size_rewrite_with_its_mtime_restored(
     assert_that(detection.snapshot.ctime_ns).is_equal_to(target.stat().st_ctime_ns)
 
 
-def test_follow_counts_hard_links_to_one_file_once(tmp_path: Path) -> None:
-    """Under FOLLOW two hard links share one identity and count once.
-
-    Discovery, keyed on resolved paths, counts both; the PR documents the
-    difference.
-    """
+def test_follow_counts_hard_links_as_two_files_like_discovery(tmp_path: Path) -> None:
+    """Under FOLLOW two hard links are two files, as Discovery collects them."""
     first = _write_jpeg(tmp_path / "a.jpg")
     os.link(first, tmp_path / "b.jpg")
+    config = WinnowConfig(follow_symlinks=True, symlink_policy=SymlinkPolicy.FOLLOW)
     events: list[WalkEvent] = []
 
-    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
-    default = list(iter_inventory(tmp_path))
-
-    assert_that([entry.path.name for entry in entries]).is_equal_to(["a.jpg"])
-    assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
-        [(WalkEventKind.DUPLICATE, "b.jpg")],
+    entries = list(
+        iter_inventory(
+            tmp_path,
+            policy=WalkPolicy.from_config(config),
+            on_event=events.append,
+        ),
     )
-    assert_that([entry.path.name for entry in default]).is_equal_to(["a.jpg", "b.jpg"])
+    state = _discover(tmp_path, config=config)
+
+    assert_that([entry.path.name for entry in entries]).is_equal_to(["a.jpg", "b.jpg"])
+    assert_that(events).is_empty()
+    assert_that({entry.path.resolve() for entry in entries}).is_equal_to(
+        {media.path for media in state.files},
+    )
 
 
 def test_follow_reports_a_file_that_vanishes_before_its_pre_check(
@@ -1542,3 +1582,26 @@ def test_follow_reports_a_file_that_vanishes_before_its_pre_check(
     assert_that(result.total_files).is_equal_to(1)
     assert_that(result.unreadable_examples).is_equal_to((doomed,))
     assert_that(result.skipped_by_reason).is_empty()
+
+
+def test_follow_reports_a_name_whose_file_is_gone_after_it_was_read(
+    tmp_path: Path,
+) -> None:
+    """A name whose file disappears before it is paired is unreadable."""
+    gone = tmp_path / "gone.jpg"
+    events: list[WalkEvent] = []
+    claims = inventory._FollowClaims(events.append)
+    entry = InventoryEntry(
+        path=gone,
+        size_bytes=1,
+        modified=datetime.fromtimestamp(_EARLY, tz=UTC),
+        media_type=MediaType.IMAGE,
+        detection=None,
+    )
+
+    counted = list(claims.offer(inventory._Classified(entry=entry, identity=(1, 2))))
+
+    assert_that(counted).is_empty()
+    assert_that([(event.kind, event.path) for event in events]).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, gone)],
+    )

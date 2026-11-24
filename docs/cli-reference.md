@@ -89,11 +89,12 @@ configuration, and under the default `symlink_policy: skip` symlinks are not fol
 Directories below `organize.max_depth`, and directories already visited through another
 path, are not entered and are not counted as skipped entries. A symlink loop (a link to
 itself) is a skipped symlink, or an unreadable file under `symlink_policy: follow`.
-Under `follow`, a file reached under several names is counted once, under the first name
-that gives it a media type, as discovery does; the other names are skipped duplicates
-and are not read again. A file is matched by the device and inode of the file actually
-opened, so a link changed during the scan is counted as the file it pointed to when
-read. Two hard links to one file therefore count once, where discovery counts both.
+Under `follow`, a file reached under several names (its resolved path) is counted once,
+under the first name that gives it a media type, as discovery does; the other names are
+skipped duplicates and are not read again. Two hard links are two files, as in
+discovery. A name whose link changes while it is read no longer names the file that was
+read: it is counted as an unreadable file (`link changed while it was read`), and the
+files it pointed to are counted under their own names.
 
 Each file is identified the way discovery identifies it: by its content, so a JPEG named
 `IMG_0001.bin` is an image and a text file named `clip.mp4` is unknown. When no content

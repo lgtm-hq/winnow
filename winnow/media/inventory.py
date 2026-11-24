@@ -32,7 +32,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from winnow.exceptions import MediaError
-from winnow.fs.walk import SKIP_KINDS, WalkEvent, WalkEventKind, WalkPolicy, walk_files
+from winnow.fs.walk import (
+    SKIP_KINDS,
+    SYMLINK_LOOP,
+    WalkEvent,
+    WalkEventKind,
+    WalkPolicy,
+    walk_files,
+)
 from winnow.media._detect import detect
 from winnow.media._detect_base import DECISION_PREFIX
 from winnow.media.registry import (
@@ -51,6 +58,7 @@ if TYPE_CHECKING:
     from winnow.media._detect_base import DetectionResult
 
 __all__ = [
+    "LINK_CHANGED",
     "MAX_UNREADABLE_EXAMPLES",
     "Classification",
     "DirectoryStats",
@@ -75,6 +83,9 @@ _INSPECT_ATTEMPTS: Final[int] = 2
 """How often :func:`inspect_file` reads a file that changes while it is read."""
 
 _EPOCH: Final[datetime] = datetime(1970, 1, 1, tzinfo=UTC)
+
+LINK_CHANGED: Final[str] = "link changed while it was read"
+"""Event message for a name that no longer resolves to the file it opened."""
 
 
 class Classification(StrEnum):
@@ -480,16 +491,16 @@ class _Pending:
 class _FollowClaims:
     """Pick one name per file under ``FOLLOW``, by Discovery's rule.
 
-    A file is identified by the device and inode of the file that was opened,
-    never by resolving the name again, so a link retargeted while it is read
-    cannot pair one file's type with another file's identity. A name whose
-    type is known claims its file; every later name for the file is a
-    duplicate. A name with no type never claims: the first untyped name of a
-    file is held until the walk ends and counted only when no name for the
-    file gave a type. The other names are duplicates.
-
-    Two hard links to one file have one identity, so they count once here,
-    where Discovery, keyed on resolved paths, counts both.
+    A file is keyed on its resolved path, as in Discovery, so two hard links
+    are two files. Each name's resolved path is verified against the device
+    and inode of the file that was actually opened: a name whose link
+    changed (or stopped resolving) while it was read is reported unreadable
+    and counts nothing, and the files it pointed to stay eligible under
+    their own names. A name whose type is known claims its file; every later
+    name for the file is a duplicate. A name with no type never claims: the
+    first untyped name of a file is held until the walk ends and counted
+    only when no name for the file gave a type. The other names are
+    duplicates.
 
     Args:
         report: Receives the duplicate and read-error events.
@@ -497,15 +508,15 @@ class _FollowClaims:
 
     def __init__(self, report: Callable[[WalkEvent], None]) -> None:
         self._report = report
-        self._claimed: set[_Identity] = set()
-        self._pending: dict[_Identity, _Pending] = {}
+        self._claimed: set[Path] = set()
+        self._pending: dict[Path, _Pending] = {}
 
     def already_claimed(self, path: Path) -> bool:
-        """Report, and skip, a name whose current target is already counted.
+        """Report, and skip, a name whose target is already counted.
 
-        One ``stat`` following links, before any content is read, so a name
-        for a counted file is not detected again. The identity of the file
-        opened later stays the authority for every other name.
+        Resolves the name before any content is read, so a name for a counted
+        file is not detected again. The file opened later has the final say
+        for every other name.
 
         Args:
             path: The name.
@@ -514,16 +525,16 @@ class _FollowClaims:
             ``True`` when the name was reported as a duplicate.
         """
         try:
-            status = os.stat(path)
-        except OSError:
+            target = path.resolve()
+        except (OSError, RuntimeError):
             return False
-        if (status.st_dev, status.st_ino) not in self._claimed:
+        if target not in self._claimed:
             return False
         self._duplicate(path)
         return True
 
     def offer(self, classified: _Classified) -> Iterator[InventoryEntry]:
-        """Count a file now, hold it, or report it as a duplicate.
+        """Count a file now, hold it, or report it as a duplicate or unreadable.
 
         Args:
             classified: A classified file and its opened identity.
@@ -531,19 +542,22 @@ class _FollowClaims:
         Yields:
             The entry when it claims its file.
         """
-        entry, identity = classified.entry, classified.identity
-        if identity in self._claimed:
+        entry = classified.entry
+        target = self._verified_target(entry.path, classified.identity)
+        if target is None:
+            return
+        if target in self._claimed:
             self._duplicate(entry.path)
             return
         if entry.media_type is None:
-            pending = self._pending.get(identity)
+            pending = self._pending.get(target)
             if pending is None:
-                self._pending[identity] = _Pending(first=entry)
+                self._pending[target] = _Pending(first=entry)
             else:
                 pending.others.append(entry.path)
             return
-        self._claimed.add(identity)
-        held = self._pending.pop(identity, None)
+        self._claimed.add(target)
+        held = self._pending.pop(target, None)
         if held is not None:
             for loser in (held.first.path, *held.others):
                 self._duplicate(loser)
@@ -560,6 +574,40 @@ class _FollowClaims:
                 self._duplicate(loser)
             yield held.first
         self._pending.clear()
+
+    def _verified_target(self, path: Path, identity: _Identity) -> Path | None:
+        """Resolve a name and check it still names the file that was opened.
+
+        Args:
+            path: The name.
+            identity: Device and inode of the file opened for it.
+
+        Returns:
+            The resolved path, or ``None`` after reporting the name unreadable
+            when it no longer resolves to the opened file.
+        """
+        try:
+            target = path.resolve()
+            status = os.stat(target)
+        except OSError as exc:
+            self._unreadable(path, _error_text(exc))
+            return None
+        except RuntimeError:
+            self._unreadable(path, SYMLINK_LOOP)
+            return None
+        if (status.st_dev, status.st_ino) != identity:
+            self._unreadable(path, LINK_CHANGED)
+            return None
+        return target
+
+    def _unreadable(self, path: Path, message: str) -> None:
+        """Report a name that could not be paired with the file it read.
+
+        Args:
+            path: The name.
+            message: Why.
+        """
+        self._report(_event(WalkEventKind.UNREADABLE_ENTRY, path, message))
 
     def _duplicate(self, path: Path) -> None:
         """Report a name that does not count.
@@ -587,11 +635,11 @@ def iter_inventory(
     could not read it (it vanished, or permission was denied), is reported
     to ``on_event`` as unreadable and not yielded: it is never typed by name.
 
-    Under ``FOLLOW``, a file (one device and inode) reached under several
-    names counts once, under the first name that gives it a media type
-    (Discovery's rule); a name whose target is already counted is not read
-    again. Files with no type under any name are yielded after the walk, in
-    walk order.
+    Under ``FOLLOW``, a file (one resolved path) reached under several names
+    counts once, under the first name that gives it a media type (Discovery's
+    rule); a name whose target is already counted is not read again. A name
+    whose link changed while it was read is reported unreadable. Files with
+    no type under any name are yielded after the walk, in walk order.
 
     Args:
         directory: Directory to walk.
