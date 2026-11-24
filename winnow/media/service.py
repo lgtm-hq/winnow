@@ -123,7 +123,29 @@ class DefaultMetadataService:
                 operation="extract_metadata",
                 file_path=path,
             )
-        media_type = self.detect(path)
+        return self.extract_for(path, self.detect(path))
+
+    def extract_for(self, path: Path, media_type: MediaType) -> MediaMetadata:
+        """Extract metadata for a file whose media type is already decided.
+
+        Runs the processor for ``media_type`` without detecting the content
+        again, so a caller that already holds a detection result reads the
+        file's header once. ``MediaError`` raised by a processor propagates
+        unchanged; any other exception is wrapped in a ``MediaError`` that
+        records the media type.
+
+        Args:
+            path: Media file to inspect.
+            media_type: The file's media type, as decided by the caller.
+
+        Returns:
+            Extracted metadata. Processors may return a partially populated
+            model when an optional tool such as ffprobe is unavailable.
+
+        Raises:
+            MediaError: When there is no processor for ``media_type`` or the
+                processor fails.
+        """
         extractor = _EXTRACTORS.get(media_type)
         if extractor is None:
             raise MediaError(

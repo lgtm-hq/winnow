@@ -276,3 +276,41 @@ def test_create_metadata_service_accepts_config(fixtures_dir: Path) -> None:
     assert_that(created.extract(fixtures_dir / "sample.mp3")).is_instance_of(
         MediaMetadata,
     )
+
+
+def test_extract_for_dispatches_without_detecting(
+    service: DefaultMetadataService,
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``extract_for`` runs the given type's processor and never detects."""
+    calls: list[Path] = []
+
+    def _counting(
+        path: Path,
+        *,
+        registry: FormatRegistry | None = None,
+    ) -> MediaType | None:
+        calls.append(path)
+        return detect_media_type(path, registry=registry)
+
+    monkeypatch.setattr(service_module, "detect_media_type", _counting)
+
+    metadata = service.extract_for(fixtures_dir / "sample.png", MediaType.IMAGE)
+
+    assert_that(metadata.image_format).is_equal_to("PNG")
+    assert_that(calls).is_empty()
+
+
+def test_extract_for_rejects_media_type_without_processor(
+    service: DefaultMetadataService,
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A type with no processor raises ``MediaError`` naming the type."""
+    monkeypatch.setattr(service_module, "_EXTRACTORS", {})
+
+    with pytest.raises(MediaError, match="no metadata processor") as error:
+        service.extract_for(fixtures_dir / "sample.mp3", MediaType.AUDIO)
+
+    assert_that(error.value.context.details).is_equal_to({"media_type": "audio"})

@@ -67,6 +67,87 @@ winnow live-photos --unpaired ~/Pictures       # orphans only
 winnow live-photos -f json ~/Pictures | jq .   # machine-readable scan
 ```
 
+### `winnow stats`
+
+Summarizes the media under a directory. Read-only; exits 0 when the scan completes, even
+if some entries could not be read (they are counted, see below).
+
+```text
+winnow stats [OPTIONS] DIRECTORY
+```
+
+| Flag                             | Default | Description                                                  |
+| -------------------------------- | ------- | ------------------------------------------------------------ |
+| `--recursive` / `--no-recursive` | `true`  | Include files in subdirectories.                             |
+| `--fast`                         | `false` | Classify by file name extension only, without reading files. |
+| `--config FILE`                  |         | Path to configuration file.                                  |
+
+`stats` walks the files the organize pipeline's discovery walks: entries whose name
+starts with `.` (winnow's `.winnow-backups` and `.winnow-staging` included) are skipped,
+`paths.exclude_patterns`, `symlink_policy` and `organize.max_depth` come from the loaded
+configuration, and under the default `symlink_policy: skip` symlinks are not followed.
+Each file is identified by its content, the way discovery identifies it, so a JPEG named
+`IMG_0001.bin` is an image and a text file named `clip.mp4` is unknown. `--fast` uses
+the file name's extension instead; the table then says `extension only`.
+
+The table has one row per metric:
+
+| Row                                | Meaning                                                                                                                      |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `Classified by`                    | `content`, or `extension only` with `--fast`.                                                                                |
+| `Total files`                      | Files read and classified.                                                                                                   |
+| `Image` / `Video` / `Audio files`  | Files per media type.                                                                                                        |
+| `Unknown files`                    | Files whose content gives no media type.                                                                                     |
+| `Extension does not match content` | Content and extension both give a type, and they differ (a JPEG named `.mp3`). `n/a (extension only)` with `--fast`.         |
+| `Extension gives no type`          | Content gives a type, the extension none (`IMG_0001.bin`, no suffix). `n/a (extension only)` with `--fast`.                  |
+| `Unreadable files`                 | Entries that could not be inspected or read, including files deleted during the scan. Not in the totals.                     |
+| `Unreadable directories`           | Directories that could not be listed. Their contents are not counted or estimated.                                           |
+| `Skipped entries`                  | Entries the walk policy skipped, with a count per reason: hidden or winnow folder, excluded by pattern, symlink, and others. |
+| `Total size`                       | Combined size of the files read.                                                                                             |
+| `Earliest` / `Latest modified`     | File modification times (UTC) of the files read; `n/a` when none.                                                            |
+| `Coverage`                         | `complete`, or `incomplete: ...` when any file or directory could not be read.                                               |
+| `Unreadable ... examples`          | Shown only when there are read errors: up to 10 file paths and up to 10 directory paths, sorted.                             |
+
+Content detection reads a bounded head (and, for some formats, a short tail) of each
+file, not the whole file.
+
+```bash
+winnow stats ~/Pictures                   # by content, recursive
+winnow stats --no-recursive ~/Pictures    # top level only
+winnow stats --fast ~/Pictures            # by extension only, no file reads
+```
+
+### `winnow info`
+
+Shows metadata for one file. Read-only.
+
+```text
+winnow info [OPTIONS] FILE
+```
+
+| Flag     | Default | Description                                                  |
+| -------- | ------- | ------------------------------------------------------------ |
+| `--fast` | `false` | Classify by file name extension only, without reading files. |
+
+`Media type` comes from the file's content, as in `stats`; with `--fast` it comes from
+the extension and reads `<type> (extension only)`. `Extension check` compares the two:
+`matches content`, `mismatch: content says image, extension says audio`,
+`extension gives no type`, `content gives no type; extension says video` (or
+`... extension gives no type`), or `not checked (extension only)` with `--fast`.
+
+Images add `Image format`, `Color mode` and `Dimensions`. Video and audio add `Duration`
+and `Codec` when ffprobe can read them (see [External tools](#external-tools)). Metadata
+that cannot be read is left out; the type rows remain.
+
+A file that cannot be read (deleted after the command started, permission denied, or not
+a regular file such as a FIFO) is an error: `winnow info` prints the message on stderr
+and exits 1.
+
+```bash
+winnow info IMG_0001.bin          # image, extension gives no type
+winnow info --fast IMG_0001.bin   # unknown (extension only)
+```
+
 ### `winnow doctor`
 
 Checks the local environment and prints one row per check. Exits 1 when a hard check
