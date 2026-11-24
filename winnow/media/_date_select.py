@@ -12,12 +12,20 @@ gives neither a zone. Any other wall clock and instant are incomparable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from itertools import combinations
 from typing import Final
 
+from winnow.media._date_copies import (
+    CopyPlace,
+    is_native_original,
+    is_xmp_original,
+    place_copy,
+    without_copies,
+)
 from winnow.media._date_policy import (
     BLOCKS_CONFIRMED,
     KNOWN_EDITORS,
@@ -70,6 +78,15 @@ before copies, so an XMP copy in UTC never replaces the EXIF wall time."""
 
 _UNPREFERRED: Final[int] = 99
 
+_DATE_ONLY: Final[frozenset[Precision]] = frozenset(
+    {Precision.YEAR, Precision.MONTH, Precision.DAY},
+)
+
+_EDITOR: Final[re.Pattern[str]] = re.compile(
+    "(?:" + "|".join(re.escape(name) for name in KNOWN_EDITORS) + ")(?![0-9a-z])",
+)
+"""A known editor's name as the leading token(s) of a case-folded text."""
+
 _LOWER: Final[dict[Certainty, Certainty]] = {
     Certainty.CONFIRMED: Certainty.PROBABLE,
     Certainty.PROBABLE: Certainty.WEAK,
@@ -92,6 +109,7 @@ class Outcome:
     conflicts: list[Screened] = field(default_factory=list)
     incomparable: list[Screened] = field(default_factory=list)
     rejected: list[tuple[Screened, Reason]] = field(default_factory=list)
+    copy_conflicts: list[Screened] = field(default_factory=list)
     gps_agrees: bool = False
 
 
@@ -162,7 +180,8 @@ def top_candidates(screened: Sequence[Screened]) -> list[Screened]:
     """Return the eligible entries of the first rule that fires.
 
     A rule marked ``alone`` (``gps-only``) fires only when every eligible
-    entry is of that rule.
+    entry is of that rule. When a native EXIF original is eligible, an XMP
+    copy of the original never competes (``_date_copies``).
 
     Args:
         screened: Every screened entry.
@@ -170,7 +189,7 @@ def top_candidates(screened: Sequence[Screened]) -> list[Screened]:
     Returns:
         The entries of the firing rule; empty when none fires.
     """
-    eligible = [entry for entry in screened if entry.rule is not None]
+    eligible = without_copies([entry for entry in screened if entry.rule is not None])
     pool = [entry for entry in eligible if not rule_of(entry).alone] or eligible
     if not pool:
         return []
@@ -255,6 +274,7 @@ def compare_rest(
     """
     kind = rule_of(top[0]).kind
     families = frozenset(entry.observation.family for entry in top)
+    native_chosen = any(is_native_original(entry) for entry in top)
     outcome = Outcome(chosen=list(top))
     for entry in screened:
         if entry in top:
@@ -263,6 +283,9 @@ def compare_rest(
             outcome.rejected.append(
                 (entry, _rejection_reason(entry, value, policy, claim)),
             )
+            continue
+        if native_chosen and is_xmp_original(entry):
+            _place_copy(entry, native=value, outcome=outcome)
             continue
         agreement = relate(
             value,
@@ -277,6 +300,25 @@ def compare_rest(
         )
         _place(entry, agreement=agreement, families=families, outcome=outcome)
     return outcome
+
+
+def _place_copy(entry: Screened, *, native: TimeValue, outcome: Outcome) -> None:
+    """Place an XMP copy of the chosen native EXIF original.
+
+    Args:
+        entry: The XMP original.
+        native: The chosen EXIF value.
+        outcome: Updated in place.
+    """
+    place = place_copy(native, value_of(entry))
+    if place is CopyPlace.COMPATIBLE:
+        outcome.chosen.append(entry)
+    elif place is CopyPlace.INCOMPARABLE:
+        outcome.incomparable.append(entry)
+    elif place is CopyPlace.CONTRADICTS:
+        outcome.copy_conflicts.append(entry)
+    else:
+        outcome.rejected.append((entry, Reason.COPY_DIFFERS))
 
 
 def _place(
@@ -382,7 +424,7 @@ def _names_an_editor(evidence: EvidenceSet) -> bool:
 
     Returns:
         Whether a parsed ``software`` text starts with a
-        :data:`KNOWN_EDITORS` prefix, ignoring case.
+        :data:`KNOWN_EDITORS` name as its leading token(s), ignoring case.
     """
     for observation in evidence.observations:
         if observation.claim is not Claim.SOFTWARE:
@@ -391,7 +433,7 @@ def _names_an_editor(evidence: EvidenceSet) -> bool:
             continue
         text = observation.value if isinstance(observation.value, str) else None
         text = (text if text is not None else observation.raw) or ""
-        if text.strip(" \x00").casefold().startswith(KNOWN_EDITORS):
+        if _EDITOR.match(text.strip(" \x00").casefold()):
             return True
     return False
 
@@ -427,7 +469,13 @@ def grade(
         return certainty
     if suspicious:
         return Certainty.WEAK
-    if _confirms(rule, certainty=certainty, outcome=outcome, warnings=warnings):
+    if _confirms(
+        rule,
+        value=value,
+        certainty=certainty,
+        outcome=outcome,
+        warnings=warnings,
+    ):
         return Certainty.CONFIRMED
     return certainty
 
@@ -435,6 +483,7 @@ def grade(
 def _confirms(
     rule: DateRule,
     *,
+    value: TimeValue,
     certainty: Certainty,
     outcome: Outcome,
     warnings: frozenset[WarningCode],
@@ -443,17 +492,19 @@ def _confirms(
 
     Args:
         rule: The firing rule.
+        value: The chosen value.
         certainty: The certainty so far.
         outcome: Where every entry ended up.
         warnings: The decision's warnings.
 
     Returns:
         Whether the rule is confirmable, an independent GPS fix agrees,
-        nothing conflicts, no capture field other than a file name is
-        incomparable, and no warning in :data:`BLOCKS_CONFIRMED` applies.
+        nothing conflicts, every incomparable capture field is a file name or
+        a date-only ``DateCreated`` on the chosen value's written day, and no
+        warning in :data:`BLOCKS_CONFIRMED` applies.
     """
     blocking_incomparable = any(
-        rule_of(entry).kind is not FieldKind.FILENAME for entry in outcome.incomparable
+        _blocks_confirmation(entry, value=value) for entry in outcome.incomparable
     )
     return (
         rule.confirmable
@@ -462,4 +513,27 @@ def _confirms(
         and not outcome.conflicts
         and not blocking_incomparable
         and not warnings & BLOCKS_CONFIRMED
+    )
+
+
+def _blocks_confirmation(entry: Screened, *, value: TimeValue) -> bool:
+    """Tell whether an incomparable capture field keeps a result unconfirmed.
+
+    Args:
+        entry: An incomparable entry.
+        value: The chosen value.
+
+    Returns:
+        ``False`` for a file name, and for a date-only ``DateCreated`` that
+        writes the chosen value's calendar day; ``True`` for any other full
+        capture reading, whose unresolved clock could change the decision.
+    """
+    kind = rule_of(entry).kind
+    if kind is FieldKind.FILENAME:
+        return False
+    other = value_of(entry)
+    return not (
+        kind is FieldKind.DATE_CREATED
+        and other.precision in _DATE_ONLY
+        and not written_dates_differ(other, value)
     )

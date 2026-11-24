@@ -152,7 +152,7 @@ times never date a file. Evidence collected while the file changed dates nothing
 1. `exif-original-offset`: EXIF or XMP `DateTimeOriginal` with an offset from the file.
 2. `quicktime-creationdate`: `com.apple.quicktime.creationdate` with its offset.
 3. `exif-original-wallclock`: `DateTimeOriginal` without an offset, kept as a wall
-   clock.
+   clock. A native EXIF original here still outranks a zoned XMP copy.
 4. `iptc-xmp-date-created`: IPTC 2:55/2:60 or XMP `photoshop:DateCreated`.
 5. `gps-only`: the GPS fix, only when it is the only capture evidence (WEAK).
 6. `sidecar-takeout`: Google Takeout `photoTakenTime`, once #402 records a verified
@@ -162,10 +162,13 @@ times never date a file. Evidence collected while the file changed dates nothing
 9. `filename-pattern`: a camera file-name pattern, when the policy allows it (WEAK).
 10. `undated`: nothing above.
 
-Candidates of one rule must overlap exactly and write the same calendar date, unless
-they state the same instant. When an original and its UTC copy state one instant, the
-camera's written value is kept. Candidates that disagree give `conflicting-capture` and
-no date. A lower embedded value that disagrees lowers certainty one level. A disagreeing
+The camera's native EXIF original is the authority for the written date and time: an
+embedded XMP copy of the original never replaces it, at any rank. This differs from
+issue #396, which ranks EXIF and XMP originals together. A disjoint zoned copy is a
+contradiction. A zoned copy of a naive EXIF original is only an incomparable hint. Other
+candidates of one rule must overlap exactly and write the same calendar date, unless
+they state the same instant. Candidates that disagree give `conflicting-capture` and no
+date. A lower embedded value that disagrees lowers certainty one level. A disagreeing
 GPS fix or file name is only a hint, and a reset-like midnight that is contradicted
 dates nothing. A wall clock is compared with an instant only as two representations of
 one property (an IPTC timestamp and the XMP date of the same `DateCreated`), by the

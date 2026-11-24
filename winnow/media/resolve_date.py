@@ -35,7 +35,9 @@ selection and grading in ``_date_select``:
 
 Evidence collected while the file changed (a ``file-changed`` issue) dates
 nothing: the decision is ``undated`` with ``stale-evidence``. Sidecar dates
-are hints until #402 records a verified unique association.
+are hints until #402 records a verified unique association. The camera's
+native EXIF original is the authority for the written date and time: an
+embedded XMP copy of it never replaces it (``_date_copies``).
 
 Wall clocks stay naive with no offset: no zone is derived from GPS,
 siblings, rounding or the host.
@@ -164,6 +166,14 @@ def _resolve(
             conflicts=top,
         )
     outcome = compare_rest(screened, top=top, value=value, policy=policy, claim=claim)
+    if outcome.copy_conflicts:
+        return _without_value(
+            evidence,
+            screened,
+            claim=claim,
+            rule_id=conflict_rule,
+            conflicts=[*top, *outcome.copy_conflicts],
+        )
     rule = rule_of(top[0])
     warnings = warnings_for(evidence, value=value, top=top)
     certainty = grade(rule, value=value, outcome=outcome, warnings=warnings)
@@ -174,6 +184,7 @@ def _resolve(
             claim=claim,
             rule_id=conflict_rule,
             conflicts=[*top, *outcome.conflicts],
+            suspicious=WarningCode.SUSPICIOUS_CLOCK_DEFAULT in warnings,
         )
     return Decision(
         claim=claim,
@@ -196,6 +207,7 @@ def _without_value(
     claim: Claim,
     rule_id: str,
     conflicts: Sequence[Screened] = (),
+    suspicious: bool = False,
 ) -> Decision:
     """Build an undated or conflicting decision.
 
@@ -205,6 +217,8 @@ def _without_value(
         claim: The claim decided.
         rule_id: ``undated`` or the claim's conflict rule.
         conflicts: The contradicting candidates.
+        suspicious: Whether a reset-like value was among them; its warning
+            is kept so the explanation says both things.
 
     Returns:
         A decision with no value and certainty NONE; every eligible entry
@@ -215,7 +229,10 @@ def _without_value(
         for entry in screened
         if entry not in conflicts
     ]
-    warnings = (WarningCode.READ_ISSUES.value,) if evidence.issues else ()
+    found = {WarningCode.SUSPICIOUS_CLOCK_DEFAULT} if suspicious else set()
+    if evidence.issues:
+        found.add(WarningCode.READ_ISSUES)
+    warnings = tuple(code.value for code in WarningCode if code in found)
     return Decision(
         claim=claim,
         value=None,

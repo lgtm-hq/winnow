@@ -141,19 +141,6 @@ def test_equivalent_instants_keep_the_camera_value(
     assert_that(decision.chosen).is_length(2)
 
 
-def test_finer_utc_copy_across_a_month_abstains() -> None:
-    """A finer UTC copy written on another calendar day never moves the month."""
-    observations = [
-        dto("2019-08-01T00:10:10", 540),
-        dto("2019-07-31T15:10:10.555", 0, source=SourceKind.XMP),
-    ]
-
-    decision = resolve_capture_date(evidence(*observations), policy=policy())
-
-    assert_that(decision.rule_id).is_equal_to("conflicting-capture")
-    assert_that(decision.value).is_none()
-
-
 @pytest.mark.parametrize(
     ("first", "second"),
     [
@@ -168,10 +155,10 @@ def test_same_rank_agreement_through_tolerance_alone_abstains(
     """Same-rank values that only tolerance joins are not one value.
 
     Args:
-        first: One original.
-        second: Another original whose span does not overlap the first.
+        first: An IPTC ``DateCreated``.
+        second: An XMP ``DateCreated`` whose span does not overlap it.
     """
-    observations = [dto(first), dto(second, source=SourceKind.XMP)]
+    observations = [iptc(first), xmp_created(second)]
 
     decision = resolve_capture_date(
         evidence(*observations),
@@ -393,19 +380,6 @@ def test_agreeing_copies_do_not_block_confirmed(extra: Observation) -> None:
     decision = resolve_capture_date(evidence(*observations), policy=policy())
 
     assert_that(decision.certainty).is_equal_to(Certainty.CONFIRMED)
-
-
-def test_naive_copy_of_another_original_conflicts() -> None:
-    """A naive copy whose written time differs from the original conflicts."""
-    observations = [
-        dto("2019-07-04T10:10:10", 540),
-        dto("2019-07-04T11:10:10", source=SourceKind.XMP),
-    ]
-
-    decision = resolve_capture_date(evidence(*observations), policy=policy())
-
-    assert_that(decision.conflicts).is_equal_to((1,))
-    assert_that(decision.certainty).is_equal_to(Certainty.WEAK)
 
 
 @pytest.mark.parametrize(

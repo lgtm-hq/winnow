@@ -155,24 +155,57 @@ Rules match an observation's claim, source and the field name in its locator (ca
 folded), so a reader's `#<n>` counter or namespace URI does not change the rule. No rule
 assumes a file-name pattern is UTC.
 
+#### The native EXIF original is the authority
+
+**Difference from #396.** The issue's table puts an embedded EXIF or XMP
+`DateTimeOriginal` at the same rank: rank 1 with an offset, rank 4 without. Under the
+orchestrator's ruling on PR #486, the camera's native EXIF original is the authority for
+the written local date and time. So when a file has an eligible EXIF original, an
+embedded XMP `exif:DateTimeOriginal` is a copy. It never competes for the value,
+whatever its rank, and it is placed relative to the EXIF value instead (`_date_copies`):
+
+| EXIF original | XMP copy                                                 | Outcome                                                            |
+| ------------- | -------------------------------------------------------- | ------------------------------------------------------------------ |
+| zoned         | zoned, spans overlap (equal, coarser or finer)           | compatible: `chosen`, the EXIF value and offset are kept           |
+| zoned         | zoned, spans disjoint                                    | contradiction: `conflicting-capture`                               |
+| naive         | zoned                                                    | `incomparable`: never chosen and never lowers the EXIF's certainty |
+| zoned         | naive, same written digits                               | compatible: `chosen`                                               |
+| zoned         | naive, other digits                                      | `incomparable`: other digits give no zone mapping                  |
+| naive         | naive, same written digits                               | compatible: `chosen`                                               |
+| naive         | naive, other digits, both full readings at one precision | contradiction: `conflicting-capture`                               |
+| naive         | naive, other digits otherwise                            | hint: `copy-differs`                                               |
+
+Examples on a month boundary:
+
+- EXIF `2019-08-01T00:10:10.555+09:00` with XMP `2019-07-31T15:10:10Z` gives August 1 at
+  `+09:00`.
+- EXIF `2019-08-01T00:10:10+09:00` with XMP `2019-07-31T15:10:10.555Z` gives the same
+  date: the finer XMP digits are supporting evidence only.
+- Naive EXIF `2019-08-01T00:10:10` with XMP `2019-07-31T15:10:10Z`, with or without a
+  UTC GPS stamp, gives August 1 under `exif-original-wallclock`, never July.
+
+Without an EXIF original (a PNG, or an export that carries only XMP), the XMP original
+dates the file under rules 1 and 4 as the table says. Only `DateTimeOriginal` is treated
+this way. An XMP `photoshop:DateCreated` is its own field and is compared as in step 3.
+
 The firing rule's candidates must give one value:
 
 1. Every pair must overlap exactly at its stated precision. Tolerance never joins two
    candidates of one rule.
-2. **Same property, one zoned.** An original and its copy, or IPTC and XMP
-   `DateCreated`, are one property. When only one of the two carries an offset, they are
-   compared by the clock readings they write. An IPTC `10:10:10+09:00` and an XMP date
-   `2019-07-04` agree, and the fuller timestamp is kept. This never gives the wall clock
-   a zone. Any other wall clock and instant cannot be compared, so such a pair abstains.
+2. **Same property, one zoned.** IPTC and XMP `DateCreated` are one property. When only
+   one of the two carries an offset, they are compared by the clock readings they write.
+   An IPTC `10:10:10+09:00` and an XMP date `2019-07-04` agree, and the fuller timestamp
+   is kept. This never gives the wall clock a zone. Any other wall clock and instant
+   cannot be compared, so such a pair abstains.
 3. **Preferred representation.** The kept value is the one with an offset, then the
-   finest, then the camera-written block: EXIF, QuickTime, IPTC, PNG text, XMP, file
-   name, in that order. An EXIF `2019-08-01T00:10:10+09:00` and its XMP copy
-   `2019-07-31T15:10:10Z` state one instant, and the EXIF value is kept.
+   finest, then the source in this order: EXIF, QuickTime, IPTC, PNG text, XMP, file
+   name. An EXIF original never meets its XMP copy here (see above). In practice the
+   ties are between IPTC and XMP `DateCreated`, or between candidates of one source.
 4. **Calendar guard.** Every other candidate must either state exactly the same instant
    at the same precision as the kept value, or write the same calendar date at the
-   precision both state. Otherwise the result abstains. A finer UTC copy
-   `2019-07-31T15:10:10.555Z` beside the EXIF `2019-08-01T00:10:10+09:00` is therefore
-   never dated July.
+   precision both state. Otherwise the result abstains. An IPTC
+   `2019-08-01T00:10:10+09:00` beside a finer XMP `DateCreated`
+   `2019-07-31T15:10:10.000Z` therefore abstains rather than giving July.
 
 When these fail, the result is `conflicting-capture` with `value=None`, `certainty=NONE`
 and every candidate in `conflicts`. Neither input order nor the timestamps break a tie.
@@ -217,7 +250,7 @@ a value are `lower-rank`.
 | -------------------------- | ---------------------------------------------------------- | ------------------------------ |
 | `zone-unknown`             | the value is a wall clock                                  | none                           |
 | `suspicious-clock-default` | 00:00:00 on 1 January 1904, 1970, 1980 or 2000, unprofiled | WEAK; undated if contradicted  |
-| `editing-software`         | a `software` value starts with a known editor's name       | never CONFIRMED                |
+| `editing-software`         | a `software` value's leading token(s) name a known editor  | never CONFIRMED                |
 | `read-issues`              | a reader failed or was unavailable                         | never CONFIRMED                |
 | `stale-evidence`           | the file changed during collection                         | undated (see "Stale evidence") |
 
@@ -225,18 +258,22 @@ The known editors are a short list in `winnow/media/_date_policy.py` (`KNOWN_EDI
 Each entry cites a public source for the string its program writes: Adobe Photoshop (and
 Lightroom, whose string starts the same), GIMP, darktable and RawTherapee. Any other
 `Software` text does not block CONFIRMED, including camera firmware such as `10.0.2`,
-`HDR+ 1.0.570503588zd` or `00WW_3_380_SP02`. An entry is added only with a source.
+`HDR+ 1.0.570503588zd` or `00WW_3_380_SP02`. Names match on a token boundary: `GIMP`,
+`GIMP 2.10` and `Adobe Photoshop Lightroom 6.0` match; `Adobe PhotoshopCompatible ...`
+and a name inside another word do not. An entry is added only with a source.
 
 A reset-like value that stands alone is kept, with the warning and capped at WEAK. When
 a different capture field contradicts it, the result is `conflicting-capture`: the
-reset-like value is not asserted over the contradiction.
+reset-like value is not asserted over the contradiction. The undated decision keeps the
+`suspicious-clock-default` warning, so it says both things.
 
 A lone timestamp is at most PROBABLE. CONFIRMED requires all of these:
 
 - rule 1 or 2;
 - a GPS fix from another provenance family that agrees within `gps_tolerance`;
 - no conflict;
-- no incomparable capture field other than a file name;
+- no incomparable capture field, except a file name or a date-only `DateCreated` that
+  writes the chosen value's calendar day;
 - none of the warnings above that block it.
 
 A documented reset is rejected. A plausible but wrong camera clock cannot always be

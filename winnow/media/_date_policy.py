@@ -303,6 +303,11 @@ class Reason(StrEnum):
     LOWER_RANK = "lower-rank"
     """Eligible, but not compared because no value was chosen."""
 
+    COPY_DIFFERS = "copy-differs"
+    """An embedded XMP copy of the EXIF original that writes other digits at
+    another precision; a hint, since the native EXIF original is the
+    authority for the written date and time."""
+
     FILENAME_DIFFERS = "filename-differs"
     """A file-name date that disagrees with an embedded date; a hint, since
     a name proves no capture clock."""
@@ -361,15 +366,17 @@ KNOWN_EDITORS: Final[tuple[str, ...]] = (
     "adobe photoshop",
     # GIMP writes its PACKAGE_STRING, "GIMP <version>", to Exif.Image.Software:
     # https://gitlab.gnome.org/GNOME/gimp/-/blob/master/libgimp/gimpimagemetadata-save.c
-    "gimp ",
+    "gimp",
     # darktable writes darktable_package_string, "darktable <version>":
     # https://github.com/darktable-org/darktable/blob/master/src/common/exif.cc
-    "darktable ",
+    "darktable",
     # RawTherapee writes "RawTherapee " RTVERSION:
     # https://github.com/Beep6581/RawTherapee/blob/dev/rtengine/metadata.cc
-    "rawtherapee ",
+    "rawtherapee",
 )
-"""Case-folded prefixes of ``Software`` values written by editing or
-conversion programs. Only these block CONFIRMED; any other text, including
+"""Case-folded names of editing or conversion programs, matched as the
+leading token or tokens of a ``Software`` value: ``GIMP``, ``GIMP 2.10`` and
+``Adobe Photoshop Lightroom 6.0`` match; ``Adobe PhotoshopCompatible`` and
+``MyGIMPCam`` do not. Only these block CONFIRMED; any other text, including
 camera firmware such as ``10.0.2`` or ``HDR+ 1.0.570503588zd``, does not.
 Each entry cites a public source for its string; add one only with a source."""

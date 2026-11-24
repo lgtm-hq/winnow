@@ -681,7 +681,7 @@ def test_copied_xmp_does_not_raise_certainty(default_policy: DatePolicy) -> None
     ("other", "rule_id", "value_index"),
     [
         pytest.param(
-            "2019-07-04T10:10:10.12", "exif-original-wallclock", 1, id="finer"
+            "2019-07-04T10:10:10.12", "exif-original-wallclock", 0, id="finer"
         ),
         pytest.param("2019-07-04T10:10", "exif-original-wallclock", 0, id="coarser"),
         pytest.param(
@@ -695,7 +695,7 @@ def test_same_rank_values_compare_at_stated_precision(
     value_index: int | None,
     default_policy: DatePolicy,
 ) -> None:
-    """Overlapping values agree and give the finest; adjacent seconds do not.
+    """An overlapping XMP copy supports the EXIF value; adjacent seconds conflict.
 
     Args:
         other: The second original's text.
