@@ -15,6 +15,8 @@ from assertpy import assert_that
 from PIL import Image
 
 from tests.media.conftest import FIXTURE_DIR
+from tests.media.ebml_support import AUDIO as MKV_AUDIO
+from tests.media.ebml_support import cluster, matroska, tracks
 from tests.media.signature_support import program_stream
 from winnow.exceptions import MediaError
 from winnow.fs.walk import WalkEvent, WalkEventKind, WalkPolicy
@@ -800,3 +802,66 @@ def test_collect_directory_stats_skips_non_regular_files(tmp_path: Path) -> None
     assert_that(dict(result.skipped_by_reason)).is_equal_to(
         {WalkEventKind.NOT_REGULAR: 1},
     )
+
+
+_MATCHING_FIXTURES = (
+    "dated.heic",
+    "dated.jpg",
+    "sample.bmp",
+    "sample.flac",
+    "sample.gif",
+    "sample.heic",
+    "sample.jpg",
+    "sample.mp3",
+    "sample.mp4",
+    "sample.ogg",
+    "sample.png",
+    "sample.tiff",
+    "sample.wav",
+    "sample.webp",
+)
+"""Fixtures whose content and extension give the same media type."""
+
+
+def test_collect_directory_stats_equals_extension_counts_for_matching_media(
+    tmp_path: Path,
+) -> None:
+    """Media whose extensions match their content count the same both ways."""
+    for name in _MATCHING_FIXTURES:
+        shutil.copyfile(FIXTURE_DIR / name, tmp_path / name)
+
+    by_content = collect_directory_stats(tmp_path)
+    by_name = collect_directory_stats(tmp_path, fast=True)
+
+    expected = {MediaType.IMAGE: 9, MediaType.VIDEO: 1, MediaType.AUDIO: 4}
+    assert_that(dict(by_content.counts_by_type)).is_equal_to(expected)
+    assert_that(dict(by_name.counts_by_type)).is_equal_to(expected)
+    assert_that(by_content.unknown_count).is_equal_to(0)
+    assert_that(by_content.extension_mismatch_count).is_equal_to(0)
+    assert_that(by_content.total_bytes).is_equal_to(by_name.total_bytes)
+
+
+def test_collect_directory_stats_documented_corrections(tmp_path: Path) -> None:
+    """Audio-only MP4 and WebM are audio; header-only files are unknown.
+
+    These are the only differences from extension counting: the extension
+    says video for the two audio-only containers and image or video for the
+    two files holding no media header.
+    """
+    shutil.copyfile(FIXTURE_DIR / "audio" / "aac_frag.mp4", tmp_path / "voice.mp4")
+    (tmp_path / "voice.webm").write_bytes(
+        matroska(tracks(MKV_AUDIO), cluster(), doctype=b"webm"),
+    )
+    (tmp_path / "photo.jpg").write_text("aa")
+    (tmp_path / "clip.mp4").write_text("bbbb")
+
+    by_content = collect_directory_stats(tmp_path)
+    by_name = collect_directory_stats(tmp_path, fast=True)
+
+    assert_that(dict(by_content.counts_by_type)).is_equal_to({MediaType.AUDIO: 2})
+    assert_that(by_content.unknown_count).is_equal_to(2)
+    assert_that(by_content.extension_mismatch_count).is_equal_to(2)
+    assert_that(dict(by_name.counts_by_type)).is_equal_to(
+        {MediaType.VIDEO: 3, MediaType.IMAGE: 1},
+    )
+    assert_that(by_name.unknown_count).is_equal_to(0)
