@@ -262,7 +262,7 @@ def parse_exif_offset(raw: str) -> int | ParseStatus:
         minute above 59 or an offset outside -12:00..+14:00.
     """
     text = raw.strip(_EXIF_PADDING)
-    if not text.replace(":", "").strip():
+    if text in ("", ":"):
         return ParseStatus.EMPTY
     match = _EXIF_OFFSET.fullmatch(text)
     if match is None:
@@ -389,7 +389,7 @@ def parse_iso8601_value(raw: str) -> TimeValue | ParseStatus:
     names = ("year", "month", "day", "hour", "minute", "second")
     fields = [int(parts[name]) for name in names if parts[name] is not None]
     fraction = parts["fraction"]
-    if not any(fields) and not int(fraction or "0"):
+    if not any(fields) and not (fraction or "").strip("0"):
         return ParseStatus.PLACEHOLDER
     zone = parts["zone"]
     minutes = _iso_offset(zone)
@@ -419,7 +419,8 @@ def parse_quicktime_seconds(
 
     Returns:
         The value at second precision; ``EMPTY`` for 0, which writers use
-        for "not set"; ``MALFORMED`` for a negative or unrepresentable count.
+        for "not set"; ``MALFORMED`` for a negative count, or a count or
+        epoch whose date cannot be represented.
     """
     if seconds == 0:
         return ParseStatus.EMPTY
@@ -427,7 +428,7 @@ def parse_quicktime_seconds(
         return ParseStatus.MALFORMED
     try:
         wall = datetime(epoch, 1, 1) + timedelta(seconds=seconds)
-    except OverflowError:
+    except (OverflowError, ValueError):
         return ParseStatus.MALFORMED
     return _build(
         (wall.year, wall.month, wall.day, wall.hour, wall.minute, wall.second),
@@ -537,15 +538,16 @@ def _layout_fields(raw: str, layout: re.Pattern[str]) -> list[int] | ParseStatus
         layout: The fixed layout, one group per component.
 
     Returns:
-        The known components, a leading run; ``EMPTY`` when blank;
-        ``PLACEHOLDER`` when every component is blank or the date is zero;
+        The known components, a leading run; ``EMPTY`` when empty or
+        only NULs; ``PLACEHOLDER`` when it is all blank, every component
+        is blank or the date is zero;
         ``MALFORMED`` when the layout or a component's characters are
         wrong; ``UNSUPPORTED`` when an unknown component precedes a known
         one.
     """
-    if not raw.strip(_EXIF_PADDING):
-        return ParseStatus.EMPTY
     text = raw.rstrip("\x00")
+    if not text.strip(_EXIF_PADDING):
+        return ParseStatus.PLACEHOLDER if text else ParseStatus.EMPTY
     match = layout.match(text)
     if match is None or text[match.end() :].strip(_EXIF_PADDING):
         return ParseStatus.MALFORMED

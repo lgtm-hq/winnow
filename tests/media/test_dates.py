@@ -118,6 +118,7 @@ def _rendered(value: TimeValue | ParseStatus) -> str:
         ("0000:00:00 00:00:00", None, None, "placeholder"),
         ("0000:00:00 10:10:10", None, None, "placeholder"),
         ("    :  :     :  :  ", None, None, "placeholder"),
+        (" " * 19, None, None, "placeholder"),
         ("", None, None, "empty"),
         ("\x00\x00", None, None, "empty"),
         ("2019:00:00 00:00:00", None, None, "malformed"),
@@ -144,6 +145,7 @@ def _rendered(value: TimeValue | ParseStatus) -> str:
         "zeros",
         "zero_date",
         "blanks",
+        "all_spaces",
         "empty",
         "nul_only",
         "zero_month",
@@ -213,6 +215,7 @@ def test_parse_exif_subsec(raw: str, expected: SubSecond | ParseStatus) -> None:
         ("-13:00", ParseStatus.MALFORMED),
         ("+0900", ParseStatus.MALFORMED),
         ("Z", ParseStatus.MALFORMED),
+        ("::", ParseStatus.MALFORMED),
     ],
     ids=[
         "east",
@@ -226,6 +229,7 @@ def test_parse_exif_subsec(raw: str, expected: SubSecond | ParseStatus) -> None:
         "below_min",
         "no_colon",
         "zulu",
+        "colons_only",
     ],
 )
 def test_parse_exif_offset(raw: str, expected: int | ParseStatus) -> None:
@@ -328,6 +332,8 @@ def test_parse_gps_datetime_value(
         (" 2019-07-04T10:10:10\x00", "2019-07-04T10:10:10", None),
         ("0000-00-00T00:00:00Z", "placeholder", None),
         ("0000", "placeholder", None),
+        ("0000-00-00T00:00:00." + "0" * 5000, "placeholder", None),
+        ("2016-12-31T23:59:60Z", "malformed", None),
         ("", "empty", None),
         ("2019-07-04T10:10:10Z;2019-07-04T01:10:10Z", "malformed", None),
         ("2019-07-04 10:10:10", "malformed", None),
@@ -353,6 +359,8 @@ def test_parse_gps_datetime_value(
         "padding",
         "zeros",
         "zero_year",
+        "zero_fraction_beyond_int_limit",
+        "leap_second_unrepresentable",
         "empty",
         "joined",
         "space_separator",
@@ -382,8 +390,9 @@ def test_parse_iso8601_value(raw: str, expected: str, digits: int | None) -> Non
         (0, 1904, "empty"),
         (-1, 1904, "malformed"),
         (10**15, 1904, "malformed"),
+        (1, 0, "malformed"),
     ],
-    ids=["one", "unix_epoch", "unix_count", "zero", "negative", "overflow"],
+    ids=["one", "unix_epoch", "unix_count", "zero", "negative", "overflow", "epoch_0"],
 )
 def test_parse_quicktime_seconds(seconds: int, epoch: int, expected: str) -> None:
     """QuickTime counts are UTC by specification; zero is not a date."""

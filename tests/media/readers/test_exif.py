@@ -12,7 +12,7 @@ from pathlib import Path
 import exifread
 import pytest
 from assertpy import assert_that
-from PIL import Image, IptcImagePlugin, TiffImagePlugin
+from PIL import Image, TiffImagePlugin
 
 from winnow.media import detect
 from winnow.media.evidence import collect_evidence
@@ -31,6 +31,7 @@ from winnow.models.evidence import (
 _EXIF_IFD = 0x8769
 _GPS_IFD = 0x8825
 _READ_SOURCES = frozenset({SourceKind.EXIF, SourceKind.IPTC})
+_POINTERS = (_EXIF_IFD, _GPS_IFD)
 
 
 def _rational(numerator: int, denominator: int) -> TiffImagePlugin.IFDRational:
@@ -84,25 +85,24 @@ def _iim(dataset: int, value: bytes) -> bytes:
     return bytes([0x1C, 2, dataset]) + struct.pack(">H", len(value)) + value
 
 
-def _with_iptc(jpeg: bytes, datasets: list[tuple[int, bytes]]) -> bytes:
-    """Insert an APP13 Photoshop IPTC block after a JPEG's SOI marker.
+def _with_iptc(jpeg: bytes, iim: bytes) -> bytes:
+    """Insert an APP13 Photoshop IPTC resource after a JPEG's SOI marker.
 
     Args:
         jpeg: The JPEG bytes.
-        datasets: ``(dataset, value)`` pairs in file order.
+        iim: The IIM block; the resource's size is its exact length and a
+            pad byte follows an odd one, as Photoshop writes it.
 
     Returns:
         The JPEG with the block.
     """
-    payload = b"".join(_iim(dataset, value) for dataset, value in datasets)
-    if len(payload) % 2:
-        payload += b"\0"
     resource = (
         b"8BIM"
         + struct.pack(">H", 0x0404)
         + b"\0\0"
-        + struct.pack(">I", len(payload))
-        + payload
+        + struct.pack(">I", len(iim))
+        + iim
+        + b"\0" * (len(iim) % 2)
     )
     segment = b"Photoshop 3.0\0" + resource
     marker = b"\xff\xed" + struct.pack(">H", len(segment) + 2) + segment
@@ -111,15 +111,18 @@ def _with_iptc(jpeg: bytes, datasets: list[tuple[int, bytes]]) -> bytes:
 
 def _write_jpeg(
     path: Path,
-    exif: Image.Exif | None = None,
+    exif: Image.Exif | bytes | None = None,
     iptc: list[tuple[int, bytes]] | None = None,
+    *,
+    iim: bytes | None = None,
 ) -> Path:
     """Write a tiny JPEG with optional EXIF and IPTC.
 
     Args:
         path: Where to write it.
-        exif: Its EXIF block.
+        exif: Its EXIF block, or the raw ``APP1`` payload.
         iptc: Its IPTC datasets.
+        iim: A raw IIM block, used instead of ``iptc``.
 
     Returns:
         The path.
@@ -131,7 +134,9 @@ def _write_jpeg(
     else:
         image.save(buffer, format="JPEG", exif=exif)
     data = buffer.getvalue()
-    path.write_bytes(data if iptc is None else _with_iptc(data, iptc))
+    if iptc is not None:
+        iim = b"".join(_iim(dataset, value) for dataset, value in iptc)
+    path.write_bytes(data if iim is None else _with_iptc(data, iim))
     return path
 
 
@@ -583,54 +588,222 @@ def test_exif_reader_reads_apple_content_identifier(tmp_path: Path) -> None:
     ).is_equal_to((Claim.CONTENT_ID, identifier, "winnow", "apple-makernote"))
 
 
-def test_exif_reader_falls_back_to_exifread_for_the_maker_note(
-    fixtures_dir: Path,
+_UUID = "A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF"
+
+
+def _issues(evidence: EvidenceSet) -> list[str]:
+    """Return the blocks the EXIF reader reported as damaged.
+
+    Args:
+        evidence: The evidence.
+
+    Returns:
+        Each issue's block name, in order.
+    """
+    return [
+        issue.message.split(" damaged:")[0]
+        for issue in evidence.issues
+        if issue.reader == "exif"
+    ]
+
+
+def _before_frame(data: bytes) -> bytes:
+    """Cut a JPEG written by Pillow just before its quantisation tables.
+
+    Pillow cannot open the result; its APP1 and APP13 segments are intact.
+
+    Args:
+        data: The JPEG bytes.
+
+    Returns:
+        The truncated bytes.
+    """
+    return data[: data.index(b"\xff\xdb")]
+
+
+def _write_tiff(
+    path: Path,
+    exif: Image.Exif,
+    iptc: bytes | None = None,
+    *,
+    as_longs: bool = False,
+) -> Path:
+    """Write a tiny TIFF with EXIF and an optional IPTC-NAA tag.
+
+    Pillow ignores ``exif=`` when ``tiffinfo=`` is given, so the EXIF tags
+    go into the TIFF directory itself, sub-directories as nested mappings.
+
+    Args:
+        path: Where to write it.
+        exif: Its EXIF block.
+        iptc: The tag 33723 bytes; a multiple of four with ``as_longs``.
+        as_longs: Retype the tag as LONG values, as Photoshop writes it;
+            Pillow's writer keeps one value of a LONG tag 33723, so the
+            UNDEFINED entry it writes is patched in place.
+
+    Returns:
+        The path.
+    """
+    directory = TiffImagePlugin.ImageFileDirectory_v2()
+    for tag, value in exif.items():
+        if tag not in _POINTERS:
+            directory[tag] = value
+    for pointer in _POINTERS:
+        if sub_directory := dict(exif.get_ifd(pointer)):
+            directory[pointer] = sub_directory
+    if iptc is not None:
+        directory[33723] = iptc
+        directory.tagtype[33723] = 7
+    Image.new("RGB", (8, 8)).save(path, format="TIFF", tiffinfo=directory)
+    if iptc is not None and as_longs:
+        data = path.read_bytes()
+        entry = struct.pack("<HHI", 33723, 7, len(iptc))
+        longs = struct.pack("<HHI", 33723, 4, len(iptc) // 4)
+        assert_that(data.count(entry)).is_equal_to(1)
+        path.write_bytes(data.replace(entry, longs))
+    return path
+
+
+def _refuse_pixels(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Lower Pillow's pixel limit until it refuses to open ``path``.
+
+    Args:
+        monkeypatch: Restores the limit afterwards.
+        path: An 8x8 image.
+    """
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+    with pytest.raises(Image.DecompressionBombError):
+        Image.open(path)
+
+
+def _summary(observations: list[Observation]) -> list[tuple[object, ...]]:
+    """Reduce observations to what two backends must agree on.
+
+    Args:
+        observations: The observations.
+
+    Returns:
+        Claim, locator, raw value, value and status of each.
+    """
+    return [(o.claim, o.locator, o.raw, o.value, o.status) for o in observations]
+
+
+def test_exif_reader_apple_identifier_is_the_same_on_every_path(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without an Apple note in Pillow, exifread's decoded tag is used."""
-    monkeypatch.setattr(
-        exifread,
-        "process_file",
-        lambda *a, **k: {"MakerNote Tag 0x0011": "FROM-EXIFREAD"},
+    """Every backend decodes the Apple note's original bytes the same way."""
+    exif = _exif(ifd0={0x010F: "Apple"}, exif_ifd={0x927C: _apple_maker_note(_UUID)})
+    jpeg = _write_jpeg(tmp_path / "whole.jpg", exif)
+    cut = tmp_path / "cut.jpg"
+    cut.write_bytes(_before_frame(jpeg.read_bytes()))
+    with pytest.raises(OSError, match="truncated|cannot identify"):
+        Image.open(cut).load()
+    tiff = _write_tiff(tmp_path / "a.tiff", exif)
+    by_pillow = _read(tiff)
+    _refuse_pixels(monkeypatch, tiff)
+
+    found = [_read(path) for path in (jpeg, cut, tiff)] + [by_pillow]
+
+    identifiers = [
+        [
+            (o.locator, o.value, o.status)
+            for o in observations
+            if o.claim is Claim.CONTENT_ID
+        ]
+        for observations in found
+    ]
+    expected = [("MakerNotes:Apple:Tag 0x0011#0", _UUID, ParseStatus.OK)]
+    assert_that(identifiers).is_equal_to([expected] * 4)
+
+
+def test_exif_reader_keeps_iptc_when_pillow_refuses_the_pixels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JPEG above Pillow's pixel limit keeps its EXIF and IPTC dates."""
+    path = _write_jpeg(
+        tmp_path / "a.jpg",
+        _exif(exif_ifd={0x9003: "2019:07:04 10:10:10"}),
+        iptc=[(55, b"20180704"), (60, b"101010+0900")],
+    )
+    _refuse_pixels(monkeypatch, path)
+
+    observations = _read(path)
+
+    created = _time(_at(observations, "IPTC:DateCreated#0"))
+    assert_that(created.render()).is_equal_to("2018-07-04T10:10:10+09:00")
+    assert_that(_at(observations, "ExifIFD:DateTimeOriginal#0").status).is_equal_to(
+        ParseStatus.OK,
     )
 
-    observations = _read(fixtures_dir / "sample.jpg")
 
-    content_id = _at(observations, "MakerNote:Tag 0x0011#0")
-    assert_that((content_id.value, content_id.reader)).is_equal_to(
-        ("FROM-EXIFREAD", "exifread"),
+def test_exif_reader_keeps_iptc_of_a_truncated_jpeg(tmp_path: Path) -> None:
+    """A JPEG cut before its image data keeps its IPTC dates and no issue."""
+    whole = _write_jpeg(
+        tmp_path / "whole.jpg",
+        _exif(exif_ifd={0x9003: "2019:07:04 10:10:10"}),
+        iptc=[(55, b"20180704"), (60, b"101010+0900")],
     )
+    cut = tmp_path / "cut.jpg"
+    cut.write_bytes(_before_frame(whole.read_bytes()))
+
+    evidence = _collect(cut)
+
+    observations = [o for o in evidence.observations if o.source in _READ_SOURCES]
+    assert_that(_summary(observations)).is_equal_to(_summary(_read(whole)))
+    assert_that(_issues(evidence)).is_empty()
 
 
-def test_exif_reader_uses_exifread_when_pillow_cannot_open(
+def test_exif_reader_reads_tiff_with_exifread_like_pillow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """exifread reads the same fields, at the same locators, as Pillow does."""
-    path = _write_jpeg(
-        tmp_path / "a.jpg",
-        _exif(
-            ifd0={0x0132: "2021:01:01 09:00:00", 0x010F: "Apple"},
-            exif_ifd={0x9003: "2019:07:04 10:10:10", 0x9291: "123", 0x9011: "+09:00"},
-            gps={
-                0x001D: "2019:07:04",
-                0x0007: (_rational(1, 1), _rational(10, 1), _rational(1234, 100)),
-            },
-        ),
+    exif = _exif(
+        ifd0={0x0132: "2021:01:01 09:00:00", 0x010F: "Apple"},
+        exif_ifd={0x9003: "2019:07:04 10:10:10", 0x9291: "123", 0x9011: "+09:00"},
+        gps={
+            0x001D: "2019:07:04",
+            0x0007: (_rational(1, 1), _rational(10, 1), _rational(1234, 100)),
+        },
     )
+    path = _write_tiff(tmp_path / "a.tiff", exif, iptc=_iim(55, b"20180704"))
     by_pillow = _read(path)
+    _refuse_pixels(monkeypatch, path)
 
-    def cannot_open(*args: object, **kwargs: object) -> Image.Image:
-        raise OSError("cannot identify image file")
-
-    monkeypatch.setattr(Image, "open", cannot_open)
     by_exifread = _read(path)
 
-    def summary(observations: list[Observation]) -> list[tuple[object, ...]]:
-        return [(o.claim, o.locator, o.raw, o.value, o.status) for o in observations]
+    assert_that(_summary(by_exifread)).is_equal_to(_summary(by_pillow))
+    assert_that([o.locator for o in by_pillow]).contains(
+        "ExifIFD:DateTimeOriginal#0",
+        "GPS:GPSDateStamp+GPSTimeStamp#0",
+        "IFD0:DateTime#0",
+    )
+    assert_that(
+        {o.reader for o in by_exifread if o.source is SourceKind.EXIF}
+    ).is_equal_to(
+        {"exifread"},
+    )
+    assert_that(_at(by_pillow, "IPTC:DateCreated#0").status).is_equal_to(ParseStatus.OK)
 
-    assert_that(summary(by_exifread)).is_equal_to(summary(by_pillow))
-    assert_that({o.reader for o in by_exifread}).is_equal_to({"exifread"})
+
+@pytest.mark.parametrize("pixels_refused", [False, True], ids=["pillow", "exifread"])
+def test_exif_reader_reads_tiff_iptc_stored_as_longs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pixels_refused: bool,
+) -> None:
+    """IPTC stored as TIFF LONG values is turned back into its bytes."""
+    block = _iim(55, b"20180704") + _iim(60, b"101010+0900")
+    block += b"\0" * (-len(block) % 4)
+    path = _write_tiff(tmp_path / "a.tiff", _exif(), iptc=block, as_longs=True)
+    if pixels_refused:
+        _refuse_pixels(monkeypatch, path)
+
+    created = _at(_read(path), "IPTC:DateCreated#0")
+
+    assert_that(_time(created).render()).is_equal_to("2018-07-04T10:10:10+09:00")
 
 
 def test_exif_reader_reports_exifread_failure(
@@ -638,53 +811,145 @@ def test_exif_reader_reports_exifread_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When neither backend can read the file, the reader reports a failure."""
-    path = _write_jpeg(tmp_path / "a.jpg")
+    path = _write_tiff(tmp_path / "a.tiff", _exif())
+    _refuse_pixels(monkeypatch, path)
 
     def broken(*args: object, **kwargs: object) -> object:
         raise ValueError("broken")
 
-    monkeypatch.setattr(Image, "open", broken)
     monkeypatch.setattr(exifread, "process_file", broken)
 
-    evidence = _collect(path)
-
-    assert_that([(i.reader, i.status) for i in evidence.issues]).is_equal_to(
-        [("exif", "failed")],
-    )
+    assert_that(_issues(_collect(path))).is_equal_to(["exifread"])
 
 
-def test_exif_reader_isolates_an_unreadable_block(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A broken ExifIFD or IPTC block does not hide IFD0's DateTime."""
-    path = _write_jpeg(
-        tmp_path / "a.jpg",
+def _cut_exif_ifd(exif: Image.Exif) -> bytes:
+    """Cut an EXIF block in the middle of its ExifIFD's second entry.
+
+    Args:
+        exif: An EXIF block whose ExifIFD holds at least two entries.
+
+    Returns:
+        The damaged bytes, ``Exif`` header included.
+    """
+    data: bytes = exif.tobytes()
+    parsed = Image.Exif()
+    parsed.load(data)
+    offset = parsed[_EXIF_IFD]
+    if not isinstance(offset, int):
+        pytest.fail(f"ExifIFD pointer is {offset!r}")
+    return data[: 6 + offset + 2 + 12 + 6]
+
+
+def test_exif_reader_reports_a_corrupt_exif_directory(tmp_path: Path) -> None:
+    """An ExifIFD cut short is reported; IFD0 and IPTC are still read."""
+    damaged = _cut_exif_ifd(
         _exif(
             ifd0={0x0132: "2021:01:01 09:00:00"},
-            exif_ifd={0x9003: "2019:07:04 10:10:10"},
+            exif_ifd={0x9003: "2019:07:04 10:10:10", 0x9004: "2019:07:04 10:10:10"},
         ),
     )
-    original_get_ifd = Image.Exif.get_ifd
-
-    def broken_get_ifd(self: Image.Exif, tag: int) -> dict[int, object]:
-        if tag == _EXIF_IFD:
-            raise ValueError("bad ExifIFD")
-        return original_get_ifd(self, tag)
-
-    def broken_iptc(image: Image.Image) -> None:
-        raise SyntaxError("bad IPTC")
-
-    monkeypatch.setattr(Image.Exif, "get_ifd", broken_get_ifd)
-    monkeypatch.setattr(IptcImagePlugin, "getiptcinfo", broken_iptc)
+    path = _write_jpeg(tmp_path / "a.jpg", damaged, iptc=[(55, b"20180704")])
 
     evidence = _collect(path)
 
     observations = [o for o in evidence.observations if o.source in _READ_SOURCES]
-    assert_that([o.locator for o in observations]).is_equal_to(["IFD0:DateTime#0"])
-    assert_that([i.message.split(":")[0] for i in evidence.issues]).is_equal_to(
-        ["ExifIFD unreadable", "IPTC unreadable"],
+    assert_that([o.locator for o in observations]).contains(
+        "IFD0:DateTime#0",
+        "IPTC:DateCreated#0",
     )
+    assert_that(_issues(evidence)).contains("ExifIFD")
+
+
+def test_exif_reader_reports_a_malformed_exif_header(tmp_path: Path) -> None:
+    """An EXIF block whose TIFF header is wrong is reported, not read as absent."""
+    data = _exif(ifd0={0x0132: "2021:01:01 09:00:00"}).tobytes()
+    damaged = data[:6] + b"XX" + data[8:]
+    path = _write_jpeg(tmp_path / "a.jpg", damaged, iptc=[(55, b"20180704")])
+
+    evidence = _collect(path)
+
+    observations = [o for o in evidence.observations if o.source in _READ_SOURCES]
+    assert_that([o.locator for o in observations]).is_equal_to(["IPTC:DateCreated#0"])
+    assert_that(_issues(evidence)).is_equal_to(["EXIF"])
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        _apple_maker_note(_UUID)[:12] + b"XX" + _apple_maker_note(_UUID)[14:],
+        _apple_maker_note(_UUID)[:-10],
+    ],
+    ids=["bad_byte_order", "value_cut_short"],
+)
+def test_exif_reader_reports_a_damaged_apple_note(tmp_path: Path, note: bytes) -> None:
+    """A damaged Apple note gives an issue and no identifier; other fields stay."""
+    path = _write_jpeg(
+        tmp_path / "a.jpg",
+        _exif(exif_ifd={0x9003: "2019:07:04 10:10:10", 0x927C: note}),
+    )
+
+    evidence = _collect(path)
+
+    observations = [o for o in evidence.observations if o.source in _READ_SOURCES]
+    assert_that([o.claim for o in observations]).is_equal_to([Claim.CAPTURE_TIME])
+    assert_that(_issues(evidence)).is_equal_to(["MakerNote"])
+
+
+def test_exif_reader_ignores_another_vendors_maker_note(tmp_path: Path) -> None:
+    """Tag 0x0011 of a non-Apple note is not read as an Apple identifier."""
+    note = b"Canon\x00\x00\x01MM" + struct.pack(">H", 0)
+    path = _write_jpeg(tmp_path / "a.jpg", _exif(exif_ifd={0x927C: note}))
+
+    evidence = _collect(path)
+
+    assert_that(
+        [o for o in evidence.observations if o.source in _READ_SOURCES]
+    ).is_empty()
+    assert_that(evidence.issues).is_empty()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        bytes([0x1C, 2, 60, 0]),
+        bytes([0x1C, 2, 60]) + struct.pack(">H", 12) + b"101010+0900",
+    ],
+    ids=["header_cut_short", "length_overstated"],
+)
+def test_exif_reader_keeps_iptc_date_before_a_damaged_time(
+    tmp_path: Path,
+    tail: bytes,
+) -> None:
+    """A complete DateCreated survives a damaged TimeCreated at day precision."""
+    path = _write_jpeg(tmp_path / "a.jpg", iim=_iim(55, b"20180704") + tail)
+
+    evidence = _collect(path)
+
+    observations = [o for o in evidence.observations if o.source in _READ_SOURCES]
+    assert_that(_summary(observations)).is_length(1)
+    created = _at(observations, "IPTC:DateCreated#0")
+    assert_that((created.raw, _time(created).render())).is_equal_to(
+        ("20180704", "2018-07-04"),
+    )
+    assert_that(_issues(evidence)).is_equal_to(["IPTC"])
+
+
+def test_exif_reader_keeps_an_empty_iptc_dataset(tmp_path: Path) -> None:
+    """A zero-length DateCreated is kept as an empty observation."""
+    path = _write_jpeg(tmp_path / "a.jpg", iptc=[(55, b"")])
+
+    created = _at(_read(path), "IPTC:DateCreated#0")
+
+    assert_that((created.raw, created.status)).is_equal_to(("", ParseStatus.EMPTY))
+
+
+def test_exif_reader_reports_a_cut_short_exif_segment(tmp_path: Path) -> None:
+    """A file ending inside its EXIF segment is reported as damaged."""
+    whole = _write_jpeg(tmp_path / "whole.jpg", _exif(ifd0={0x010F: "Apple"}))
+    cut = tmp_path / "cut.jpg"
+    cut.write_bytes(whole.read_bytes()[:30])
+
+    assert_that(_issues(_collect(cut))).is_equal_to(["JPEG segments"])
 
 
 def test_exif_reader_iptc_date_only_keeps_day_precision(tmp_path: Path) -> None:
