@@ -90,7 +90,10 @@ Directories below `organize.max_depth`, and directories already visited through 
 path, are not entered and are not counted as skipped entries. A symlink loop (a link to
 itself) is a skipped symlink, or an unreadable file under `symlink_policy: follow`.
 Under `follow`, a file reached under several names is counted once, under the first name
-that gives it a media type, as discovery does; the other names are skipped duplicates.
+that gives it a media type, as discovery does; the other names are skipped duplicates
+and are not read again. A file is matched by the device and inode of the file actually
+opened, so a link changed during the scan is counted as the file it pointed to when
+read. Two hard links to one file therefore count once, where discovery counts both.
 
 Each file is identified the way discovery identifies it: by its content, so a JPEG named
 `IMG_0001.bin` is an image and a text file named `clip.mp4` is unknown. When no content
@@ -149,7 +152,7 @@ extension when no content rule recognises the file, which reads
 `<type> (from the file name)`. With `--fast` it comes from the extension and reads
 `<type> (extension only)`. `Extension check` compares the two: `matches content`,
 `mismatch: content says image, extension says audio`, `extension gives no type`,
-`content not recognised; type is from the file name`,
+`type is from the file name, not the content`,
 `content gives no type; extension says video` (or `... extension gives no type`), or
 `not checked (extension only)` with `--fast`.
 

@@ -42,13 +42,13 @@ from winnow.media.registry import (
 )
 from winnow.media.service import DefaultMetadataService
 from winnow.models.enums import SymlinkPolicy
+from winnow.models.evidence import FileSnapshot
 from winnow.models.media import MediaMetadata, MediaType
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
     from winnow.media._detect_base import DetectionResult
-    from winnow.models.evidence import FileSnapshot
 
 __all__ = [
     "MAX_UNREADABLE_EXAMPLES",
@@ -319,18 +319,16 @@ def _event(kind: WalkEventKind, path: Path, message: str) -> WalkEvent:
     )
 
 
-def _error_text(exc: OSError | RuntimeError) -> str:
+def _error_text(exc: OSError) -> str:
     """Describe an error for an event message.
 
     Args:
-        exc: The error; a ``RuntimeError`` is a symlink loop.
+        exc: The error.
 
     Returns:
         The message.
     """
-    if isinstance(exc, OSError):
-        return exc.strerror or str(exc)
-    return "symlink loop"
+    return exc.strerror or str(exc)
 
 
 def _open_stat(path: Path) -> os.stat_result:
@@ -397,14 +395,31 @@ def iter_regular_files(
         yield path
 
 
+_Identity = tuple[int, int]
+"""``(st_dev, st_ino)`` of a file that was opened."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Classified:
+    """A classified file and the identity of the file actually opened.
+
+    Args:
+        entry: The public entry.
+        identity: Device and inode of the opened file.
+    """
+
+    entry: InventoryEntry
+    identity: _Identity
+
+
 def _classify(
     path: Path,
     *,
     registry: FormatRegistry,
     fast: bool,
     report: Callable[[WalkEvent], None],
-) -> InventoryEntry | None:
-    """Classify one file, taking its size and time from the opened file.
+) -> _Classified | None:
+    """Classify one file, taking its size, time and identity from the opened file.
 
     Args:
         path: The file.
@@ -413,7 +428,7 @@ def _classify(
         report: Receives the event when the file cannot be read.
 
     Returns:
-        The entry, or ``None`` when the file could not be read.
+        The classified file, or ``None`` when it could not be read.
     """
     if fast:
         try:
@@ -424,13 +439,14 @@ def _classify(
         if not stat.S_ISREG(opened.st_mode):
             report(_event(WalkEventKind.NOT_REGULAR, path, "not a regular file"))
             return None
-        return InventoryEntry(
+        entry = InventoryEntry(
             path=path,
             size_bytes=opened.st_size,
             modified=_utc_from_ns(opened.st_mtime_ns),
             media_type=registry.lookup(path.name),
             detection=None,
         )
+        return _Classified(entry=entry, identity=(opened.st_dev, opened.st_ino))
     detection = detect(path, registry=registry)
     snapshot = detection.snapshot
     if snapshot is None:
@@ -438,22 +454,42 @@ def _classify(
             _event(WalkEventKind.UNREADABLE_ENTRY, path, "content could not be read"),
         )
         return None
-    return InventoryEntry(
+    entry = InventoryEntry(
         path=path,
         size_bytes=snapshot.size,
         modified=_utc_from_ns(snapshot.mtime_ns),
         media_type=detection.media_type,
         detection=detection,
     )
+    return _Classified(entry=entry, identity=(snapshot.device, snapshot.inode))
+
+
+@dataclass(slots=True)
+class _Pending:
+    """An untyped file held until the walk ends.
+
+    Args:
+        first: The first name's entry, the one counted if no name types it.
+        others: Later untyped names for the same file.
+    """
+
+    first: InventoryEntry
+    others: list[Path] = field(default_factory=list)
 
 
 class _FollowClaims:
     """Pick one name per file under ``FOLLOW``, by Discovery's rule.
 
-    A name whose type is known claims its resolved target; every later name
-    for the target is a duplicate. A name with no type never claims: unknown
-    names are held until the walk ends, and a target keeps its first unknown
-    name only when no name for it gave a type. The others are duplicates.
+    A file is identified by the device and inode of the file that was opened,
+    never by resolving the name again, so a link retargeted while it is read
+    cannot pair one file's type with another file's identity. A name whose
+    type is known claims its file; every later name for the file is a
+    duplicate. A name with no type never claims: the first untyped name of a
+    file is held until the walk ends and counted only when no name for the
+    file gave a type. The other names are duplicates.
+
+    Two hard links to one file have one identity, so they count once here,
+    where Discovery, keyed on resolved paths, counts both.
 
     Args:
         report: Receives the duplicate and read-error events.
@@ -461,60 +497,78 @@ class _FollowClaims:
 
     def __init__(self, report: Callable[[WalkEvent], None]) -> None:
         self._report = report
-        self._claimed: set[Path] = set()
-        self._pending: dict[Path, list[InventoryEntry]] = {}
+        self._claimed: set[_Identity] = set()
+        self._pending: dict[_Identity, _Pending] = {}
 
-    def offer(self, entry: InventoryEntry) -> Iterator[InventoryEntry]:
-        """Count ``entry`` now, hold it, or report it as a duplicate.
+    def already_claimed(self, path: Path) -> bool:
+        """Report, and skip, a name whose current target is already counted.
+
+        One ``stat`` following links, before any content is read, so a name
+        for a counted file is not detected again. The identity of the file
+        opened later stays the authority for every other name.
 
         Args:
-            entry: A classified file.
+            path: The name.
 
-        Yields:
-            ``entry`` when it claims its target.
+        Returns:
+            ``True`` when the name was reported as a duplicate.
         """
         try:
-            target = entry.path.resolve()
-        except (OSError, RuntimeError) as exc:
-            self._report(
-                _event(WalkEventKind.UNREADABLE_ENTRY, entry.path, _error_text(exc)),
-            )
-            return
-        if target in self._claimed:
-            self._duplicate(entry)
+            status = os.stat(path)
+        except OSError:
+            return False
+        if (status.st_dev, status.st_ino) not in self._claimed:
+            return False
+        self._duplicate(path)
+        return True
+
+    def offer(self, classified: _Classified) -> Iterator[InventoryEntry]:
+        """Count a file now, hold it, or report it as a duplicate.
+
+        Args:
+            classified: A classified file and its opened identity.
+
+        Yields:
+            The entry when it claims its file.
+        """
+        entry, identity = classified.entry, classified.identity
+        if identity in self._claimed:
+            self._duplicate(entry.path)
             return
         if entry.media_type is None:
-            self._pending.setdefault(target, []).append(entry)
+            pending = self._pending.get(identity)
+            if pending is None:
+                self._pending[identity] = _Pending(first=entry)
+            else:
+                pending.others.append(entry.path)
             return
-        self._claimed.add(target)
-        for loser in self._pending.pop(target, []):
-            self._duplicate(loser)
+        self._claimed.add(identity)
+        held = self._pending.pop(identity, None)
+        if held is not None:
+            for loser in (held.first.path, *held.others):
+                self._duplicate(loser)
         yield entry
 
     def unclaimed(self) -> Iterator[InventoryEntry]:
-        """Yield one unknown name per target no typed name claimed.
+        """Yield one untyped name per file no typed name claimed.
 
         Yields:
-            The first unknown name of each such target, in walk order.
+            The first untyped name of each such file, in walk order.
         """
-        for first, *others in self._pending.values():
-            for loser in others:
+        for held in self._pending.values():
+            for loser in held.others:
                 self._duplicate(loser)
-            yield first
+            yield held.first
         self._pending.clear()
 
-    def _duplicate(self, entry: InventoryEntry) -> None:
+    def _duplicate(self, path: Path) -> None:
         """Report a name that does not count.
 
         Args:
-            entry: The losing name.
+            path: The losing name.
         """
         self._report(
-            _event(
-                WalkEventKind.DUPLICATE,
-                entry.path,
-                "symlink target already counted",
-            ),
+            _event(WalkEventKind.DUPLICATE, path, "symlink target already counted"),
         )
 
 
@@ -533,9 +587,11 @@ def iter_inventory(
     could not read it (it vanished, or permission was denied), is reported
     to ``on_event`` as unreadable and not yielded: it is never typed by name.
 
-    Under ``FOLLOW``, a file reached under several names counts once, under
-    the first name that gives it a media type (Discovery's rule); files with
-    no type under any name are yielded after the walk, in walk order.
+    Under ``FOLLOW``, a file (one device and inode) reached under several
+    names counts once, under the first name that gives it a media type
+    (Discovery's rule); a name whose target is already counted is not read
+    again. Files with no type under any name are yielded after the walk, in
+    walk order.
 
     Args:
         directory: Directory to walk.
@@ -563,13 +619,20 @@ def iter_inventory(
         policy=policy,
         on_event=report,
     ):
-        entry = _classify(path, registry=active_registry, fast=fast, report=report)
-        if entry is None:
+        if claims is not None and claims.already_claimed(path):
+            continue
+        classified = _classify(
+            path,
+            registry=active_registry,
+            fast=fast,
+            report=report,
+        )
+        if classified is None:
             continue
         if claims is None:
-            yield entry
+            yield classified.entry
         else:
-            yield from claims.offer(entry)
+            yield from claims.offer(classified)
     if claims is not None:
         yield from claims.unclaimed()
 
@@ -788,22 +851,20 @@ def _regular_stat(path: Path) -> os.stat_result:
     return status
 
 
-def _same_file(status: os.stat_result, snapshot: FileSnapshot) -> bool:
+def _same_file(path: Path, status: os.stat_result, snapshot: FileSnapshot) -> bool:
     """Report whether a ``stat`` and a snapshot describe the same file state.
 
     Args:
+        path: The path both describe.
         status: A pathname ``stat``.
         snapshot: The opened file's snapshot.
 
     Returns:
-        ``True`` when device, inode, size and modification time agree.
+        ``True`` when no field of
+        :data:`~winnow.models.evidence.FRESHNESS_FIELDS` differs: path, size,
+        modification time, inode change time, device and inode.
     """
-    return (
-        status.st_dev == snapshot.device
-        and status.st_ino == snapshot.inode
-        and status.st_size == snapshot.size
-        and status.st_mtime_ns == snapshot.mtime_ns
-    )
+    return not FileSnapshot.from_stat(path, status).differences(snapshot)
 
 
 def _inspect_by_name(path: Path, registry: FormatRegistry) -> FileInfo:
@@ -867,7 +928,7 @@ def _inspect_once(
             operation="inspect_file",
             file_path=path,
         )
-    if not _same_file(before, snapshot):
+    if not _same_file(path, before, snapshot):
         return None
     media_type = detection.media_type
     metadata = (
@@ -877,7 +938,7 @@ def _inspect_once(
         after = path.stat()
     except OSError:
         return None
-    if not _same_file(after, snapshot):
+    if not _same_file(path, after, snapshot):
         return None
     return FileInfo(
         path=path,

@@ -80,7 +80,7 @@ def _extension_check_text(file_info: FileInfo) -> str:
             f"mismatch: content says {content}, extension says {named}"
         ),
         ExtensionCheck.EXTENSION_UNTYPED: "extension gives no type",
-        ExtensionCheck.NAME_ONLY: f"content not recognised; type is {FROM_NAME}",
+        ExtensionCheck.NAME_ONLY: f"type is {FROM_NAME}, not the content",
         ExtensionCheck.CONTENT_UNKNOWN: unknown_content,
     }
     return texts[extension_check(detection)]
