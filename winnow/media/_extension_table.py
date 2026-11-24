@@ -110,6 +110,8 @@ HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
         # MPEG audio (RFC 3003); content rule: consecutive MPEG audio frames.
         "mpga": _AUDIO,
         # Ogg audio (RFC 5334: .ogg and .oga); content rule: Ogg streams.
+        # Kept although legacy Origin graphs also used .ogg: in practice the
+        # name means Ogg audio, and unknown by name would surprise users.
         "ogg": _AUDIO,
         "oga": _AUDIO,
         # Scream Tracker 3 and FastTracker 2 modules; content rules:
@@ -120,12 +122,10 @@ HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
         "wma": _AUDIO,
         # --- Rule 2: image --------------------------------------------------
         # DjVu (IANA image/vnd.djvu); content rule: _header_checks.djvu.
+        # .djvu kept although STOP/Djvu ransomware appends it to encrypted
+        # files: in practice the name means a DjVu document.
         "djv": _IMAGE,
         "djvu": _IMAGE,
-        # Enhanced and Windows metafiles (RFC 7903); content rules:
-        # _format_checks.emf and wmf.
-        "emf": _IMAGE,
-        "wmf": _IMAGE,
         # HEIF and HEIC image sequences (ISO/IEC 23008-12); content rule:
         # ISO-BMFF image-sequence brands.
         "heics": _IMAGE,
@@ -140,14 +140,11 @@ HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
         "qtif": _IMAGE,
         # SGI image; content rule: _header_checks.sgi.
         "sgi": _IMAGE,
-        # JPEG XR / HD Photo (IANA image/jxr); content rule: the JPEG XR
-        # signature.
-        "wdp": _IMAGE,
         # WebP (RFC 9649); content rule: RIFF form type WEBP.
         "webp": _IMAGE,
         # --- Rule 2: video --------------------------------------------------
-        # ASF and Windows Media Video; content rule: ASF stream declarations.
-        "asf": _VIDEO,
+        # Windows Media Video; content rule: ASF stream declarations.
+        # (.asf is left out, see EXCLUDED_EXTENSIONS.)
         "wmv": _VIDEO,
         # Raw DV (IEC 61834-2); content rule: _header_checks.dv.
         "dv": _VIDEO,
@@ -162,13 +159,13 @@ HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
         # MPEG-2 video elementary stream; content rule:
         # _header_checks.mpeg_video.
         "m2v": _VIDEO,
-        # MPEG-4 video; content rule: ISO-BMFF.
+        # MPEG-4 video; content rule: ISO-BMFF. Kept although FFmpeg also
+        # writes a raw MPEG-4 Visual stream under this name, which no content
+        # rule recognises: that stream is video too, so the name is right.
         "m4v": _VIDEO,
         # Matroska video and 3D video (RFC 9559); content rule: _matroska.
         "mkv": _VIDEO,
         "mk3d": _VIDEO,
-        # MNG, typed video as its content rule types it (_format_checks.mng).
-        "mng": _VIDEO,
         # Ogg video (RFC 5334); content rule: Ogg streams.
         "ogv": _VIDEO,
     },
@@ -177,9 +174,11 @@ HOST_DEPENDENT_ADDITIONS: Final[Mapping[str, MediaType]] = MappingProxyType(
 
 EXCLUDED_EXTENSIONS: Final[Mapping[str, str]] = MappingProxyType(
     {
+        "asf": "ASF media or an Acclaim Skeleton File (motion capture text)",
         "caf": "Core Audio Format or a Cal3D animation",
         "dif": "raw DV video, a text diff or a spreadsheet DIF file",
         "dts": "DTS audio or Devicetree source",
+        "emf": "Enhanced Metafile, a MicroEmacs macro or an Emfatic model",
         "fits": "FITS also holds tables and other non-image data",
         "g3": "G3 fax, for which winnow has no content rule",
         "jpm": "JPEG 2000 compound image in some tables, video/jpm in others",
@@ -189,6 +188,7 @@ EXCLUDED_EXTENSIONS: Final[Mapping[str, str]] = MappingProxyType(
         "mid": "Standard MIDI File or MapInfo Interchange attribute data",
         "mj2": "Motion JPEG 2000, which the content rule types as an image",
         "mjp2": "Motion JPEG 2000, which the content rule types as an image",
+        "mng": "MNG animation or Yamaha PSR disk-manager data",
         "mts": "AVCHD transport stream or a TypeScript module",
         "qti": "QuickTime image or a QtiPlot document",
         "sid": "Commodore 64 SID audio or a MrSID image",
@@ -197,6 +197,8 @@ EXCLUDED_EXTENSIONS: Final[Mapping[str, str]] = MappingProxyType(
         "tfx": "TIFF-FX fax or a Pro Tools plug-in preset",
         "ts": "MPEG transport stream or TypeScript source",
         "vob": "DVD video object, a Vue object or a Live for Speed asset",
+        "wdp": "HD Photo image, an AutoCAD Electrical or a WinDev project",
+        "wmf": "Windows Metafile or a Widelands map (a ZIP archive)",
     },
 )
 """Host- or version-dependent media names rule 2 leaves out, and why.

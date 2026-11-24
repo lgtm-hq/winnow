@@ -98,8 +98,6 @@ RULE_2_ADDITIONS: dict[str, MediaType] = {
     "wma": AUDIO,
     "djv": IMAGE,
     "djvu": IMAGE,
-    "emf": IMAGE,
-    "wmf": IMAGE,
     "heics": IMAGE,
     "heifs": IMAGE,
     "jp2": IMAGE,
@@ -107,9 +105,7 @@ RULE_2_ADDITIONS: dict[str, MediaType] = {
     "psd": IMAGE,
     "qtif": IMAGE,
     "sgi": IMAGE,
-    "wdp": IMAGE,
     "webp": IMAGE,
-    "asf": VIDEO,
     "wmv": VIDEO,
     "dv": VIDEO,
     "flv": VIDEO,
@@ -120,7 +116,6 @@ RULE_2_ADDITIONS: dict[str, MediaType] = {
     "m4v": VIDEO,
     "mkv": VIDEO,
     "mk3d": VIDEO,
-    "mng": VIDEO,
     "ogv": VIDEO,
 }
 """The deliberate rule 2 entries, written out independently of the table."""
@@ -149,6 +144,14 @@ REPRESENTATIVE_ANSWERS: dict[str, MediaType | None] = {
     "caf": None,
     "mts": None,
     "dds": None,
+    "emf": None,
+    "wmf": None,
+    "wdp": None,
+    "asf": None,
+    "mng": None,
+    "ogg": AUDIO,
+    "djvu": IMAGE,
+    "m4v": VIDEO,
 }
 """Expected default answers, written out independently of the table."""
 
@@ -468,11 +471,46 @@ def _ooxml_document() -> bytes:
     return buffer.getvalue()
 
 
+def _zip_archive() -> bytes:
+    """Build a ZIP archive as a Widelands map is distributed.
+
+    Returns:
+        The archive.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("map/elemental", "[global]\npacket_version=1\n")
+    return buffer.getvalue()
+
+
+MICROEMACS_MACRO = b"""; MicroEmacs macro file
+define-macro hello-world
+    ml-write "Hello, world"
+!emacro
+"""
+"""A MicroEmacs macro, which uses the Enhanced Metafile's ``.emf``."""
+
+ACCLAIM_SKELETON = b"""# AST/ASF file generated using VICON BodyLanguage
+:version 1.10
+:name VICON
+:units
+  mass 1.0
+  length 0.45
+  angle deg
+:root
+   order TX TY TZ RX RY RZ
+   axis XYZ
+"""
+"""An Acclaim Skeleton File, the motion-capture text format named ``.asf``."""
+
 NON_MEDIA_SAMPLES: dict[str, bytes] = {
     "activity.fit": _fit_activity(),
     "signal.bw": _bigwig(),
     "legacy-word.dds": _ole_word_document(),
     "ooxml-word.dds": _ooxml_document(),
+    "hello.emf": MICROEMACS_MACRO,
+    "snail.wmf": _zip_archive(),
+    "skeleton.asf": ACCLAIM_SKELETON,
 }
 """Non-media files named with extensions a media format also uses."""
 
