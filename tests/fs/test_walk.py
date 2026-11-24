@@ -11,6 +11,7 @@ import pytest
 from assertpy import assert_that
 
 from winnow.fs.walk import (
+    SYMLINK_LOOP,
     WalkEvent,
     WalkEventKind,
     WalkPolicy,
@@ -282,3 +283,122 @@ def test_walk_files_reports_entries_that_cannot_be_inspected(
     assert_that({event.message for event in events}).is_equal_to(
         {"Input/output error"},
     )
+
+
+def _loop_on(monkeypatch: pytest.MonkeyPatch, looping: Path) -> None:
+    """Make ``Path.resolve`` raise as Python 3.11 and 3.12 do on a loop.
+
+    Those versions raise ``RuntimeError("Symlink loop from ...")`` from
+    ``Path.resolve`` for a symlink cycle; later versions return a path. The
+    patch reproduces the older behaviour on every interpreter.
+
+    Args:
+        monkeypatch: Fixture used to replace ``Path.resolve``.
+        looping: The path whose resolution loops.
+    """
+    real_resolve = Path.resolve
+
+    def resolve(self: Path, *, strict: bool = False) -> Path:
+        if self == looping:
+            raise RuntimeError(f"Symlink loop from {str(self)!r}")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+
+@pytest.mark.parametrize(
+    ("policy", "kind", "is_issue"),
+    [
+        (SymlinkPolicy.SKIP, WalkEventKind.SYMLINK, False),
+        (SymlinkPolicy.ERROR, WalkEventKind.SYMLINK, True),
+        (SymlinkPolicy.FOLLOW, WalkEventKind.UNREADABLE_ENTRY, True),
+    ],
+)
+def test_walk_files_reports_a_symlink_whose_resolution_loops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    policy: SymlinkPolicy,
+    kind: WalkEventKind,
+    is_issue: bool,
+) -> None:
+    """A ``RuntimeError`` from resolving a link is one event, not a crash."""
+    _touch(tmp_path / "a.txt")
+    link = tmp_path / "self_link"
+    link.symlink_to(link)
+    _touch(tmp_path / "z.txt")
+    _loop_on(monkeypatch, link)
+
+    yielded, events = _walk(tmp_path, WalkPolicy(symlink_policy=policy))
+
+    assert_that(yielded).is_equal_to(["a.txt", "z.txt"])
+    assert_that(events).is_length(1)
+    assert_that(events[0].kind).is_equal_to(kind)
+    assert_that(events[0].path).is_equal_to(link)
+    assert_that(events[0].message).is_equal_to(SYMLINK_LOOP)
+    assert_that(events[0].is_issue).is_equal_to(is_issue)
+
+
+@pytest.mark.parametrize("policy", list(SymlinkPolicy))
+def test_walk_files_survives_a_real_self_link(
+    tmp_path: Path,
+    *,
+    policy: SymlinkPolicy,
+) -> None:
+    """A link to itself is one event under every policy and Python version."""
+    _touch(tmp_path / "a.txt")
+    (tmp_path / "self_link").symlink_to(tmp_path / "self_link")
+
+    yielded, events = _walk(tmp_path, WalkPolicy(symlink_policy=policy))
+
+    assert_that(yielded).is_equal_to(["a.txt"])
+    assert_that(events).is_length(1)
+    assert_that(events[0].path.name).is_equal_to("self_link")
+    expected = (
+        WalkEventKind.UNREADABLE_ENTRY
+        if policy is SymlinkPolicy.FOLLOW
+        else WalkEventKind.SYMLINK
+    )
+    assert_that(events[0].kind).is_equal_to(expected)
+
+
+@pytest.mark.parametrize("policy", list(SymlinkPolicy))
+def test_walk_files_survives_a_link_to_an_ancestor(
+    tmp_path: Path,
+    *,
+    policy: SymlinkPolicy,
+) -> None:
+    """A link back to an ancestor never walks a directory twice."""
+    _touch(tmp_path / "a.txt")
+    _touch(tmp_path / "sub" / "b.txt")
+    (tmp_path / "sub" / "up").symlink_to(tmp_path)
+
+    yielded, events = _walk(tmp_path, WalkPolicy(symlink_policy=policy))
+
+    assert_that(yielded).is_equal_to(["a.txt", "sub/b.txt"])
+    if policy is SymlinkPolicy.FOLLOW:
+        assert_that(events).is_empty()
+    else:
+        assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
+            [(WalkEventKind.SYMLINK, "up")],
+        )
+
+
+def test_walk_files_reports_a_queued_directory_that_stops_resolving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A directory that loops after it was listed is unreadable; the walk goes on."""
+    _touch(tmp_path / "a.txt")
+    broken = tmp_path / "m"
+    _touch(broken / "inside.txt")
+    _touch(tmp_path / "z" / "after.txt")
+    _loop_on(monkeypatch, broken)
+
+    yielded, events = _walk(tmp_path)
+
+    assert_that(yielded).is_equal_to(["a.txt", "z/after.txt"])
+    assert_that(events).is_length(1)
+    assert_that(events[0].kind).is_equal_to(WalkEventKind.UNREADABLE_DIRECTORY)
+    assert_that(events[0].path).is_equal_to(broken)
+    assert_that(events[0].message).is_equal_to(SYMLINK_LOOP)

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ALWAYS_SKIPPED",
     "SKIP_KINDS",
+    "SYMLINK_LOOP",
     "WalkEvent",
     "WalkEventKind",
     "WalkPolicy",
@@ -40,6 +41,9 @@ __all__ = [
     "is_excluded",
     "walk_files",
 ]
+
+SYMLINK_LOOP: Final[str] = "symlink loop"
+"""Event message for a symlink whose resolution loops."""
 
 ALWAYS_SKIPPED: Final[frozenset[str]] = frozenset(
     {".winnow-backups", ".winnow-staging"},
@@ -237,7 +241,14 @@ class _Walker:
         stack: list[tuple[Path, int]] = [(self._root, 0)]
         while stack:
             directory, depth = stack.pop()
-            resolved = directory.resolve()
+            try:
+                resolved = directory.resolve()
+            except (OSError, RuntimeError) as exc:
+                # The directory became unresolvable after it was listed, for
+                # example replaced by a symlink loop (RuntimeError on Python
+                # 3.11 and 3.12, OSError later).
+                self._report(WalkEventKind.UNREADABLE_DIRECTORY, directory, exc)
+                continue
             if resolved in self._visited:
                 continue
             self._visited.add(resolved)
@@ -310,6 +321,12 @@ class _Walker:
         :class:`PathValidator`; a refusal is a silent skip under ``SKIP`` and
         an issue under ``FOLLOW`` (escaping target) or ``ERROR``.
 
+        A symlink loop makes ``Path.resolve`` raise ``RuntimeError`` on
+        Python 3.11 and 3.12, where later versions resolve without raising.
+        Under ``SKIP`` and ``ERROR`` the link is refused as any symlink is;
+        under ``FOLLOW`` it is unreadable, as it is on later versions once its
+        target is inspected. Either way the walk continues.
+
         Args:
             entry: Directory entry under consideration.
 
@@ -334,7 +351,29 @@ class _Walker:
         except OSError as exc:
             self._report(WalkEventKind.UNREADABLE_ENTRY, path, exc)
             return False
+        except RuntimeError:
+            self._symlink_loop(path)
+            return False
         return True
+
+    def _symlink_loop(self, path: Path) -> None:
+        """Report a symlink whose resolution loops.
+
+        Args:
+            path: The symlink.
+        """
+        policy = self._policy.symlink_policy
+        follow = policy is SymlinkPolicy.FOLLOW
+        self._on_event(
+            WalkEvent(
+                kind=(
+                    WalkEventKind.UNREADABLE_ENTRY if follow else WalkEventKind.SYMLINK
+                ),
+                path=path,
+                message=SYMLINK_LOOP,
+                is_issue=policy is not SymlinkPolicy.SKIP,
+            ),
+        )
 
     def _is_dir(self, entry: os.DirEntry[str]) -> bool | None:
         """Report whether an admitted entry is a directory.
@@ -371,19 +410,22 @@ class _Walker:
             ),
         )
 
-    def _report(self, kind: WalkEventKind, path: Path, exc: OSError) -> None:
+    def _report(
+        self,
+        kind: WalkEventKind,
+        path: Path,
+        exc: OSError | RuntimeError,
+    ) -> None:
         """Report a read error as an issue.
 
         Args:
             kind: Whether a directory or an entry failed.
             path: The path that failed.
-            exc: The error.
+            exc: The error; a ``RuntimeError`` is a symlink loop.
         """
+        message = (
+            (exc.strerror or str(exc)) if isinstance(exc, OSError) else SYMLINK_LOOP
+        )
         self._on_event(
-            WalkEvent(
-                kind=kind,
-                path=path,
-                message=exc.strerror or str(exc),
-                is_issue=True,
-            ),
+            WalkEvent(kind=kind, path=path, message=message, is_issue=True),
         )
