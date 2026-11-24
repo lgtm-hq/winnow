@@ -1,11 +1,17 @@
 """``winnow info`` command for inspecting a single media file.
 
 Metadata is gathered by :func:`winnow.media.inspect_file`; this module only
-parses the argument and renders the result. The media type comes from the
-file's content, the way Discovery decides it, and an "Extension check" row
-says whether the name agrees. Image, video and audio rows are shown only when
-the file's metadata could be read, so the command degrades gracefully
-otherwise. ``--fast`` classifies by extension only and says so.
+parses the argument and renders the result. The media type comes from
+:func:`winnow.media.detect`, the way Discovery decides it: from the content,
+or from the extension when no content rule recognises the file, which the
+output says. An "Extension check" row says whether the name agrees. Image,
+video and audio rows are shown only when the file's metadata could be read,
+so the command degrades gracefully otherwise. ``--fast`` classifies by
+extension only, reads no content and no metadata, and says so.
+
+The argument is checked for existence and kind only; readability is left to
+the command, so an unreadable file exits 1 with a ``MediaError`` rather than
+a usage error.
 """
 
 from __future__ import annotations
@@ -34,6 +40,9 @@ __all__ = ["build_info_table", "info"]
 EXTENSION_ONLY: Final[str] = "extension only"
 """Label for results classified by file name extension alone."""
 
+FROM_NAME: Final[str] = "from the file name"
+"""Label for a type detection took from the name, no content rule matching."""
+
 
 def _type_name(media_type: MediaType | None) -> str:
     """Name a media type for display.
@@ -59,18 +68,22 @@ def _extension_check_text(file_info: FileInfo) -> str:
     detection = file_info.detection
     if detection is None:
         return f"not checked ({EXTENSION_ONLY})"
-    check = extension_check(detection)
     content = _type_name(detection.media_type)
     named = _type_name(detection.extension_media_type)
-    if check is ExtensionCheck.MATCH:
-        return "matches content"
-    if check is ExtensionCheck.MISMATCH:
-        return f"mismatch: content says {content}, extension says {named}"
-    if check is ExtensionCheck.EXTENSION_UNTYPED:
-        return "extension gives no type"
-    if detection.extension_media_type is None:
-        return "content gives no type; extension gives no type"
-    return f"content gives no type; extension says {named}"
+    if detection.extension_media_type is not None:
+        unknown_content = f"content gives no type; extension says {named}"
+    else:
+        unknown_content = "content gives no type; extension gives no type"
+    texts = {
+        ExtensionCheck.MATCH: "matches content",
+        ExtensionCheck.MISMATCH: (
+            f"mismatch: content says {content}, extension says {named}"
+        ),
+        ExtensionCheck.EXTENSION_UNTYPED: "extension gives no type",
+        ExtensionCheck.NAME_ONLY: f"content not recognised; type is {FROM_NAME}",
+        ExtensionCheck.CONTENT_UNKNOWN: unknown_content,
+    }
+    return texts[extension_check(detection)]
 
 
 def _add_image_rows(table: Table, metadata: MediaMetadata) -> None:
@@ -113,8 +126,11 @@ def build_info_table(file_info: FileInfo) -> Table:
     table.add_column("Value", overflow="fold")
 
     media_type = _type_name(file_info.media_type)
-    if file_info.detection is None:
+    detection = file_info.detection
+    if detection is None:
         media_type = f"{media_type} ({EXTENSION_ONLY})"
+    elif extension_check(detection) is ExtensionCheck.NAME_ONLY:
+        media_type = f"{media_type} ({FROM_NAME})"
     table.add_row("Path", str(file_info.path))
     table.add_row("Name", file_info.path.name)
     table.add_row("Media type", media_type)
@@ -129,7 +145,9 @@ def build_info_table(file_info: FileInfo) -> Table:
     table.add_row("Changed (UTC)", format_timestamp(file_info.changed))
 
     metadata = file_info.metadata
-    if metadata is not None:
+    if metadata is None and detection is None:
+        table.add_row("Metadata", f"not read ({EXTENSION_ONLY})")
+    elif metadata is not None:
         if file_info.media_type is MediaType.IMAGE:
             _add_image_rows(table, metadata)
         else:
@@ -141,13 +159,13 @@ def build_info_table(file_info: FileInfo) -> Table:
 @click.command()
 @click.argument(
     "file",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(exists=True, dir_okay=False, readable=False, path_type=Path),
 )
 @click.option(
     "--fast",
     is_flag=True,
     default=False,
-    help="Classify by file name extension only, without reading content.",
+    help="Type by file name extension only; read no content and no metadata.",
 )
 @click.pass_context
 def info(ctx: click.Context, *, file: Path, fast: bool) -> None:

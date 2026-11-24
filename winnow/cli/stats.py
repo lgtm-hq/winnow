@@ -2,10 +2,15 @@
 
 Files are enumerated with Discovery's walk (hidden entries and winnow's
 working folders skipped, the configured exclude patterns and symlink policy
-applied), identified by content the way Discovery identifies them, and
-aggregated into counts per media type, a total size, the span of file
-modification times, extension checks, skips and read errors. ``--fast``
-classifies by extension only and says so.
+applied), identified with :func:`winnow.media.detect` the way Discovery
+identifies them, and aggregated into counts per media type, a total size, the
+span of file modification times, extension checks, skips and read errors.
+Files no content rule recognises, which ``detect`` types by their extension,
+are counted in their own row. ``--fast`` classifies by extension only and
+says so.
+
+The argument is checked for existence and kind only; an unreadable directory
+is reported by the command rather than rejected as a usage error.
 
 ``--recursive/--no-recursive`` and ``--fast`` are purpose-specific to this
 command and intentionally not part of ``winnow.cli.standards``.
@@ -59,6 +64,30 @@ def _extension_count(count: int | None) -> str:
         The count, or a note that it was not computed.
     """
     return str(count) if count is not None else f"n/a ({EXTENSION_ONLY})"
+
+
+def _typed_by_name(directory_stats: DirectoryStats) -> str:
+    """Render the files whose type came from the name, per type.
+
+    Args:
+        directory_stats: Aggregated statistics.
+
+    Returns:
+        ``"0"``, the total with a per-type breakdown, or a note that it was
+        not computed.
+    """
+    by_type = directory_stats.typed_by_name
+    if by_type is None:
+        return f"n/a ({EXTENSION_ONLY})"
+    total = sum(by_type.values())
+    if total == 0:
+        return "0"
+    parts = [
+        f"{by_type[media_type]} {media_type.value}"
+        for media_type in MediaType
+        if by_type.get(media_type)
+    ]
+    return f"{total} ({', '.join(parts)})"
 
 
 def _skipped(directory_stats: DirectoryStats) -> str:
@@ -120,6 +149,7 @@ def build_stats_table(directory: Path, directory_stats: DirectoryStats) -> Table
         count = directory_stats.counts_by_type.get(media_type, 0)
         table.add_row(f"{media_type.value.capitalize()} files", str(count))
     table.add_row("Unknown files", str(directory_stats.unknown_count))
+    table.add_row("Typed by extension only", _typed_by_name(directory_stats))
     table.add_row(
         "Extension does not match content",
         _extension_count(directory_stats.extension_mismatch_count),
@@ -170,7 +200,7 @@ def build_stats_table(directory: Path, directory_stats: DirectoryStats) -> Table
 @click.command()
 @click.argument(
     "directory",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    type=click.Path(exists=True, file_okay=False, readable=False, path_type=Path),
 )
 @click.option(
     "--recursive/--no-recursive",
@@ -182,7 +212,7 @@ def build_stats_table(directory: Path, directory_stats: DirectoryStats) -> Table
     "--fast",
     is_flag=True,
     default=False,
-    help="Classify by file name extension only, without reading content.",
+    help="Type by file name extension only; files are opened, not read.",
 )
 @config_path_option()
 @click.pass_context

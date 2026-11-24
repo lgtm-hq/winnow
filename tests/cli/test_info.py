@@ -16,6 +16,8 @@ from PIL import Image
 from winnow.cli import main
 from winnow.cli.errors import ExitCode
 from winnow.cli.info import build_info_table
+from winnow.media import detect
+from winnow.media import inventory as inventory_module
 from winnow.media.inventory import FileInfo, inspect_file
 from winnow.models.media import MediaMetadata, MediaType
 
@@ -292,3 +294,73 @@ def test_info_reports_unknown_content_and_extension(tmp_path: Path) -> None:
     assert_that(_row(result.output, "Extension check")).is_equal_to(
         "content gives no type; extension gives no type",
     )
+
+
+def _deny_access(monkeypatch: pytest.MonkeyPatch, denied: Path) -> None:
+    """Make ``os.access`` report ``denied`` unreadable, as for a mode-000 file.
+
+    Click's ``readable=True`` path check calls ``os.access``; the patch
+    reproduces a denied file for every user, root included.
+
+    Args:
+        monkeypatch: Fixture used to replace ``os.access``.
+        denied: Path reported unreadable.
+    """
+    real_access = os.access
+
+    def fake_access(path: Any, mode: int, *args: Any, **kwargs: Any) -> bool:
+        if Path(path) == denied:
+            return False
+        return real_access(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "access", fake_access)
+
+
+def test_info_reports_an_unreadable_file_as_a_media_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable file exits 1 with the command's message, not a usage error."""
+    denied = _write_jpeg(tmp_path / "denied.jpg")
+    _deny_access(monkeypatch, denied)
+    monkeypatch.setattr(
+        inventory_module,
+        "detect",
+        lambda path, **kwargs: detect(tmp_path / "missing.jpg", **kwargs),
+    )
+
+    result = CliRunner().invoke(main, ["info", str(denied)])
+
+    assert_that(result.exit_code).is_equal_to(ExitCode.FAILURE)
+    assert_that(result.stderr).contains("cannot read file content")
+    assert_that(result.stderr).contains("denied.jpg")
+
+
+def test_info_says_when_the_type_comes_from_the_name(tmp_path: Path) -> None:
+    """An empty ``zero.jpg`` is an image by name, never a content match."""
+    target = tmp_path / "zero.jpg"
+    target.write_bytes(b"")
+
+    result = _invoke_info(str(target))
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(_row(result.output, "Media type")).is_equal_to(
+        "image (from the file name)",
+    )
+    assert_that(_row(result.output, "Extension check")).is_equal_to(
+        "content not recognised; type is from the file name",
+    )
+    assert_that(result.output).does_not_contain("matches content")
+
+
+def test_info_fast_reads_no_metadata(tmp_path: Path) -> None:
+    """``--fast`` shows no metadata rows and says it read none."""
+    target = _write_jpeg(tmp_path / "pic.jpg")
+
+    result = _invoke_info(str(target), "--fast")
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(_row(result.output, "Metadata")).is_equal_to(
+        "not read (extension only)",
+    )
+    assert_that(result.output).does_not_contain("Dimensions")

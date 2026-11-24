@@ -1,10 +1,17 @@
 """Directory inventory and per-file inspection.
 
-Files are identified by their content with :func:`winnow.media.detect`, the
-rule Discovery uses, and enumerated with :func:`winnow.fs.walk.walk_files`,
-the walk Discovery uses, so ``winnow stats`` counts the files Discovery
-collects (#366). An extension-only mode (``fast=True``) classifies by name
-without reading content; results say when it was used.
+Files are identified with :func:`winnow.media.detect`, the rule Discovery
+uses, and enumerated with :func:`winnow.fs.walk.walk_files`, the walk
+Discovery uses, so ``winnow stats`` counts the files Discovery collects
+(#366). ``detect`` decides from the content and, only when no content rule
+recognises a file, from its extension; results say which. An extension-only
+mode (``fast=True``) classifies every file by name without reading content;
+results say when it was used.
+
+Sizes and times come from the file that was actually opened (the detection
+result's snapshot, or an ``fstat`` of the opened file in extension-only
+mode), so one result never mixes two files when a path is replaced during a
+scan.
 
 Directory inventories aggregate counts per media type, a total size, the span
 of file modification times, how often a file's extension disagrees with its
@@ -14,10 +21,12 @@ inspection adds best-effort technical metadata for the detected media type.
 
 from __future__ import annotations
 
+import os
 import stat
+from bisect import insort
 from collections import defaultdict
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -25,6 +34,7 @@ from typing import TYPE_CHECKING, Final
 from winnow.exceptions import MediaError
 from winnow.fs.walk import SKIP_KINDS, WalkEvent, WalkEventKind, WalkPolicy, walk_files
 from winnow.media._detect import detect
+from winnow.media._detect_base import DECISION_PREFIX
 from winnow.media.registry import (
     DEFAULT_FORMAT_REGISTRY,
     FormatRegistry,
@@ -38,6 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
     from winnow.media._detect_base import DetectionResult
+    from winnow.models.evidence import FileSnapshot
 
 __all__ = [
     "MAX_UNREADABLE_EXAMPLES",
@@ -47,6 +58,7 @@ __all__ = [
     "FileInfo",
     "InventoryEntry",
     "collect_directory_stats",
+    "decided_by_name",
     "extension_check",
     "inspect_file",
     "iter_inventory",
@@ -56,12 +68,20 @@ __all__ = [
 MAX_UNREADABLE_EXAMPLES: Final[int] = 10
 """Most example paths kept for each kind of read error."""
 
+_NAME_SOURCES: Final[frozenset[str]] = frozenset({"extension", "override"})
+"""Signal sources whose decision comes from the file name, not the content."""
+
+_INSPECT_ATTEMPTS: Final[int] = 2
+"""How often :func:`inspect_file` reads a file that changes while it is read."""
+
+_EPOCH: Final[datetime] = datetime(1970, 1, 1, tzinfo=UTC)
+
 
 class Classification(StrEnum):
     """How an inventory decided each file's media type."""
 
     CONTENT = auto()
-    """By content detection, the rule Discovery uses."""
+    """By :func:`winnow.media.detect`, the rule Discovery uses."""
 
     EXTENSION = auto()
     """By the file name's extension only (``fast`` mode)."""
@@ -82,13 +102,37 @@ class ExtensionCheck(StrEnum):
     CONTENT_UNKNOWN = auto()
     """The content gives no media type, whatever the extension says."""
 
+    NAME_ONLY = auto()
+    """No content rule recognised the file; its type comes from its name.
+
+    ``detect`` answered from the extension (its fallback rule) or from a
+    user-registered extension override, so nothing confirms the type.
+    """
+
+
+def decided_by_name(detection: DetectionResult) -> bool:
+    """Report whether a detection's type was decided by the file name.
+
+    Args:
+        detection: Result of :func:`winnow.media.detect`.
+
+    Returns:
+        ``True`` when the deciding signal is the extension fallback or a
+        registered extension override.
+    """
+    for signal in detection.signals:
+        if signal.detail.startswith(DECISION_PREFIX):
+            return signal.source in _NAME_SOURCES
+    return False
+
 
 def extension_check(detection: DetectionResult) -> ExtensionCheck:
     """Compare a detection's content answer with its extension answer.
 
     ``DetectionResult.agrees_with_extension`` is ``None`` both when the
     content is unknown and when only the extension is, so the two are told
-    apart here from the underlying fields.
+    apart here from the underlying fields. A type decided by the name is
+    never reported as a match.
 
     Args:
         detection: Result of :func:`winnow.media.detect`.
@@ -100,6 +144,8 @@ def extension_check(detection: DetectionResult) -> ExtensionCheck:
     named = detection.extension_media_type
     if content is None:
         return ExtensionCheck.CONTENT_UNKNOWN
+    if decided_by_name(detection):
+        return ExtensionCheck.NAME_ONLY
     if named is None:
         return ExtensionCheck.EXTENSION_UNTYPED
     return ExtensionCheck.MATCH if content == named else ExtensionCheck.MISMATCH
@@ -114,10 +160,16 @@ class DirectoryStats:
     the contents of a directory that could not be listed are not counted or
     estimated.
 
+    The fields after the first six have defaults that describe an
+    extension-only result with no skips or read errors, so the original
+    six-argument constructor keeps working.
+
     Args:
         total_files: Files read and classified.
         total_bytes: Their combined size.
-        counts_by_type: Files per detected media type.
+        counts_by_type: Files per media type. With content classification,
+            only types a content rule decided; types decided by the file
+            name are in ``typed_by_name``.
         unknown_count: Files with no media type.
         earliest_modified: Earliest modification time (UTC), if any file.
         latest_modified: Latest modification time (UTC), if any file.
@@ -126,13 +178,16 @@ class DirectoryStats:
             different media types; ``None`` when classified by extension.
         extension_untyped_count: Files typed by content whose extension gives
             no type; ``None`` when classified by extension.
+        typed_by_name: Files no content rule recognised, per the type their
+            name gave; ``None`` when classified by extension.
         unreadable_count: Entries that could not be inspected or read,
             including files that vanished during the walk.
         unreadable_examples: Up to :data:`MAX_UNREADABLE_EXAMPLES` of those
-            paths, sorted.
+            paths, the first in sorted order.
         unreadable_directory_count: Directories that could not be listed.
         unreadable_directory_examples: Up to
-            :data:`MAX_UNREADABLE_EXAMPLES` of those paths, sorted.
+            :data:`MAX_UNREADABLE_EXAMPLES` of those paths, the first in
+            sorted order.
         skipped_by_reason: Entries the walk policy skipped, per reason.
     """
 
@@ -142,14 +197,15 @@ class DirectoryStats:
     unknown_count: int
     earliest_modified: datetime | None
     latest_modified: datetime | None
-    classified_by: Classification
-    extension_mismatch_count: int | None
-    extension_untyped_count: int | None
-    unreadable_count: int
-    unreadable_examples: tuple[Path, ...]
-    unreadable_directory_count: int
-    unreadable_directory_examples: tuple[Path, ...]
-    skipped_by_reason: Mapping[WalkEventKind, int]
+    classified_by: Classification = Classification.EXTENSION
+    extension_mismatch_count: int | None = None
+    extension_untyped_count: int | None = None
+    typed_by_name: Mapping[MediaType, int] | None = None
+    unreadable_count: int = 0
+    unreadable_examples: tuple[Path, ...] = ()
+    unreadable_directory_count: int = 0
+    unreadable_directory_examples: tuple[Path, ...] = ()
+    skipped_by_reason: Mapping[WalkEventKind, int] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -195,8 +251,8 @@ class InventoryEntry:
 
     Args:
         path: The file, as reached by the walk.
-        size_bytes: Size in bytes.
-        modified: Modification time (UTC).
+        size_bytes: Size in bytes of the file that was opened.
+        modified: Its modification time (UTC).
         media_type: Media type, or ``None`` when unknown.
         detection: The content detection result; ``None`` when classified by
             extension only.
@@ -207,6 +263,18 @@ class InventoryEntry:
     modified: datetime
     media_type: MediaType | None
     detection: DetectionResult | None
+
+
+def _utc_from_ns(nanoseconds: int) -> datetime:
+    """Convert nanoseconds since the epoch to a UTC datetime, exactly.
+
+    Args:
+        nanoseconds: Time in nanoseconds since the epoch.
+
+    Returns:
+        The time, truncated to microseconds.
+    """
+    return _EPOCH + timedelta(microseconds=nanoseconds // 1000)
 
 
 def _ignore(event: WalkEvent) -> None:
@@ -232,10 +300,11 @@ def _effective_policy(policy: WalkPolicy | None, *, recursive: bool) -> WalkPoli
     return active if recursive else replace(active, max_depth=0)
 
 
-def _unreadable(path: Path, message: str) -> WalkEvent:
-    """Build the event for an entry that could not be read.
+def _event(kind: WalkEventKind, path: Path, message: str) -> WalkEvent:
+    """Build an inventory event; read errors are issues, skips are not.
 
     Args:
+        kind: The reason.
         path: The entry.
         message: Why.
 
@@ -243,11 +312,48 @@ def _unreadable(path: Path, message: str) -> WalkEvent:
         The event.
     """
     return WalkEvent(
-        kind=WalkEventKind.UNREADABLE_ENTRY,
+        kind=kind,
         path=path,
         message=message,
-        is_issue=True,
+        is_issue=kind not in SKIP_KINDS,
     )
+
+
+def _error_text(exc: OSError | RuntimeError) -> str:
+    """Describe an error for an event message.
+
+    Args:
+        exc: The error; a ``RuntimeError`` is a symlink loop.
+
+    Returns:
+        The message.
+    """
+    if isinstance(exc, OSError):
+        return exc.strerror or str(exc)
+    return "symlink loop"
+
+
+def _open_stat(path: Path) -> os.stat_result:
+    """Open a file without reading it and return the opened file's status.
+
+    The open proves the file is readable; nothing is read. ``O_NONBLOCK``
+    keeps a FIFO swapped in for the file from blocking the open.
+
+    Args:
+        path: The file.
+
+    Returns:
+        ``fstat`` of the opened file.
+
+    Raises:
+        OSError: When the file cannot be opened.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        return os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def iter_regular_files(
@@ -262,8 +368,8 @@ def iter_regular_files(
     The walk is :func:`winnow.fs.walk.walk_files`, Discovery's walk: hidden
     entries and winnow's working folders are skipped, exclude patterns and
     the symlink policy apply, and entries come sorted by name. Under
-    ``FOLLOW`` a file reached a second time through a symlink is yielded
-    once.
+    ``FOLLOW`` one file may be yielded under several names (a symlink and
+    its target); :func:`iter_inventory` decides which name counts.
 
     Args:
         directory: Directory to walk.
@@ -278,39 +384,138 @@ def iter_regular_files(
     """
     active = _effective_policy(policy, recursive=recursive)
     report = on_event if on_event is not None else _ignore
-    follow = active.symlink_policy is SymlinkPolicy.FOLLOW
-    seen: set[Path] = set()
     for entry in walk_files(directory, policy=active, on_event=report):
         path = Path(entry.path)
         try:
             st = entry.stat()
-            resolved = path.resolve() if follow else path
         except OSError as exc:
-            report(_unreadable(path, exc.strerror or str(exc)))
+            report(_event(WalkEventKind.UNREADABLE_ENTRY, path, _error_text(exc)))
             continue
         if not stat.S_ISREG(st.st_mode):
-            report(
-                WalkEvent(
-                    kind=WalkEventKind.NOT_REGULAR,
-                    path=path,
-                    message="not a regular file",
-                    is_issue=False,
-                ),
-            )
+            report(_event(WalkEventKind.NOT_REGULAR, path, "not a regular file"))
             continue
-        if follow:
-            if resolved in seen:
-                report(
-                    WalkEvent(
-                        kind=WalkEventKind.DUPLICATE,
-                        path=path,
-                        message="symlink target already counted",
-                        is_issue=False,
-                    ),
-                )
-                continue
-            seen.add(resolved)
         yield path
+
+
+def _classify(
+    path: Path,
+    *,
+    registry: FormatRegistry,
+    fast: bool,
+    report: Callable[[WalkEvent], None],
+) -> InventoryEntry | None:
+    """Classify one file, taking its size and time from the opened file.
+
+    Args:
+        path: The file.
+        registry: Registry for detection or the name lookup.
+        fast: When ``True``, classify by name; the file is opened, not read.
+        report: Receives the event when the file cannot be read.
+
+    Returns:
+        The entry, or ``None`` when the file could not be read.
+    """
+    if fast:
+        try:
+            opened = _open_stat(path)
+        except OSError as exc:
+            report(_event(WalkEventKind.UNREADABLE_ENTRY, path, _error_text(exc)))
+            return None
+        if not stat.S_ISREG(opened.st_mode):
+            report(_event(WalkEventKind.NOT_REGULAR, path, "not a regular file"))
+            return None
+        return InventoryEntry(
+            path=path,
+            size_bytes=opened.st_size,
+            modified=_utc_from_ns(opened.st_mtime_ns),
+            media_type=registry.lookup(path.name),
+            detection=None,
+        )
+    detection = detect(path, registry=registry)
+    snapshot = detection.snapshot
+    if snapshot is None:
+        report(
+            _event(WalkEventKind.UNREADABLE_ENTRY, path, "content could not be read"),
+        )
+        return None
+    return InventoryEntry(
+        path=path,
+        size_bytes=snapshot.size,
+        modified=_utc_from_ns(snapshot.mtime_ns),
+        media_type=detection.media_type,
+        detection=detection,
+    )
+
+
+class _FollowClaims:
+    """Pick one name per file under ``FOLLOW``, by Discovery's rule.
+
+    A name whose type is known claims its resolved target; every later name
+    for the target is a duplicate. A name with no type never claims: unknown
+    names are held until the walk ends, and a target keeps its first unknown
+    name only when no name for it gave a type. The others are duplicates.
+
+    Args:
+        report: Receives the duplicate and read-error events.
+    """
+
+    def __init__(self, report: Callable[[WalkEvent], None]) -> None:
+        self._report = report
+        self._claimed: set[Path] = set()
+        self._pending: dict[Path, list[InventoryEntry]] = {}
+
+    def offer(self, entry: InventoryEntry) -> Iterator[InventoryEntry]:
+        """Count ``entry`` now, hold it, or report it as a duplicate.
+
+        Args:
+            entry: A classified file.
+
+        Yields:
+            ``entry`` when it claims its target.
+        """
+        try:
+            target = entry.path.resolve()
+        except (OSError, RuntimeError) as exc:
+            self._report(
+                _event(WalkEventKind.UNREADABLE_ENTRY, entry.path, _error_text(exc)),
+            )
+            return
+        if target in self._claimed:
+            self._duplicate(entry)
+            return
+        if entry.media_type is None:
+            self._pending.setdefault(target, []).append(entry)
+            return
+        self._claimed.add(target)
+        for loser in self._pending.pop(target, []):
+            self._duplicate(loser)
+        yield entry
+
+    def unclaimed(self) -> Iterator[InventoryEntry]:
+        """Yield one unknown name per target no typed name claimed.
+
+        Yields:
+            The first unknown name of each such target, in walk order.
+        """
+        for first, *others in self._pending.values():
+            for loser in others:
+                self._duplicate(loser)
+            yield first
+        self._pending.clear()
+
+    def _duplicate(self, entry: InventoryEntry) -> None:
+        """Report a name that does not count.
+
+        Args:
+            entry: The losing name.
+        """
+        self._report(
+            _event(
+                WalkEventKind.DUPLICATE,
+                entry.path,
+                "symlink target already counted",
+            ),
+        )
 
 
 def iter_inventory(
@@ -324,9 +529,13 @@ def iter_inventory(
 ) -> Iterator[InventoryEntry]:
     """Walk a directory and classify each regular file once.
 
-    A file that cannot be ``stat``-ed, or whose content detection could not
-    read it (it vanished, or permission was denied), is reported to
-    ``on_event`` as unreadable and not yielded: it is never typed by name.
+    A file that cannot be ``stat``-ed or opened, or whose content detection
+    could not read it (it vanished, or permission was denied), is reported
+    to ``on_event`` as unreadable and not yielded: it is never typed by name.
+
+    Under ``FOLLOW``, a file reached under several names counts once, under
+    the first name that gives it a media type (Discovery's rule); files with
+    no type under any name are yielded after the walk, in walk order.
 
     Args:
         directory: Directory to walk.
@@ -342,33 +551,46 @@ def iter_inventory(
     """
     active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
     report = on_event if on_event is not None else _ignore
+    active_policy = _effective_policy(policy, recursive=recursive)
+    claims = (
+        _FollowClaims(report)
+        if active_policy.symlink_policy is SymlinkPolicy.FOLLOW
+        else None
+    )
     for path in iter_regular_files(
         directory,
         recursive=recursive,
         policy=policy,
         on_event=report,
     ):
-        try:
-            st = path.stat()
-        except OSError as exc:
-            report(_unreadable(path, exc.strerror or str(exc)))
+        entry = _classify(path, registry=active_registry, fast=fast, report=report)
+        if entry is None:
             continue
-        detection: DetectionResult | None = None
-        if fast:
-            media_type = active_registry.lookup(path.name)
+        if claims is None:
+            yield entry
         else:
-            detection = detect(path, registry=active_registry)
-            if detection.snapshot is None:
-                report(_unreadable(path, "content could not be read"))
-                continue
-            media_type = detection.media_type
-        yield InventoryEntry(
-            path=path,
-            size_bytes=st.st_size,
-            modified=datetime.fromtimestamp(st.st_mtime, tz=UTC),
-            media_type=media_type,
-            detection=detection,
-        )
+            yield from claims.offer(entry)
+    if claims is not None:
+        yield from claims.unclaimed()
+
+
+class _Examples:
+    """An exact count and the first few paths in sorted order."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.paths: list[Path] = []
+
+    def add(self, path: Path) -> None:
+        """Count a path, keeping it only if it sorts among the first few.
+
+        Args:
+            path: The path.
+        """
+        self.count += 1
+        if len(self.paths) < MAX_UNREADABLE_EXAMPLES or path < self.paths[-1]:
+            insort(self.paths, path)
+            del self.paths[MAX_UNREADABLE_EXAMPLES:]
 
 
 class _Tally:
@@ -376,6 +598,7 @@ class _Tally:
 
     def __init__(self) -> None:
         self.counts: dict[MediaType, int] = defaultdict(int)
+        self.by_name: dict[MediaType, int] = defaultdict(int)
         self.total_files = 0
         self.total_bytes = 0
         self.unknown = 0
@@ -384,8 +607,8 @@ class _Tally:
         self.earliest: datetime | None = None
         self.latest: datetime | None = None
         self.skipped: dict[WalkEventKind, int] = defaultdict(int)
-        self.unreadable_files: list[Path] = []
-        self.unreadable_directories: list[Path] = []
+        self.unreadable_files = _Examples()
+        self.unreadable_directories = _Examples()
 
     def record_event(self, event: WalkEvent) -> None:
         """Count an entry the inventory did not read.
@@ -396,9 +619,9 @@ class _Tally:
         if event.kind in SKIP_KINDS:
             self.skipped[event.kind] += 1
         elif event.kind is WalkEventKind.UNREADABLE_DIRECTORY:
-            self.unreadable_directories.append(event.path)
+            self.unreadable_directories.add(event.path)
         else:
-            self.unreadable_files.append(event.path)
+            self.unreadable_files.add(event.path)
 
     def add(self, entry: InventoryEntry) -> None:
         """Count a file that was read.
@@ -408,16 +631,19 @@ class _Tally:
         """
         self.total_files += 1
         self.total_bytes += entry.size_bytes
+        check = (
+            extension_check(entry.detection) if entry.detection is not None else None
+        )
         if entry.media_type is None:
             self.unknown += 1
+        elif check is ExtensionCheck.NAME_ONLY:
+            self.by_name[entry.media_type] += 1
         else:
             self.counts[entry.media_type] += 1
-        if entry.detection is not None:
-            check = extension_check(entry.detection)
-            if check is ExtensionCheck.MISMATCH:
-                self.mismatched += 1
-            elif check is ExtensionCheck.EXTENSION_UNTYPED:
-                self.untyped += 1
+        if check is ExtensionCheck.MISMATCH:
+            self.mismatched += 1
+        elif check is ExtensionCheck.EXTENSION_UNTYPED:
+            self.untyped += 1
         if self.earliest is None or entry.modified < self.earliest:
             self.earliest = entry.modified
         if self.latest is None or entry.modified > self.latest:
@@ -443,24 +669,13 @@ class _Tally:
             classified_by=classified_by,
             extension_mismatch_count=self.mismatched if by_content else None,
             extension_untyped_count=self.untyped if by_content else None,
-            unreadable_count=len(self.unreadable_files),
-            unreadable_examples=_examples(self.unreadable_files),
-            unreadable_directory_count=len(self.unreadable_directories),
-            unreadable_directory_examples=_examples(self.unreadable_directories),
+            typed_by_name=dict(self.by_name) if by_content else None,
+            unreadable_count=self.unreadable_files.count,
+            unreadable_examples=tuple(self.unreadable_files.paths),
+            unreadable_directory_count=self.unreadable_directories.count,
+            unreadable_directory_examples=tuple(self.unreadable_directories.paths),
             skipped_by_reason=dict(self.skipped),
         )
-
-
-def _examples(paths: list[Path]) -> tuple[Path, ...]:
-    """Pick the first example paths in sorted order.
-
-    Args:
-        paths: Every path of one kind.
-
-    Returns:
-        At most :data:`MAX_UNREADABLE_EXAMPLES` paths, sorted.
-    """
-    return tuple(sorted(paths)[:MAX_UNREADABLE_EXAMPLES])
 
 
 def collect_directory_stats(
@@ -522,6 +737,161 @@ def _metadata_or_none(
         return None
 
 
+def _cannot_read(path: Path, exc: OSError) -> MediaError:
+    """Build the error for a file that cannot be read.
+
+    Args:
+        path: The file.
+        exc: The underlying error.
+
+    Returns:
+        The error.
+    """
+    return MediaError(
+        "cannot read file",
+        operation="inspect_file",
+        file_path=path,
+        details={"reason": exc.strerror or str(exc)},
+    )
+
+
+def _not_regular(path: Path) -> MediaError:
+    """Build the error for a path that is not a regular file.
+
+    Args:
+        path: The path.
+
+    Returns:
+        The error.
+    """
+    return MediaError("not a regular file", operation="inspect_file", file_path=path)
+
+
+def _regular_stat(path: Path) -> os.stat_result:
+    """``stat`` a path and require a regular file, without opening it.
+
+    Args:
+        path: The file.
+
+    Returns:
+        Its status.
+
+    Raises:
+        MediaError: When it cannot be ``stat``-ed or is not a regular file.
+    """
+    try:
+        status = path.stat()
+    except OSError as exc:
+        raise _cannot_read(path, exc) from exc
+    if not stat.S_ISREG(status.st_mode):
+        raise _not_regular(path)
+    return status
+
+
+def _same_file(status: os.stat_result, snapshot: FileSnapshot) -> bool:
+    """Report whether a ``stat`` and a snapshot describe the same file state.
+
+    Args:
+        status: A pathname ``stat``.
+        snapshot: The opened file's snapshot.
+
+    Returns:
+        ``True`` when device, inode, size and modification time agree.
+    """
+    return (
+        status.st_dev == snapshot.device
+        and status.st_ino == snapshot.inode
+        and status.st_size == snapshot.size
+        and status.st_mtime_ns == snapshot.mtime_ns
+    )
+
+
+def _inspect_by_name(path: Path, registry: FormatRegistry) -> FileInfo:
+    """Inspect a file by its name only: opened, never read.
+
+    Args:
+        path: The file.
+        registry: Registry for the name lookup.
+
+    Returns:
+        The file's information, with no metadata and no detection.
+
+    Raises:
+        MediaError: When the file cannot be opened or is not regular.
+    """
+    _regular_stat(path)
+    try:
+        opened = _open_stat(path)
+    except OSError as exc:
+        raise _cannot_read(path, exc) from exc
+    if not stat.S_ISREG(opened.st_mode):
+        raise _not_regular(path)
+    return FileInfo(
+        path=path,
+        media_type=registry.lookup(path.name),
+        extension=normalize_extension(path.name),
+        size_bytes=opened.st_size,
+        modified=_utc_from_ns(opened.st_mtime_ns),
+        accessed=_utc_from_ns(opened.st_atime_ns),
+        changed=_utc_from_ns(opened.st_ctime_ns),
+        metadata=None,
+    )
+
+
+def _inspect_once(
+    path: Path,
+    *,
+    registry: FormatRegistry,
+    service: DefaultMetadataService,
+) -> FileInfo | None:
+    """Detect and describe a file once, checking it did not change meanwhile.
+
+    Args:
+        path: The file.
+        registry: Registry for detection.
+        service: Metadata service for the detected type.
+
+    Returns:
+        The file's information, or ``None`` when the file at ``path``
+        changed between the ``stat``, the detection and the metadata read.
+
+    Raises:
+        MediaError: When the file cannot be read or is not regular.
+    """
+    before = _regular_stat(path)
+    detection = detect(path, registry=registry)
+    snapshot = detection.snapshot
+    if snapshot is None:
+        raise MediaError(
+            "cannot read file content",
+            operation="inspect_file",
+            file_path=path,
+        )
+    if not _same_file(before, snapshot):
+        return None
+    media_type = detection.media_type
+    metadata = (
+        None if media_type is None else _metadata_or_none(service, path, media_type)
+    )
+    try:
+        after = path.stat()
+    except OSError:
+        return None
+    if not _same_file(after, snapshot):
+        return None
+    return FileInfo(
+        path=path,
+        media_type=media_type,
+        extension=normalize_extension(path.name),
+        size_bytes=snapshot.size,
+        modified=_utc_from_ns(snapshot.mtime_ns),
+        accessed=_utc_from_ns(before.st_atime_ns),
+        changed=_utc_from_ns(snapshot.ctime_ns),
+        metadata=metadata,
+        detection=detection,
+    )
+
+
 def inspect_file(
     path: Path,
     *,
@@ -531,9 +901,15 @@ def inspect_file(
 ) -> FileInfo:
     """Gather metadata describing a single file.
 
-    The media type comes from content detection, run once; the metadata for
-    that type (image, video or audio) is then extracted without detecting
-    again, and degrades to ``None`` when it cannot be read.
+    The media type comes from :func:`winnow.media.detect`, run once per
+    attempt; the metadata for that type (image, video or audio) is then
+    extracted without detecting again, and degrades to ``None`` when it
+    cannot be read. Size and times come from the file detection opened. If
+    the file at ``path`` is replaced while it is read, the inspection is
+    repeated once and then fails, so a result never mixes two files.
+
+    With ``fast=True`` the file is opened to prove it is readable but not
+    read: the type comes from the name and no metadata is extracted.
 
     Args:
         path: File to inspect.
@@ -547,53 +923,24 @@ def inspect_file(
         Structured metadata for the file. Timestamps are expressed in UTC.
 
     Raises:
-        MediaError: When the file cannot be ``stat``-ed, is not a regular
-            file, or its content cannot be read.
+        MediaError: When the file cannot be ``stat``-ed or opened, is not a
+            regular file, its content cannot be read, or it keeps changing
+            while it is read.
     """
     active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
-    try:
-        stat_result = path.stat()
-    except OSError as exc:
-        raise MediaError(
-            "cannot read file",
-            operation="inspect_file",
-            file_path=path,
-            details={"reason": exc.strerror or str(exc)},
-        ) from exc
-    if not stat.S_ISREG(stat_result.st_mode):
-        raise MediaError(
-            "not a regular file",
-            operation="inspect_file",
-            file_path=path,
-        )
-    detection: DetectionResult | None = None
     if fast:
-        media_type = active_registry.lookup(path.name)
-    else:
-        detection = detect(path, registry=active_registry)
-        if detection.snapshot is None:
-            raise MediaError(
-                "cannot read file content",
-                operation="inspect_file",
-                file_path=path,
-            )
-        media_type = detection.media_type
+        return _inspect_by_name(path, active_registry)
     service = (
         metadata_service
         if metadata_service is not None
         else DefaultMetadataService(registry=active_registry)
     )
-    metadata = (
-        None if media_type is None else _metadata_or_none(service, path, media_type)
-    )
-    return FileInfo(
-        path=path,
-        media_type=media_type,
-        extension=normalize_extension(path.name),
-        size_bytes=stat_result.st_size,
-        modified=datetime.fromtimestamp(stat_result.st_mtime, tz=UTC),
-        accessed=datetime.fromtimestamp(stat_result.st_atime, tz=UTC),
-        changed=datetime.fromtimestamp(stat_result.st_ctime, tz=UTC),
-        metadata=metadata,
-        detection=detection,
+    for _ in range(_INSPECT_ATTEMPTS):
+        file_info = _inspect_once(path, registry=active_registry, service=service)
+        if file_info is not None:
+            return file_info
+    raise MediaError(
+        "file changed while it was read",
+        operation="inspect_file",
+        file_path=path,
     )

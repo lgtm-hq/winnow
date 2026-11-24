@@ -296,3 +296,52 @@ def test_stats_skips_winnow_folders_and_symlinks(
         "2 (1 hidden or winnow folder, 1 symlink)",
     )
     assert_that(_row(result.output, "Coverage")).is_equal_to("complete")
+
+
+def test_stats_reports_an_unreadable_root(
+    tmp_path: Path,
+    empty_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable DIRECTORY is reported by the command, not a usage error."""
+    locked = tmp_path / "locked"
+    _write_jpeg(locked / "inside.jpg")
+    real_access = os.access
+    real_scandir = os.scandir
+
+    def fake_access(path: Any, mode: int, *args: Any, **kwargs: Any) -> bool:
+        return Path(path) != locked and real_access(path, mode, *args, **kwargs)
+
+    def fake_scandir(directory: Any) -> Any:
+        if Path(directory) == locked:
+            raise PermissionError(13, "Permission denied", str(directory))
+        return real_scandir(directory)
+
+    monkeypatch.setattr(os, "access", fake_access)
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+    result = _invoke_stats(str(locked), config=empty_config)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(_row(result.output, "Unreadable directories")).is_equal_to("1")
+    assert_that(_row(result.output, "Total files")).is_equal_to("0")
+    assert_that(_row(result.output, "Coverage")).starts_with("incomplete")
+
+
+def test_stats_counts_name_typed_files_in_their_own_row(
+    tmp_path: Path,
+    empty_config: Path,
+) -> None:
+    """An empty ``zero.jpg`` is not counted as an image found by content."""
+    library = tmp_path / "library"
+    _write_jpeg(library / "real.jpg")
+    (library / "zero.jpg").write_bytes(b"")
+
+    result = _invoke_stats(str(library), config=empty_config)
+
+    assert_that(result.exit_code).is_equal_to(0)
+    assert_that(_row(result.output, "Image files")).is_equal_to("1")
+    assert_that(_row(result.output, "Typed by extension only")).is_equal_to(
+        "1 (1 image)",
+    )
+    assert_that(_row(result.output, "Total files")).is_equal_to("2")
