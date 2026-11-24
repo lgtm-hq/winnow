@@ -627,6 +627,7 @@ def _write_tiff(
     iptc: bytes | None = None,
     *,
     as_longs: bool = False,
+    big: bool = False,
 ) -> Path:
     """Write a tiny TIFF with EXIF and an optional IPTC-NAA tag.
 
@@ -640,6 +641,7 @@ def _write_tiff(
         as_longs: Retype the tag as LONG values, as Photoshop writes it;
             Pillow's writer keeps one value of a LONG tag 33723, so the
             UNDEFINED entry it writes is patched in place.
+        big: Write BigTIFF.
 
     Returns:
         The path.
@@ -654,7 +656,12 @@ def _write_tiff(
     if iptc is not None:
         directory[33723] = iptc
         directory.tagtype[33723] = 7
-    Image.new("RGB", (8, 8)).save(path, format="TIFF", tiffinfo=directory)
+    Image.new("RGB", (8, 8)).save(
+        path,
+        format="TIFF",
+        tiffinfo=directory,
+        big_tiff=big,
+    )
     if iptc is not None and as_longs:
         data = path.read_bytes()
         entry = struct.pack("<HHI", 33723, 7, len(iptc))
@@ -1051,3 +1058,468 @@ def test_observations_independent_of_tz(
 def test_exif_reader_version_names_every_backend() -> None:
     """The reader version names winnow and both backends."""
     assert_that(ExifReader().version()).contains("winnow ", "pillow ", "exifread ")
+
+
+_DATED_IIM = _iim(55, b"20180704") + _iim(60, b"101010+0900")
+_DATED_IPTC = [
+    ("IPTC:DateCreated#0", "20180704 | 101010+0900", "2018-07-04T10:10:10+09:00"),
+    ("IPTC:TimeCreated#0", "101010+0900", "101010+0900"),
+]
+
+
+def _iptc_summary(observations: list[Observation]) -> list[tuple[str, str | None, str]]:
+    """Reduce IPTC observations to locator, raw value and rendered value.
+
+    Args:
+        observations: The observations.
+
+    Returns:
+        One tuple per IPTC observation.
+    """
+    return [
+        (
+            o.locator,
+            o.raw,
+            o.value.render() if isinstance(o.value, TimeValue) else str(o.value),
+        )
+        for o in observations
+        if o.source is SourceKind.IPTC
+    ]
+
+
+def _caption_iim(size: int) -> bytes:
+    """Build IPTC with the dated datasets and a caption of ``size`` bytes.
+
+    Args:
+        size: The caption's length.
+
+    Returns:
+        The IIM block.
+    """
+    return _DATED_IIM + _iim(120, b"c" * size)
+
+
+@pytest.mark.parametrize("pixels_refused", [False, True], ids=["pillow", "fallback"])
+@pytest.mark.parametrize(
+    ("iptc", "as_longs", "big"),
+    [
+        (_DATED_IIM, False, True),
+        (_caption_iim(1500), False, False),
+        (_caption_iim(3966), True, False),
+    ],
+    ids=["bigtiff", "caption_1534_bytes", "longs_1000"],
+)
+def test_exif_reader_reads_iptc_of_healthy_tiffs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    iptc: bytes,
+    as_longs: bool,
+    big: bool,
+    pixels_refused: bool,
+) -> None:
+    """BigTIFF, a long caption and LONG-typed IPTC all keep their dates."""
+    if as_longs:
+        assert_that(len(iptc) // 4).is_equal_to(1000)
+    path = _write_tiff(
+        tmp_path / "a.tiff", _exif(), iptc=iptc, as_longs=as_longs, big=big
+    )
+    if pixels_refused:
+        _refuse_pixels(monkeypatch, path)
+
+    evidence = _collect(path)
+
+    assert_that(_iptc_summary(list(evidence.observations))).is_equal_to(_DATED_IPTC)
+    assert_that(_issues(evidence)).is_empty()
+
+
+def _cut_inside(data: bytes, marker: bytes, keep: int) -> bytes:
+    """Cut bytes ``keep`` bytes into the first occurrence of ``marker``.
+
+    Args:
+        data: The bytes.
+        marker: What to cut inside.
+        keep: How many of its bytes to keep.
+
+    Returns:
+        The cut bytes.
+    """
+    return data[: data.index(marker) + keep]
+
+
+def test_exif_reader_fallback_never_publishes_a_cut_tiff_identifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TIFF cut inside its Apple identifier gives an issue and no identifier."""
+    exif = _exif(ifd0={0x010F: "Apple"}, exif_ifd={0x927C: _apple_maker_note(_UUID)})
+    whole = _write_tiff(tmp_path / "whole.tiff", exif)
+    cut = tmp_path / "cut.tiff"
+    cut.write_bytes(_cut_inside(whole.read_bytes(), _UUID.encode(), len(_UUID) - 4))
+    _refuse_pixels(monkeypatch, cut)
+
+    evidence = _collect(cut)
+
+    assert_that([o.claim for o in evidence.observations]).does_not_contain(
+        Claim.CONTENT_ID,
+    )
+    assert_that(_issues(evidence)).contains("TIFF tags")
+
+
+def _rich_exif() -> Image.Exif:
+    """Build the EXIF block of the healthy-file comparison.
+
+    Returns:
+        Capture, digitized and modified dates with offsets and sub-seconds,
+        a GPS stamp, make, model, software, an image unique id and an Apple
+        MakerNote.
+    """
+    return _exif(
+        ifd0={
+            0x0132: "2021:01:01 09:00:00",
+            0x010F: "Apple",
+            0x0110: "iPhone 8",
+            0x0131: "17.1",
+        },
+        exif_ifd={
+            0x9003: "2019:07:04 10:10:10",
+            0x9291: "123",
+            0x9011: "+09:00",
+            0x9004: "2019:07:04 10:10:11",
+            0x9292: "5",
+            0x9012: "+09:00",
+            0x9290: "25",
+            0x9010: "-05:00",
+            0xA420: "0123456789abcdef0123456789abcdef",
+            0x927C: _apple_maker_note(_UUID),
+        },
+        gps={
+            0x001D: "2019:07:04",
+            0x0007: (_rational(1, 1), _rational(10, 1), _rational(1234, 100)),
+        },
+    )
+
+
+def _with_gap(data: bytes, gap: bytes) -> bytes:
+    """Insert bytes after a JPEG's JFIF APP0 segment.
+
+    Args:
+        data: The JPEG bytes.
+        gap: The bytes to insert.
+
+    Returns:
+        The damaged JPEG.
+    """
+    app0 = data.index(b"\xff\xe0")
+    (length,) = struct.unpack(">H", data[app0 + 2 : app0 + 4])
+    end = app0 + 2 + length
+    return data[:end] + gap + data[end:]
+
+
+@pytest.mark.parametrize("gap", [b"\x00\x00\x00", b"\xff\x00"], ids=["nul", "ff00"])
+def test_exif_reader_reads_through_a_marker_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gap: bytes,
+) -> None:
+    """Stray bytes after APP0 lose nothing; the fallback scan reports them."""
+    whole = _write_jpeg(tmp_path / "whole.jpg", _rich_exif(), iim=_DATED_IIM)
+    damaged = tmp_path / "gap.jpg"
+    damaged.write_bytes(_with_gap(whole.read_bytes(), gap))
+    expected = _summary(_read(whole))
+
+    by_pillow = _collect(damaged)
+    _refuse_pixels(monkeypatch, damaged)
+    by_fallback = _collect(damaged)
+
+    def own(evidence: EvidenceSet) -> list[Observation]:
+        return [o for o in evidence.observations if o.source in _READ_SOURCES]
+
+    assert_that(expected).is_length(19)
+    assert_that(_summary(own(by_pillow))).is_equal_to(expected)
+    assert_that(_issues(by_pillow)).is_empty()
+    assert_that(_summary(own(by_fallback))).is_equal_to(expected)
+    assert_that(_issues(by_fallback)).is_equal_to(["JPEG segments"])
+
+
+def test_exif_reader_keeps_iptc_before_a_cut_app13(tmp_path: Path) -> None:
+    """A JPEG cut inside its caption keeps the complete date and time before it."""
+    whole = _write_jpeg(tmp_path / "whole.jpg", _rich_exif(), iim=_caption_iim(400))
+    cut = tmp_path / "cut.jpg"
+    cut.write_bytes(_cut_inside(whole.read_bytes(), b"c" * 400, 300))
+    with pytest.raises(OSError):
+        Image.open(cut).load()
+
+    evidence = _collect(cut)
+
+    assert_that(_iptc_summary(list(evidence.observations))).is_equal_to(_DATED_IPTC)
+    assert_that(_issues(evidence)).is_equal_to(["JPEG segments", "IPTC"])
+
+
+def test_exif_reader_reads_dates_after_an_extended_iptc_dataset(tmp_path: Path) -> None:
+    """A dataset with an IIM extended length does not hide the dates after it."""
+    preview = b"p" * 40
+    extended = bytes([0x1C, 2, 202, 0x80, 0x02]) + struct.pack(">H", len(preview))
+    path = _write_jpeg(tmp_path / "a.jpg", iim=extended + preview + _DATED_IIM)
+
+    evidence = _collect(path)
+
+    assert_that(_iptc_summary(list(evidence.observations))).is_equal_to(_DATED_IPTC)
+    assert_that(_issues(evidence)).is_empty()
+
+
+def _time_json(
+    wall: str,
+    offset: int,
+    origin: str,
+    precision: str,
+    digits: int | None,
+) -> dict[str, object]:
+    """Write out a stored time value.
+
+    Args:
+        wall: The wall reading.
+        offset: The offset in minutes.
+        origin: The offset's origin.
+        precision: The precision.
+        digits: The fraction digits.
+
+    Returns:
+        The value as ``model_dump(mode="json")`` gives it.
+    """
+    return {
+        "wall": wall,
+        "offset_minutes": offset,
+        "offset_origin": origin,
+        "precision": precision,
+        "fraction_digits": digits,
+    }
+
+
+_EXPECTED_EXIF: list[tuple[object, ...]] = [
+    (
+        "exif",
+        "ExifIFD:DateTimeOriginal#0",
+        "capture_time",
+        "2019:07:04 10:10:10 | 123 | +09:00",
+        _time_json("2019-07-04T10:10:10.123000", 540, "source", "subsecond", 3),
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "ExifIFD:SubSecTimeOriginal#0",
+        "unknown",
+        "123",
+        "123",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "ExifIFD:OffsetTimeOriginal#0",
+        "unknown",
+        "+09:00",
+        "+09:00",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "ExifIFD:DateTimeDigitized#0",
+        "digitized_time",
+        "2019:07:04 10:10:11 | 5 | +09:00",
+        _time_json("2019-07-04T10:10:11.500000", 540, "source", "subsecond", 1),
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "ExifIFD:SubSecTimeDigitized#0",
+        "unknown",
+        "5",
+        "5",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "ExifIFD:OffsetTimeDigitized#0",
+        "unknown",
+        "+09:00",
+        "+09:00",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "IFD0:DateTime#0",
+        "modified_time",
+        "2021:01:01 09:00:00 | 25 | -05:00",
+        _time_json("2021-01-01T09:00:00.250000", -300, "source", "subsecond", 2),
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    ("exif", "ExifIFD:SubSecTime#0", "unknown", "25", "25", "ok", "exif", "pillow"),
+    (
+        "exif",
+        "ExifIFD:OffsetTime#0",
+        "unknown",
+        "-05:00",
+        "-05:00",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "GPS:GPSDateStamp+GPSTimeStamp#0",
+        "capture_time",
+        "2019:07:04 | 1/1 10/1 617/50",
+        _time_json("2019-07-04T01:10:12.340000", 0, "utc-by-spec", "subsecond", 2),
+        "ok",
+        "exif-gps",
+        "pillow",
+    ),
+    (
+        "exif",
+        "GPS:GPSDateStamp#0",
+        "unknown",
+        "2019:07:04",
+        "2019:07:04",
+        "ok",
+        "exif-gps",
+        "pillow",
+    ),
+    (
+        "exif",
+        "GPS:GPSTimeStamp#0",
+        "unknown",
+        "1/1 10/1 617/50",
+        "1/1 10/1 617/50",
+        "ok",
+        "exif-gps",
+        "pillow",
+    ),
+    ("exif", "IFD0:Software#0", "software", "17.1", "17.1", "ok", "exif", "pillow"),
+    ("exif", "IFD0:Make#0", "device", "Apple", "Apple", "ok", "exif", "pillow"),
+    ("exif", "IFD0:Model#0", "device", "iPhone 8", "iPhone 8", "ok", "exif", "pillow"),
+    (
+        "exif",
+        "ExifIFD:ImageUniqueID#0",
+        "content_id",
+        "0123456789abcdef0123456789abcdef",
+        "0123456789abcdef0123456789abcdef",
+        "ok",
+        "exif",
+        "pillow",
+    ),
+    (
+        "exif",
+        "MakerNotes:Apple:Tag 0x0011#0",
+        "content_id",
+        _UUID,
+        _UUID,
+        "ok",
+        "apple-makernote",
+        "winnow",
+    ),
+]
+"""The observations head 74966ca gave for :func:`_rich_exif`, field for field."""
+
+_EXPECTED_IPTC: list[tuple[object, ...]] = [
+    (
+        "iptc",
+        "IPTC:DateCreated#0",
+        "capture_time",
+        "20180704 | 101010+0900",
+        _time_json("2018-07-04T10:10:10", 540, "source", "second", None),
+        "ok",
+        "iptc",
+        "winnow",
+    ),
+    (
+        "iptc",
+        "IPTC:TimeCreated#0",
+        "unknown",
+        "101010+0900",
+        "101010+0900",
+        "ok",
+        "iptc",
+        "winnow",
+    ),
+]
+"""The IPTC observations head 74966ca gave, read by winnow's IIM parser
+(74966ca named Pillow's ``getiptcinfo`` as the reader)."""
+
+
+def _healthy(tmp_path: Path, image_format: str) -> Path:
+    """Write a healthy image carrying :func:`_rich_exif` and, where the
+    format holds it, IPTC date and time.
+
+    Args:
+        tmp_path: Where to write it.
+        image_format: ``JPEG``, ``PNG``, ``TIFF``, ``WEBP`` or ``HEIF``.
+
+    Returns:
+        The path.
+    """
+    path = tmp_path / f"a.{image_format.lower()}"
+    if image_format == "JPEG":
+        return _write_jpeg(path, _rich_exif(), iim=_DATED_IIM)
+    if image_format == "TIFF":
+        return _write_tiff(path, _rich_exif(), iptc=_DATED_IIM)
+    if image_format == "HEIF" and not heif_encoding_supported():
+        pytest.skip("pillow-heif HEIF encoder unavailable")
+    Image.new("RGB", (8, 8)).save(
+        path, format=image_format, exif=_rich_exif().tobytes()
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("image_format", "with_iptc"),
+    [("JPEG", True), ("TIFF", True), ("PNG", False), ("WEBP", False), ("HEIF", False)],
+    ids=["jpeg", "tiff", "png", "webp", "heic"],
+)
+def test_exif_reader_healthy_files_match_the_first_reader(
+    tmp_path: Path,
+    image_format: str,
+    with_iptc: bool,
+) -> None:
+    """A healthy image gives exactly what the first version of the reader gave.
+
+    The expected values are those of head 74966ca, written out; only the
+    IPTC reader attribution differs (Pillow's ``getiptcinfo`` then, winnow's
+    IIM parser on Pillow's raw buffer now).
+    """
+    evidence = _collect(_healthy(tmp_path, image_format))
+
+    found = [
+        (
+            str(o.source),
+            o.locator,
+            str(o.claim),
+            o.raw,
+            (
+                o.value.model_dump(mode="json")
+                if isinstance(o.value, TimeValue)
+                else o.value
+            ),
+            str(o.status),
+            o.family,
+            o.reader,
+        )
+        for o in evidence.observations
+        if o.source in _READ_SOURCES
+    ]
+
+    expected = _EXPECTED_EXIF + (_EXPECTED_IPTC if with_iptc else [])
+    assert_that(found).is_equal_to(expected)
+    assert_that(evidence.issues).is_empty()

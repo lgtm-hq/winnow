@@ -6,24 +6,28 @@ resolver (#396) uses with them. It decides nothing.
 
 Backends:
 
-- JPEG: a bounded walk of the marker segments
-  (:func:`~winnow.media.readers._segments.scan_jpeg`) takes the EXIF
-  ``APP1`` and the IPTC resources of ``APP13``; Pillow's EXIF parser reads
-  the former and winnow's IIM parser the latter. The pixels are never
-  decoded, so a truncated JPEG or one above Pillow's pixel limit keeps its
-  metadata.
-- Every other image Pillow opens (TIFF, DNG and TIFF-based RAW Pillow
+- Every image Pillow opens (JPEG, TIFF, DNG and TIFF-based RAW Pillow
   reads, HEIC/HEIF through ``pillow-heif``, AVIF, WebP, PNG): Pillow's EXIF
-  parser, and for TIFF the IPTC-NAA tag 33723.
-- An image Pillow cannot open: exifread, including its raw MakerNote and
-  IPTC-NAA bytes.
+  parser, the MakerNote bytes it returns, and the raw IPTC-NAA buffer it
+  holds (a JPEG's ``0x0404`` Photoshop resource, a TIFF's tag 33723), split
+  by winnow's IIM parser.
+- Fallback, only for an image Pillow cannot open (a truncated stream, an
+  image above its pixel limit), from
+  :mod:`~winnow.media.readers._segments`: for a JPEG, a bounded walk of
+  the marker segments gives the EXIF ``APP1`` and the IPTC of ``APP13``;
+  for anything else, exifread gives the EXIF fields, and for a TIFF a
+  bounded read gives the MakerNote and IPTC-NAA bytes exactly. exifread's
+  own MakerNote and IPTC values are not used: it pads bytes the file does
+  not hold with zeros.
 
-Damage is reported, never read as absence: each block (JPEG segments, EXIF,
-ExifIFD, GPS, MakerNote, IPTC) is read on its own, and an exception or a
+Damage is reported: each block (JPEG segments, TIFF tags, EXIF, ExifIFD,
+GPS, MakerNote, IPTC, exifread) is read on its own, and an exception or a
 Pillow corruption warning while reading it gives one ``failed`` issue for
-that block while every value already read is kept. Limit: EXIF holds each
+that block while every value already read is kept. Limits: EXIF holds each
 tag once per directory, and the backends keep one value per tag, so a
-directory that repeats a tag yields its last copy only.
+directory that repeats a tag yields its last copy only; an image that is
+neither JPEG nor TIFF-structured and that Pillow cannot open gives no
+MakerNote identifier.
 
 Observations, in this order, each only when its field is present:
 
@@ -44,12 +48,13 @@ Observations, in this order, each only when its field is present:
 4. The Apple MakerNote content identifier (``content_id``) at
    ``MakerNotes:Apple:Tag 0x0011#0``, decoded by winnow's Apple parser
    (:func:`~winnow.media.image.decode_apple_maker_note`) from the note's
-   original bytes on every path; a damaged Apple note gives an issue and no
+   complete original bytes; a damaged Apple note gives an issue and no
    identifier.
 5. IPTC: each 2:55 ``DateCreated`` (``capture_time``), with the 2:60
    ``TimeCreated`` applied when the file holds exactly one complete copy of
-   each and it parses, then each ``TimeCreated`` as its own ``unknown``
-   observation. Datasets before a damaged one are kept.
+   each, in the same IPTC block, and it parses; then each ``TimeCreated``
+   as its own ``unknown`` observation. Datasets before a damaged one are
+   kept.
 
 Raw values are stored as the backend gives them: text as it decoded it,
 bytes as ``hex:``, rationals as ``n/d`` separated by spaces. Pillow and
@@ -59,7 +64,6 @@ exifread decode ASCII tags themselves (dropping the terminating NUL).
 from __future__ import annotations
 
 import numbers
-import struct
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -86,7 +90,13 @@ from winnow.media._dates import (
 )
 from winnow.media._detect_base import DetectionResult
 from winnow.media.image import decode_apple_maker_note
-from winnow.media.readers._segments import JpegMetadata, iim_datasets, scan_jpeg
+from winnow.media.readers._segments import (
+    JpegMetadata,
+    TiffTagBytes,
+    iim_datasets,
+    read_tiff_tags,
+    scan_jpeg,
+)
 from winnow.models.evidence import (
     HEX_PREFIX,
     Claim,
@@ -108,18 +118,15 @@ _JPEG: Final[str] = "jpeg"
 _EXIF_IFD: Final[int] = 0x8769
 _GPS_IFD: Final[int] = 0x8825
 _MAKER_NOTE: Final[tuple[str, int]] = ("ExifIFD", 0x927C)
-_TIFF: Final[str] = "TIFF"
+_IPTC_NAA: Final[int] = 33723
+_IPTC_RESOURCE: Final[int] = 0x0404
+_TIFF_HEADS: Final[frozenset[bytes]] = frozenset(
+    {b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"},
+)
 _IPTC_DATE_CREATED: Final[tuple[int, int]] = (2, 55)
 _IPTC_TIME_CREATED: Final[tuple[int, int]] = (2, 60)
 _APPLE_CONTENT_ID: Final[str] = "Tag 0x0011"
 _APPLE_LOCATOR: Final[str] = f"MakerNotes:Apple:{_APPLE_CONTENT_ID}#0"
-_EXIFREAD_MAKER_NOTE: Final[str] = "EXIF MakerNote"
-_EXIFREAD_IPTC: Final[str] = "Image IPTC/NAA"
-_LITTLE_ENDIAN: Final[bytes] = b"II"
-_BYTE_TYPES: Final[frozenset[int]] = frozenset({1, 7})
-_LONG_TYPE: Final[int] = 4
-_BYTE_MAX: Final[int] = 0xFF
-_LONG_MAX: Final[int] = 0xFFFFFFFF
 
 _T = TypeVar("_T")
 
@@ -354,19 +361,96 @@ class ExifReader:
         if detection.media_type is not MediaType.IMAGE:
             return [], []
         issues: list[ReadIssue] = []
-        if detection.container == _JPEG:
-            return _read_jpeg(path, issues), issues
         try:
             image = Image.open(path)
         except Exception as exc:
-            logger.debug("Pillow cannot open {} ({}); using exifread", path, exc)
-            return _read_with_exifread(path, issues), issues
+            logger.debug("Pillow cannot open {} ({}); using the fallback", path, exc)
+            return _read_fallback(path, detection, issues), issues
         with image:
             return _read_with_pillow(path, image, issues), issues
 
 
+def _read_with_pillow(
+    path: Path,
+    image: ImageFile.ImageFile,
+    issues: list[ReadIssue],
+) -> list[Observation]:
+    """Read an image Pillow opened: its EXIF, MakerNote and raw IPTC.
+
+    The IPTC buffer is taken first: reading a TIFF's tags through Pillow
+    replaces the raw buffer with a decoded value.
+
+    Args:
+        path: The file.
+        image: The opened image.
+        issues: Receives a ``failed`` issue per damaged block.
+
+    Returns:
+        The observations.
+    """
+    iptc = _guarded("IPTC", issues, partial(_pillow_iptc, image))
+    observations = _exif_block(path, issues, partial(_image_exif, image))
+    observations.extend(_iptc_observations(path, iptc or (), issues))
+    return observations
+
+
+def _pillow_iptc(image: ImageFile.ImageFile) -> tuple[bytes, ...]:
+    """Take the raw IPTC-NAA buffer Pillow holds for an image.
+
+    These are the bytes ``PIL.IptcImagePlugin.getiptcinfo`` parses: the
+    ``0x0404`` Photoshop resource of a JPEG, or the undecoded tag 33723 of a
+    TIFF, whatever its field type.
+
+    Args:
+        image: The opened image.
+
+    Returns:
+        The buffer, or nothing.
+    """
+    photoshop = image.info.get("photoshop")
+    if isinstance(photoshop, dict):
+        data = photoshop.get(_IPTC_RESOURCE)
+        return (data,) if isinstance(data, bytes) else ()
+    directory = getattr(image, "tag_v2", None)
+    raw = getattr(directory, "_tagdata", {}).get(_IPTC_NAA)
+    return (raw,) if isinstance(raw, bytes) else ()
+
+
+def _read_fallback(
+    path: Path,
+    detection: DetectionResult,
+    issues: list[ReadIssue],
+) -> list[Observation]:
+    """Read an image Pillow cannot open.
+
+    Args:
+        path: The file.
+        detection: Its content-detection result.
+        issues: Receives a ``failed`` issue per damaged block.
+
+    Returns:
+        The observations: from winnow's segment walk for a JPEG; otherwise
+        from exifread, with a TIFF's MakerNote and IPTC bytes read exactly.
+    """
+    if detection.container == _JPEG:
+        return _read_jpeg(path, issues)
+    observations = _read_with_exifread(path, issues)
+    if _head(path) not in _TIFF_HEADS:
+        return observations
+    tags = _guarded("TIFF tags", issues, partial(_read_tiff, path))
+    if tags is None:
+        return observations
+    if tags.problems:
+        issues.append(_failed("TIFF tags", "; ".join(tags.problems)))
+    if tags.maker_note is not None:
+        observations.extend(_maker_note_observations(path, tags.maker_note, issues))
+    iptc = () if tags.iptc is None else (tags.iptc,)
+    observations.extend(_iptc_observations(path, iptc, issues))
+    return observations
+
+
 def _read_jpeg(path: Path, issues: list[ReadIssue]) -> list[Observation]:
-    """Read a JPEG's EXIF and IPTC segments without decoding the image.
+    """Read a JPEG Pillow cannot open from its metadata segments.
 
     Args:
         path: The file.
@@ -401,37 +485,44 @@ def _scan(path: Path) -> JpegMetadata:
         return scan_jpeg(handle)
 
 
-def _read_with_pillow(
-    path: Path,
-    image: ImageFile.ImageFile,
-    issues: list[ReadIssue],
-) -> list[Observation]:
-    """Read a non-JPEG image's EXIF, and TIFF IPTC, through Pillow.
+def _read_tiff(path: Path) -> TiffTagBytes:
+    """Read a TIFF's IPTC-NAA and MakerNote bytes exactly.
 
     Args:
         path: The file.
-        image: The opened image.
-        issues: Receives a ``failed`` issue per damaged block.
 
     Returns:
-        The observations.
+        The bytes found and the damage seen.
     """
-    observations = _exif_block(path, issues, partial(_image_exif, image))
-    if image.format == _TIFF:
-        observations.extend(_iptc_observations(path, _tiff_iptc(path, issues), issues))
-    return observations
+    with path.open("rb") as handle:
+        return read_tiff_tags(handle)
+
+
+def _head(path: Path) -> bytes:
+    """Read a file's first four bytes.
+
+    Args:
+        path: The file.
+
+    Returns:
+        The bytes.
+    """
+    with path.open("rb") as handle:
+        return handle.read(4)
 
 
 def _read_with_exifread(path: Path, issues: list[ReadIssue]) -> list[Observation]:
-    """Read EXIF, the MakerNote and IPTC with exifread.
+    """Read the EXIF fields with exifread.
+
+    exifread pads a value the file does not hold with zeros, so the
+    MakerNote and IPTC bytes are not taken from it.
 
     Args:
         path: The file, which Pillow cannot open.
-        issues: Receives a ``failed`` issue when exifread fails or a block's
-            bytes cannot be recovered.
+        issues: Receives a ``failed`` issue when exifread fails.
 
     Returns:
-        The observations.
+        The EXIF observations.
     """
     processed = _guarded("exifread", issues, partial(_exifread_tags, path))
     if processed is None:
@@ -442,51 +533,11 @@ def _read_with_exifread(path: Path, issues: list[ReadIssue]) -> list[Observation
         for tag in _ALL_TAGS
         if tag.exifread in processed
     }
-    little = _byte_order(path) == _LITTLE_ENDIAN
-    observations = _exif_observations(_Tags(values, writer))
-    note = processed.get(_EXIFREAD_MAKER_NOTE)
-    if note is not None:
-        observations.extend(
-            _maker_note_observations(
-                path, _exifread_bytes(note, little=little), issues
-            ),
-        )
-    iptc = _exifread_iptc(processed, issues, little=little)
-    observations.extend(_iptc_observations(path, iptc, issues))
-    return observations
-
-
-def _exifread_iptc(
-    processed: Mapping[str, object],
-    issues: list[ReadIssue],
-    *,
-    little: bool,
-) -> tuple[bytes, ...]:
-    """Take the IPTC-NAA block (TIFF tag 33723) from exifread's tags.
-
-    Args:
-        processed: exifread's tags.
-        issues: Receives a ``failed`` issue when the bytes cannot be
-            recovered.
-        little: Whether the file is little-endian.
-
-    Returns:
-        The block, or nothing.
-    """
-    tag = processed.get(_EXIFREAD_IPTC)
-    if tag is None:
-        return ()
-    data = _exifread_bytes(tag, little=little)
-    if data is None:
-        issues.append(_failed("IPTC", "tag 33723 holds no IPTC-NAA bytes"))
-        return ()
-    return (data,)
+    return _exif_observations(_Tags(values, writer))
 
 
 def _exifread_tags(path: Path) -> dict[str, object]:
-    """Run exifread without thumbnails, keeping every value whole.
-
-    ``details`` stays on: without it exifread drops the raw MakerNote.
+    """Run exifread without MakerNote details or thumbnails.
 
     Args:
         path: The file.
@@ -496,72 +547,8 @@ def _exifread_tags(path: Path) -> dict[str, object]:
     """
     with path.open("rb") as handle:
         return dict(
-            exifread.process_file(
-                handle,
-                details=True,
-                extract_thumbnail=False,
-                truncate_tags=False,
-            ),
+            exifread.process_file(handle, details=False, extract_thumbnail=False),
         )
-
-
-def _byte_order(path: Path) -> bytes:
-    """Read a TIFF-structured file's byte-order mark.
-
-    Args:
-        path: The file.
-
-    Returns:
-        Its first two bytes, ``II`` for little-endian.
-    """
-    with path.open("rb") as handle:
-        return handle.read(2)
-
-
-def _exifread_bytes(tag: object, *, little: bool) -> bytes | None:
-    """Recover the stored bytes of an exifread tag.
-
-    Args:
-        tag: An exifread tag of byte, undefined or long type.
-        little: Whether the file is little-endian, for long values.
-
-    Returns:
-        The bytes, or ``None`` when they cannot be recovered.
-    """
-    values = getattr(tag, "values", None)
-    field_type = getattr(tag, "field_type", None)
-    return _stored_bytes(
-        values,
-        int(field_type) if isinstance(field_type, int) else None,
-        little=little,
-    )
-
-
-def _stored_bytes(
-    values: object, field_type: int | None, *, little: bool
-) -> bytes | None:
-    """Turn a decoded TIFF value back into the bytes the file stores.
-
-    Args:
-        values: Bytes, or the integers of a byte, undefined or long field.
-        field_type: The TIFF field type.
-        little: Whether long values are little-endian.
-
-    Returns:
-        The bytes, or ``None`` for any other type or an out-of-range value.
-    """
-    if isinstance(values, bytes):
-        return values
-    if not isinstance(values, list | tuple) or not all(
-        isinstance(value, int) and not isinstance(value, bool) for value in values
-    ):
-        return None
-    integers: list[int] = list(values)
-    if field_type in _BYTE_TYPES and all(0 <= v <= _BYTE_MAX for v in integers):
-        return bytes(integers)
-    if field_type == _LONG_TYPE and all(0 <= v <= _LONG_MAX for v in integers):
-        return struct.pack(f"{'<' if little else '>'}{len(integers)}I", *integers)
-    return None
 
 
 def _failed(block: str, detail: str) -> ReadIssue:
@@ -931,27 +918,6 @@ def _apple_tags(note: bytes) -> dict[str, str]:
     return decode_apple_maker_note(note) or {}
 
 
-def _tiff_iptc(path: Path, issues: list[ReadIssue]) -> tuple[bytes, ...]:
-    """Take a TIFF's IPTC-NAA block through exifread.
-
-    Pillow keeps a single value of tag 33723 when Photoshop stores it as
-    several LONGs, so the bytes come from exifread, which keeps them all.
-
-    Args:
-        path: The TIFF.
-        issues: Receives a ``failed`` issue when exifread fails or the bytes
-            cannot be recovered.
-
-    Returns:
-        The block, or nothing.
-    """
-    processed = _guarded("exifread", issues, partial(_exifread_tags, path))
-    if processed is None:
-        return ()
-    little = _byte_order(path) == _LITTLE_ENDIAN
-    return _exifread_iptc(processed, issues, little=little)
-
-
 def _iptc_observations(
     path: Path,
     blocks: Sequence[bytes],
@@ -960,9 +926,9 @@ def _iptc_observations(
     """Turn IPTC 2:55 and 2:60 into observations.
 
     ``TimeCreated`` is combined with ``DateCreated`` only when the file holds
-    exactly one complete copy of each; repeated datasets cannot be paired
-    reliably. A damaged dataset ends its block with a ``failed`` issue; the
-    datasets before it are kept.
+    exactly one complete copy of each, in the same block; repeated datasets
+    cannot be paired reliably. A damaged dataset ends its block with a
+    ``failed`` issue; the datasets before it are kept.
 
     Args:
         path: The file.
@@ -972,21 +938,25 @@ def _iptc_observations(
     Returns:
         Each ``DateCreated`` then each ``TimeCreated``.
     """
-    datasets = []
-    for block in blocks:
+    dates: list[tuple[int, bytes]] = []
+    times: list[tuple[int, bytes]] = []
+    for number, block in enumerate(blocks):
         found, damage = iim_datasets(block)
-        datasets.extend(found)
         if damage is not None:
             issues.append(_failed("IPTC", damage))
-    dates = [d.value for d in datasets if (d.record, d.dataset) == _IPTC_DATE_CREATED]
-    times = [d.value for d in datasets if (d.record, d.dataset) == _IPTC_TIME_CREATED]
+        for dataset in found:
+            key = (dataset.record, dataset.dataset)
+            if key == _IPTC_DATE_CREATED:
+                dates.append((number, dataset.value))
+            elif key == _IPTC_TIME_CREATED:
+                times.append((number, dataset.value))
     writer = _Writer(path, SourceKind.IPTC, "iptc", "winnow", __version__)
-    paired = len(dates) == 1 and len(times) == 1
+    paired = len(dates) == 1 and len(times) == 1 and dates[0][0] == times[0][0]
     observations = [
-        _iptc_date(writer, index, date, times[0] if paired else None)
-        for index, date in enumerate(dates)
+        _iptc_date(writer, index, date, times[0][1] if paired else None)
+        for index, (_, date) in enumerate(dates)
     ]
-    for index, time in enumerate(times):
+    for index, (_, time) in enumerate(times):
         text = _ascii(time)
         observations.append(
             _companion(
