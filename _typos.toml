@@ -1,13 +1,11 @@
 # typos (added to the lintro tool set in 0.171.x) false positives.
-[default]
-# A commit hash in parentheses, as the release workflow writes it in
-# CHANGELOG.md: "(88ded29)". A hash is not a word.
-extend-ignore-re = ["\\([0-9a-f]{7,40}\\)"]
-
 [default.extend-identifiers]
 # Pillow image mode names are case-sensitive identifiers.
 La = "La"
 RGBa = "RGBa"
+# Commit hash of #479, which the release workflow writes in CHANGELOG.md.
+# typos reads the "ded" inside it as a word.
+88ded29 = "88ded29"
 
 [default.extend-words]
 # "mis-reads" is intentional hyphenation, not a misspelling of "miss".
