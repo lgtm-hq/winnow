@@ -22,9 +22,9 @@ concurrency:
 jobs:
   security-audit:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-security-audit.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     with:
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       # Org ruleset (checks-winnow): security-audit / 🔐 Security Audit
       job-name: '🔐 Security Audit'
       # yamllint disable-line rule:line-length
@@ -46,12 +46,12 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-publish-security-audit-comment.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     with:
       # Keep up to three earlier runs under "Previous runs" (lgtm-ci #1346).
       comment-history: true
       comment-history-limit: 3
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
     permissions:
       # read: checkout repository for comment generation
@@ -73,7 +73,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: list the run's jobs and steps for the issue body
       actions: read

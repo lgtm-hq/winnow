@@ -24,14 +24,14 @@ jobs:
     name: Generate and verify SBOM
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-sbom.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     with:
       target: .
       target-type: dir
       sbom-format: cyclonedx-json
       scan-vulnerabilities: true
       create-attestation: true
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
       egress-preset: sbom
     permissions:
@@ -58,7 +58,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: checkout and build sdist/wheel (reusable-build-python-dist)
       contents: read
@@ -72,7 +72,7 @@ jobs:
       verify-tag-version: true
       ensure-tag-on-default-branch: true
       artifact-name: python-dist
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
       # python-dist plus the hosts below: the old hand-written list minus
       # sigstore-tuf-root.storage.googleapis.com, which lgtm-ci v0.112.0
@@ -610,11 +610,11 @@ jobs:
       - name: Prepare distribution
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+          tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
           validate: 'false'
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
@@ -1242,11 +1242,11 @@ jobs:
       - name: Prepare PyPI upload
         id: prepare
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+        uses: lgtm-hq/lgtm-ci/.github/actions/prepare-pypi-upload@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
         with:
           artifact-name: python-dist
           python-version: '3.13'
-          tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+          tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
           # The dist attestation is made inside lgtm-ci's build reusable, so that
           # workflow is the signer identity Fulcio recorded; --repo alone is rejected.
           signer-workflow: lgtm-hq/lgtm-ci/.github/workflows/reusable-build-python-dist.yml
@@ -1454,7 +1454,7 @@ jobs:
     needs: [pypi-upload]
     if: ${{ !startsWith(github.ref_name, 'actions-v') }}
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-github-release.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # needed by the "Create GitHub Release" step (id: gh-release) in
       # reusable-github-release @ v0.77.5
@@ -1464,7 +1464,7 @@ jobs:
     with:
       artifact-name: python-dist
       generate-release-notes: true
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
       egress-preset: github-tooling
 
@@ -1913,7 +1913,7 @@ jobs:
       # yamllint enable rule:line-length
       - name: Dispatch formula update
         # yamllint disable-line rule:line-length
-        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+        uses: lgtm-hq/lgtm-ci/.github/actions/trigger-homebrew-update@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
         with:
           formula: winnow
           version: ${{ needs.pypi-build.outputs.version }}
@@ -2056,7 +2056,7 @@ jobs:
       github.ref_type == 'tag' &&
       !startsWith(github.ref_name, 'actions-v')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-release-failure-notifier.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: list the run's jobs and failed-job logs for the issue body
       actions: read
