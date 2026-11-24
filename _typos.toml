@@ -1,11 +1,15 @@
 # typos (added to the lintro tool set in 0.171.x) false positives.
+[default]
+# A short commit hash alone in parentheses, as the release workflow writes
+# it at the end of a CHANGELOG.md line: "(88ded29)". typos reads letters
+# inside a hash as a word ("ded"). Only 7 to 12 hexadecimal characters
+# between parentheses are skipped; everything else on the line is checked.
+extend-ignore-re = ["\\([0-9a-f]{7,12}\\)"]
+
 [default.extend-identifiers]
 # Pillow image mode names are case-sensitive identifiers.
 La = "La"
 RGBa = "RGBa"
-# Commit hash of #479, which the release workflow writes in CHANGELOG.md.
-# typos reads the "ded" inside it as a word.
-88ded29 = "88ded29"
 
 [default.extend-words]
 # "mis-reads" is intentional hyphenation, not a misspelling of "miss".
