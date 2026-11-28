@@ -40,6 +40,13 @@ from winnow.media.registry import (
     media_type_for_extension,
     normalize_extension,
 )
+from winnow.media.resolve_date import (
+    RULESET_VERSION,
+    ClockDefault,
+    DatePolicy,
+    resolve_capture_date,
+    resolve_digitized_date,
+)
 from winnow.media.service import (
     DefaultMetadataService,
     MetadataService,
@@ -59,7 +66,10 @@ __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_THUMBNAIL_SIZE",
     "RAW_IMAGE_MIME_TYPES",
+    "RULESET_VERSION",
     "TESTED_FFPROBE_MAJORS",
+    "ClockDefault",
+    "DatePolicy",
     "DefaultMetadataService",
     "DetectionResult",
     "DirectoryStats",
@@ -91,4 +101,6 @@ __all__ = [
     "read_exif",
     "read_maker_note_tags",
     "read_video_tags",
+    "resolve_capture_date",
+    "resolve_digitized_date",
 ]
