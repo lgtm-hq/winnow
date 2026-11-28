@@ -93,7 +93,7 @@ jobs:
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           # The uv the Dockerfile copies in.
-          version: '0.13.9'
+          version: '0.13.10'
           # Sets UV_PYTHON for every uv command below.
           python-version: ${{ matrix.python-version }}
           enable-cache: false
