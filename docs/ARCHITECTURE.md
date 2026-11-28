@@ -259,6 +259,7 @@ flowchart LR
   Pipeline --> Hash[hash]
   Pipeline --> Report[report]
   Report --> Storage[storage]
+  Hash --> Storage
   Dedup --> Hash
   Dedup --> Media
   Media --> FS[fs]
