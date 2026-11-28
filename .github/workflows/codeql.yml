@@ -32,7 +32,7 @@ concurrency:
 jobs:
   codeql:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-codeql.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-codeql.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     with:
       # Org ruleset (checks-winnow): codeql / 🔬 CodeQL Analysis
       job-name: '🔬 CodeQL Analysis'
@@ -40,7 +40,7 @@ jobs:
       build-mode: none
       config-file: .github/codeql/codeql-config.yml
       category: '/language:all'
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
       # The preset alone: at lgtm-ci v0.116.3 github-tooling holds exactly
       # the eight hosts of the old hand-written list, including
@@ -71,7 +71,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: list the run's jobs and steps for the issue body
       actions: read

@@ -26,7 +26,7 @@ concurrency:
 jobs:
   gate:
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-all-checks-gate.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     with:
       egress-policy: block
       # On a push to main only, leave out the tag publish run that a release

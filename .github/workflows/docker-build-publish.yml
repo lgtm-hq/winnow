@@ -27,7 +27,7 @@ jobs:
   docker:
     name: 🐳 Docker Image
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-docker.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-docker.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: the nested SARIF-uploading job requests actions: read
       # (upload-sarif looks up the workflow run via the Actions API;
@@ -61,7 +61,7 @@ jobs:
       provenance: true
       sbom: true
       cosign-sign: true
-      tooling-ref: '0c373f1252e0fe23a1e119df639b51d63b02b7d8' # v0.116.3
+      tooling-ref: 'd9e2ca3a4a7646bf7b4a810567db65a781267ce6' # v0.116.5
       egress-policy: block
       # The docker preset plus the hosts below: the same 29 hosts as the old
       # hand-written list (#465).
@@ -97,7 +97,7 @@ jobs:
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'push' || github.event_name == 'schedule')
     # yamllint disable-line rule:line-length
-    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@0c373f1252e0fe23a1e119df639b51d63b02b7d8 # v0.116.3
+    uses: lgtm-hq/lgtm-ci/.github/workflows/reusable-main-failure-notifier.yml@d9e2ca3a4a7646bf7b4a810567db65a781267ce6 # v0.116.5
     permissions:
       # read: list the run's jobs and steps for the issue body
       actions: read
