@@ -21,6 +21,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+## [0.38.0] - 2026-11-28
+
+### Added
+
+- **media**: add the evidence model and its collector (#479) (88ded29)
+
+### Changed
+
+- **deps**: update python:3.15-slim docker digest to 08a4c22 (#497) (fd84644)
+- **deps**: update python:3.15-slim docker digest to 63bb298 (#494) (de38088)
+- **deps**: update python:3.15-slim docker digest to 1c670c3 (#493) (c1a09de)
+- **test**: run the test suite on macOS as well as Linux (#476) (2e682f8)
+- **media**: bound detection timing tests by CPU time (#478) (470e92d)
+
 ## [0.37.21] - 2026-11-23
 
 ### Fixed
