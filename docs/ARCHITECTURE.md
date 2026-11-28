@@ -170,6 +170,15 @@ consumes HTTP only.
   the file to `ffprobe` without its name, runs each call in its own process group
   bounded in time and output, and reports anything `ffprobe` does not establish as
   unknown (rules in #400 and its amendments).
+- `media/` types a file by its content first. Only when no content rule recognises it
+  does the extension decide, and that answer comes from the registry's own formats and
+  then winnow's versioned extension table (`media/_extension_table.py`), never from the
+  host. That table holds only extensions winnow already typed by name, so no extension
+  becomes media by name alone. The host's `mimetypes` table, which differs between
+  machines and Python versions, is asked only by a registry built with
+  `use_mime_fallback=True`, through a private table; importing winnow never changes the
+  process-wide `mimetypes` table. The extension signal names the table that answered
+  (`table=winnow/1`, `table=registry`, `table=host-mime` or `table=none`) (#464).
 - `hash/` computes digests and manages caches; it does not group duplicates.
 - `dedup/` compares hashes and scores quality; it does not move files.
 - `pipeline/` orchestrates steps and reversible file ops; individual steps delegate to

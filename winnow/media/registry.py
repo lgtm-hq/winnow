@@ -4,24 +4,51 @@ Media types are resolved by :func:`winnow.media._detect.detect`, most
 authoritative rule first: user overrides registered on a
 :class:`FormatRegistry`, the file's content (container structure and
 signatures, with ``puremagic`` as advisory evidence), then name-based
-inference through the standard library ``mimetypes`` table, seeded once at
-import with RAW camera formats the table lacks.
+inference.
 
-The registry itself only hand-maintains the RAW supplement; every mainstream
-extension is answered by the MIME table or by sniffing file content.
+The name lookup answers from the registry's own formats (user registrations
+and, with ``include_defaults``, the RAW and extension-only supplements), then
+from winnow's versioned extension table
+(:mod:`winnow.media._extension_table`), so the default answer is the same on
+every host and Python version (#464). The host's ``mimetypes`` table, which
+reads system files and differs between machines, is asked last and only when
+the registry is built with ``use_mime_fallback=True``. That path uses a
+private ``mimetypes.MimeTypes`` instance; importing winnow never changes the
+process-wide ``mimetypes`` table.
 """
 
 from __future__ import annotations
 
+import functools
 import mimetypes
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 from threading import Lock
 from types import MappingProxyType
-from typing import Self
+from typing import Final, Self
 
 from winnow.media import _detect
+from winnow.media._extension_table import EXTENSION_MEDIA_TYPES, EXTENSION_TABLE_NAME
 from winnow.models.media import MediaType
+
+DEFAULT_USE_MIME_FALLBACK: Final[bool] = False
+"""Whether registries ask the host's ``mimetypes`` table unless told otherwise.
+
+The one switch for the default of ``use_mime_fallback`` in
+:class:`FormatRegistry`, :meth:`FormatRegistry.from_config` and
+:func:`create_default_format_registry`. ``False`` keeps the name fallback
+the same on every host (#464).
+"""
+
+REGISTRY_TABLE: Final[str] = "registry"
+"""``table=`` value when the registry's own formats answered."""
+
+HOST_MIME_TABLE: Final[str] = "host-mime"
+"""``table=`` value when the host's ``mimetypes`` table answered."""
+
+NO_TABLE: Final[str] = "none"
+"""``table=`` value when no table the registry consults knows the extension."""
 
 RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
     {
@@ -50,7 +77,7 @@ RAW_IMAGE_MIME_TYPES: Mapping[str, str] = MappingProxyType(
         "x3f": "image/x-sigma-x3f",
     },
 )
-"""RAW camera extensions missing from the stdlib ``mimetypes`` table."""
+"""RAW camera extensions and the MIME types the opt-in host lookup gives them."""
 
 EXTENSION_ONLY_FORMATS: Mapping[str, MediaType] = MappingProxyType(
     {
@@ -99,23 +126,10 @@ DEFAULT_FORMATS: Mapping[str, MediaType] = MappingProxyType(
 """Supplement seeded into default registries: RAW and extension-only formats.
 
 Mainstream formats (JPEG, PNG, MP4, MP3, ...) are intentionally absent; they
-resolve through content sniffing or the stdlib ``mimetypes`` table instead of a
-hand-maintained list. The defaults are name fallbacks, never overrides.
+resolve through content sniffing or winnow's extension table
+(:data:`~winnow.media._extension_table.EXTENSION_MEDIA_TYPES`). The defaults
+are name fallbacks, never overrides.
 """
-
-
-def _seed_raw_mime_types() -> None:
-    """Register RAW image MIME types with the stdlib ``mimetypes`` table.
-
-    Runs once at import so ``mimetypes.guess_type`` recognizes RAW camera
-    extensions (and corrects misleading platform entries such as ``.dcr``)
-    process-wide.
-    """
-    for extension, mime_type in RAW_IMAGE_MIME_TYPES.items():
-        mimetypes.add_type(mime_type, f".{extension}")
-
-
-_seed_raw_mime_types()
 
 _MIME_PREFIX_TYPES: Mapping[str, MediaType] = MappingProxyType(
     {
@@ -126,6 +140,21 @@ _MIME_PREFIX_TYPES: Mapping[str, MediaType] = MappingProxyType(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ExtensionLookup:
+    """An extension's media type and the table that gave it.
+
+    Args:
+        media_type: Media type the extension names, or ``None``.
+        table: Which table answered: :data:`REGISTRY_TABLE`, winnow's
+            extension table (``winnow/<version>``), :data:`HOST_MIME_TABLE`,
+            or :data:`NO_TABLE` when none knows the extension.
+    """
+
+    media_type: MediaType | None
+    table: str
+
+
 class FormatRegistry:
     """Map media file extensions to supported media types.
 
@@ -133,23 +162,33 @@ class FormatRegistry:
         formats: Optional custom extension mapping. Values may be ``MediaType``
             instances or media type strings such as ``"image"``.
         include_defaults: Whether to seed the registry with Winnow's built-in
-            common media formats before applying custom formats.
-        use_mime_fallback: Whether ``lookup`` should ask ``mimetypes`` when an
-            extension is not registered.
+            common media formats before applying custom formats, and to
+            answer from winnow's extension table.
+        use_mime_fallback: Whether ``lookup`` should ask the host's
+            ``mimetypes`` table when no other table knows an extension. The
+            answer then depends on the host; defaults to
+            :data:`DEFAULT_USE_MIME_FALLBACK`.
     """
 
-    __slots__ = ("_extension_map", "_lock", "_override_keys", "use_mime_fallback")
+    __slots__ = (
+        "_extension_map",
+        "_include_defaults",
+        "_lock",
+        "_override_keys",
+        "use_mime_fallback",
+    )
 
     def __init__(
         self,
         formats: Mapping[str, MediaType | str] | None = None,
         *,
         include_defaults: bool = True,
-        use_mime_fallback: bool = True,
+        use_mime_fallback: bool = DEFAULT_USE_MIME_FALLBACK,
     ) -> None:
         self._extension_map: dict[str, MediaType] = {}
         self._override_keys: set[str] = set()
         self._lock = Lock()
+        self._include_defaults = include_defaults
         self.use_mime_fallback = use_mime_fallback
 
         if include_defaults:
@@ -183,7 +222,7 @@ class FormatRegistry:
         use_mime_fallback = _coerce_config_bool(
             config=config_mapping,
             key="use_mime_fallback",
-            default=True,
+            default=DEFAULT_USE_MIME_FALLBACK,
         )
         return cls(
             formats=formats,
@@ -290,31 +329,81 @@ class FormatRegistry:
                 and paths are also accepted; only the final suffix is used.
 
         Returns:
-            Registered media type, MIME-inferred media type when enabled, or
-            ``None`` for unknown extensions.
+            Registered media type, the type winnow's extension table gives,
+            the host MIME table's type when enabled, or ``None`` for unknown
+            extensions.
+        """
+        return self._resolve(extension).media_type
+
+    def lookup_with_table(self, extension: str) -> ExtensionLookup:
+        """Look up a media type by extension and say which table answered.
+
+        The registry's own formats answer first, then winnow's extension
+        table (with ``include_defaults``), then the host's ``mimetypes``
+        table (only with ``use_mime_fallback``).
+
+        A subclass that overrides :meth:`lookup` still decides the answer,
+        as it did before this method existed: its type is returned with the
+        table that gave the same type here, or :data:`REGISTRY_TABLE` when
+        the subclass supplied a different one.
+
+        Args:
+            extension: File extension, with or without a leading dot. File names
+                and paths are also accepted; only the final suffix is used.
+
+        Returns:
+            The media type and the table that gave it.
+        """
+        resolved = self._resolve(extension)
+        if type(self).lookup is FormatRegistry.lookup:
+            return resolved
+        media_type = self.lookup(extension)
+        if media_type == resolved.media_type:
+            return resolved
+        if media_type is None:
+            return ExtensionLookup(media_type=None, table=NO_TABLE)
+        return ExtensionLookup(media_type=media_type, table=REGISTRY_TABLE)
+
+    def _resolve(self, extension: str) -> ExtensionLookup:
+        """Answer :meth:`lookup_with_table` from the registry's own tables.
+
+        Args:
+            extension: File extension, file name or path.
+
+        Returns:
+            The media type and the table that gave it.
         """
         normalized_extension = normalize_extension(extension)
         if not normalized_extension:
-            return None
+            return ExtensionLookup(media_type=None, table=NO_TABLE)
 
         with self._lock:
             media_type = self._extension_map.get(normalized_extension)
         if media_type is not None:
-            return media_type
-        if not self.use_mime_fallback:
-            return None
-        return _lookup_mime_type(normalized_extension)
+            return ExtensionLookup(media_type=media_type, table=REGISTRY_TABLE)
+        if self._include_defaults:
+            media_type = EXTENSION_MEDIA_TYPES.get(normalized_extension)
+            if media_type is not None:
+                return ExtensionLookup(
+                    media_type=media_type,
+                    table=EXTENSION_TABLE_NAME,
+                )
+        if self.use_mime_fallback:
+            media_type = _lookup_mime_type(normalized_extension)
+            if media_type is not None:
+                return ExtensionLookup(media_type=media_type, table=HOST_MIME_TABLE)
+        return ExtensionLookup(media_type=None, table=NO_TABLE)
 
 
 def create_default_format_registry(
     *,
-    use_mime_fallback: bool = True,
+    use_mime_fallback: bool = DEFAULT_USE_MIME_FALLBACK,
 ) -> FormatRegistry:
     """Create a registry populated with Winnow's default media formats.
 
     Args:
-        use_mime_fallback: Whether unknown extensions may fall back to MIME type
-            detection.
+        use_mime_fallback: Whether unknown extensions may fall back to the
+            host's MIME table, whose answers differ between hosts.
 
     Returns:
         Registry containing built-in image, video, and audio formats.
@@ -335,7 +424,7 @@ def media_type_for_extension(
             registry.
 
     Returns:
-        Matching media type, MIME-inferred media type, or ``None`` when unknown.
+        Matching media type, or ``None`` when unknown.
     """
     active_registry = registry if registry is not None else DEFAULT_FORMAT_REGISTRY
     return active_registry.lookup(extension)
@@ -390,11 +479,35 @@ def normalize_extension(extension: str) -> str:
     return candidate.lstrip(".").casefold()
 
 
-def _lookup_mime_type(extension: str) -> MediaType | None:
-    """Infer a media type from an extension using the stdlib MIME table.
+@functools.cache
+def _host_mime_types() -> mimetypes.MimeTypes:
+    """Build the private host MIME table the opt-in lookup asks.
 
-    ``mimetypes`` consults platform tables (for example ``/etc/mime.types`` or
-    the Windows registry), so fallback results can vary across machines.
+    It holds CPython's built-in table, the host's MIME files
+    (``mimetypes.knownfiles``) and, on Windows, the registry, then the RAW
+    supplement, which also corrects misleading platform entries such as
+    ``.dcr``. Built on first use, never at import, and never written to the
+    process-wide ``mimetypes`` table.
+
+    Returns:
+        The table.
+    """
+    table = mimetypes.MimeTypes()
+    for name in mimetypes.knownfiles:
+        if Path(name).is_file():
+            table.read(name)
+    table.read_windows_registry()
+    for extension, mime_type in RAW_IMAGE_MIME_TYPES.items():
+        table.add_type(mime_type, f".{extension}")
+    return table
+
+
+def _lookup_mime_type(extension: str) -> MediaType | None:
+    """Infer a media type from an extension using the host's MIME table.
+
+    The host table reads platform files (for example ``/etc/mime.types`` or
+    the Windows registry), so its answers vary across machines and Python
+    versions; only registries built with ``use_mime_fallback=True`` ask it.
 
     Args:
         extension: Normalized extension without a leading dot.
@@ -403,7 +516,7 @@ def _lookup_mime_type(extension: str) -> MediaType | None:
         MIME-inferred media type, or ``None`` when MIME cannot identify an image,
         video, or audio extension.
     """
-    mime_type, _ = mimetypes.guess_type(f"file.{extension}")
+    mime_type, _ = _host_mime_types().guess_type(f"file.{extension}")
     if mime_type is None:
         return None
     mime_prefix, _, _ = mime_type.partition("/")
@@ -493,7 +606,12 @@ default; use :func:`create_default_format_registry` for an isolated registry."""
 __all__ = [
     "DEFAULT_FORMAT_REGISTRY",
     "DEFAULT_FORMATS",
+    "DEFAULT_USE_MIME_FALLBACK",
     "EXTENSION_ONLY_FORMATS",
+    "HOST_MIME_TABLE",
+    "NO_TABLE",
+    "REGISTRY_TABLE",
+    "ExtensionLookup",
     "FormatRegistry",
     "RAW_IMAGE_MIME_TYPES",
     "create_default_format_registry",
