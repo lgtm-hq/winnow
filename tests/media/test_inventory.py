@@ -2,49 +2,168 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shutil
+import struct
+import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from assertpy import assert_that
+from PIL import Image
 
+from tests.media.conftest import FIXTURE_DIR
+from tests.media.ebml_support import AUDIO as MKV_AUDIO
+from tests.media.ebml_support import cluster, matroska, tracks
+from tests.media.signature_support import program_stream
+from winnow.exceptions import MediaError
+from winnow.fs.walk import WalkEvent, WalkEventKind, WalkPolicy
+from winnow.media import detect, inventory
+from winnow.media import registry as registry_module
+from winnow.media import service as service_module
+from winnow.media._detect_base import DetectionResult
 from winnow.media.inventory import (
+    LINK_CHANGED,
+    Classification,
+    DirectoryStats,
+    ExtensionCheck,
+    InventoryEntry,
     collect_directory_stats,
+    decided_by_name,
+    extension_check,
     inspect_file,
+    iter_inventory,
     iter_regular_files,
 )
-from winnow.models.media import MediaType
+from winnow.media.registry import create_default_format_registry, detect_media_type
+from winnow.models.config import PathSettings, WinnowConfig
+from winnow.models.enums import SymlinkPolicy
+from winnow.models.media import MediaMetadata, MediaType
+from winnow.models.pipeline import PipelineResult, RunMetadata
+from winnow.pipeline import DiscoveryStep, PipelineContext, RunState
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterator
+
+_MIDI = (
+    b"MThd"
+    + struct.pack(">IHHH", 6, 0, 1, 96)
+    + b"MTrk"
+    + struct.pack(">I", 4)
+    + b"\x00\xff\x2f\x00"
+)
+"""A minimal Standard MIDI File: header chunk and one empty track."""
+
+_CAF = b"caff\x00\x01\x00\x00" + b"desc" + struct.pack(">q", 32) + b"\x00" * 32
+"""A minimal Core Audio Format file: file header and a ``desc`` chunk."""
+
+_VOB = program_stream((0xE0, b"\x00\x00\x01\xb3" + b"\x00" * 16), video_bound=1)
+"""An MPEG-2 program stream carrying one video PES packet."""
+
+
+def _deny_scandir(
+    monkeypatch: pytest.MonkeyPatch,
+    locked: Path,
+    *,
+    vanish: Path | None = None,
+) -> None:
+    """Make ``locked`` unlistable and optionally delete a file mid-walk.
+
+    ``os.scandir`` raises ``PermissionError`` for ``locked``, as it does for a
+    directory without read permission, on every platform and for every user.
+    When ``vanish`` is given, it is deleted right after its directory is
+    listed, so the walk sees an entry whose file is gone.
+
+    Args:
+        monkeypatch: Fixture used to replace ``os.scandir``.
+        locked: Directory that cannot be listed.
+        vanish: File removed after its parent is listed.
+    """
+    real_scandir = os.scandir
+
+    def fake_scandir(directory: Any) -> Any:
+        if Path(directory) == locked:
+            raise PermissionError(13, "Permission denied", str(directory))
+        with real_scandir(directory) as handle:
+            entries = list(handle)
+        if vanish is not None and Path(directory) == vanish.parent:
+            vanish.unlink(missing_ok=True)
+        return contextlib.nullcontext(entries)
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+
+def _spy_detect(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every path the inventory passes to content detection.
+
+    Args:
+        monkeypatch: Fixture used to wrap ``detect``.
+
+    Returns:
+        The list the spy appends each path to.
+    """
+    calls: list[Path] = []
+    real_detect = detect
+
+    def spy(path: Path, **kwargs: Any) -> DetectionResult:
+        calls.append(path)
+        return real_detect(path, **kwargs)
+
+    monkeypatch.setattr(inventory, "detect", spy)
+    return calls
+
+
+def _discover(source: Path, *, config: WinnowConfig) -> RunState:
+    """Run the Discovery step on ``source``.
+
+    Args:
+        source: Directory to discover.
+        config: Configuration for the run.
+
+    Returns:
+        The state after the step ran.
+    """
+    result = PipelineResult(
+        run=RunMetadata(started_at=datetime.now(tz=UTC), winnow_version="0.0.0"),
+    )
+    state = RunState(source=source, destination=source / "out", result=result)
+    DiscoveryStep().run(state, context=PipelineContext.from_config(config))
+    return state
+
 
 _EARLY = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC).timestamp()
 _LATE = datetime(2023, 12, 31, 23, 59, 59, tzinfo=UTC).timestamp()
 
 
-def _populate(root: Path) -> None:
+def _populate(root: Path) -> int:
     """Create a mixed-media directory tree with known modification times.
+
+    The image, video and audio files hold real content (the committed
+    fixtures), so content detection types them as their names say.
 
     Args:
         root: Directory to populate.
+
+    Returns:
+        The total size in bytes of the four files.
     """
     (root / "sub").mkdir()
     image = root / "photo.jpg"
     video = root / "sub" / "clip.mp4"
     audio = root / "song.mp3"
     unknown = root / "notes.txt"
-    for path, content in (
-        (image, "aa"),
-        (video, "bbbb"),
-        (audio, "cc"),
-        (unknown, "d"),
-    ):
-        path.write_text(content)
+    shutil.copyfile(FIXTURE_DIR / "sample.jpg", image)
+    shutil.copyfile(FIXTURE_DIR / "sample.mp4", video)
+    shutil.copyfile(FIXTURE_DIR / "sample.mp3", audio)
+    unknown.write_text("d")
     os.utime(image, (_EARLY, _EARLY))
     os.utime(video, (_LATE, _LATE))
     os.utime(audio, (_EARLY, _EARLY))
     os.utime(unknown, (_EARLY, _EARLY))
+    return sum(path.stat().st_size for path in (image, video, audio, unknown))
 
 
 def test_iter_regular_files_skips_directories_and_symlinks(tmp_path: Path) -> None:
@@ -74,12 +193,12 @@ def test_iter_regular_files_non_recursive_stays_top_level(tmp_path: Path) -> Non
 
 def test_collect_directory_stats_aggregates_recursively(tmp_path: Path) -> None:
     """Recursive stats count every file and classify by media type."""
-    _populate(tmp_path)
+    total_bytes = _populate(tmp_path)
 
     result = collect_directory_stats(tmp_path, recursive=True)
 
     assert_that(result.total_files).is_equal_to(4)
-    assert_that(result.total_bytes).is_equal_to(9)
+    assert_that(result.total_bytes).is_equal_to(total_bytes)
     assert_that(result.counts_by_type.get(MediaType.IMAGE)).is_equal_to(1)
     assert_that(result.counts_by_type.get(MediaType.VIDEO)).is_equal_to(1)
     assert_that(result.counts_by_type.get(MediaType.AUDIO)).is_equal_to(1)
@@ -162,14 +281,14 @@ def test_inspect_file_text_file_has_no_media_type(tmp_path: Path) -> None:
     assert_that(file_info.metadata).is_none()
 
 
-def test_inspect_file_non_image_media_has_no_metadata(tmp_path: Path) -> None:
-    """Video and audio files are classified but carry no metadata yet."""
+def test_inspect_file_text_named_as_video_is_unknown(tmp_path: Path) -> None:
+    """A text file named ``.mp4`` is not video and carries no metadata."""
     target = tmp_path / "clip.mp4"
     target.write_text("0123456789")
 
     file_info = inspect_file(target)
 
-    assert_that(file_info.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(file_info.media_type).is_none()
     assert_that(file_info.size_bytes).is_equal_to(10)
     assert_that(file_info.metadata).is_none()
 
@@ -180,3 +299,1309 @@ def test_inspect_file_corrupt_image_degrades_to_none(fixtures_dir: Path) -> None
 
     assert_that(file_info.media_type).is_equal_to(MediaType.IMAGE)
     assert_that(file_info.metadata).is_none()
+
+
+# --- Content detection, walk policy and read errors (#366) -------------------
+
+
+def _write_jpeg(path: Path, *, size: tuple[int, int] = (8, 8)) -> Path:
+    """Write a real JPEG to ``path`` whatever its name says.
+
+    Args:
+        path: Destination file; its suffix is ignored by the encoder.
+        size: Image width and height in pixels.
+
+    Returns:
+        The written path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, (120, 60, 30)).save(path, format="JPEG")
+    return path
+
+
+def test_collect_directory_stats_counts_renamed_jpeg_as_image(tmp_path: Path) -> None:
+    """A JPEG named ``.bin`` is an image; its extension gives no type."""
+    _write_jpeg(tmp_path / "IMG_0001.bin")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.counts_by_type.get(MediaType.IMAGE)).is_equal_to(1)
+    assert_that(result.unknown_count).is_equal_to(0)
+    assert_that(result.extension_untyped_count).is_equal_to(1)
+    assert_that(result.extension_mismatch_count).is_equal_to(0)
+
+
+def test_collect_directory_stats_counts_extensionless_jpeg_as_image(
+    tmp_path: Path,
+) -> None:
+    """A JPEG with no suffix at all is still counted as an image."""
+    _write_jpeg(tmp_path / "noext_jpeg")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.counts_by_type.get(MediaType.IMAGE)).is_equal_to(1)
+    assert_that(result.unknown_count).is_equal_to(0)
+    assert_that(result.extension_untyped_count).is_equal_to(1)
+
+
+def test_collect_directory_stats_counts_text_named_mp4_as_unknown(
+    tmp_path: Path,
+) -> None:
+    """A text file named ``.mp4`` is not counted as video."""
+    (tmp_path / "notes.mp4").write_text("just text\n")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.counts_by_type.get(MediaType.VIDEO)).is_none()
+    assert_that(result.unknown_count).is_equal_to(1)
+    assert_that(result.total_files).is_equal_to(1)
+
+
+def test_collect_directory_stats_counts_extension_mismatch(tmp_path: Path) -> None:
+    """A JPEG named ``.mp3`` is an image and counted as a mismatch."""
+    _write_jpeg(tmp_path / "photo.mp3")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.counts_by_type).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.extension_mismatch_count).is_equal_to(1)
+    assert_that(result.extension_untyped_count).is_equal_to(0)
+
+
+def test_collect_directory_stats_counts_file_that_vanishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file deleted between enumeration and ``stat`` is counted unreadable."""
+    _write_jpeg(tmp_path / "a.jpg")
+    doomed = _write_jpeg(tmp_path / "b.jpg")
+    real_walk = inventory.iter_regular_files
+
+    def vanishing_walk(*args: Any, **kwargs: Any) -> Iterator[Path]:
+        for path in real_walk(*args, **kwargs):
+            if path == doomed:
+                path.unlink()
+            yield path
+
+    monkeypatch.setattr(inventory, "iter_regular_files", vanishing_walk)
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.total_files).is_equal_to(1)
+    assert_that(result.counts_by_type).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.unreadable_count).is_equal_to(1)
+    assert_that(result.unreadable_examples).is_equal_to((doomed,))
+    assert_that(result.complete).is_false()
+
+
+def test_collect_directory_stats_counts_unreadable_subtree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A directory that cannot be listed is counted once; its files are not."""
+    _write_jpeg(tmp_path / "a.jpg")
+    locked = tmp_path / "locked"
+    _write_jpeg(locked / "inside.jpg")
+    _write_jpeg(locked / "deeper" / "more.jpg")
+    _deny_scandir(monkeypatch, locked)
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.total_files).is_equal_to(1)
+    assert_that(result.counts_by_type).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.unreadable_directory_count).is_equal_to(1)
+    assert_that(result.unreadable_directory_examples).is_equal_to((locked,))
+    assert_that(result.unreadable_count).is_equal_to(0)
+    assert_that(result.complete).is_false()
+
+
+def test_collect_directory_stats_counts_unreadable_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file whose content cannot be read is unreadable, not typed by name."""
+    _write_jpeg(tmp_path / "a.jpg")
+    blocked = _write_jpeg(tmp_path / "blocked.jpg")
+    real_detect = detect
+
+    def failing_detect(path: Path, **kwargs: Any) -> DetectionResult:
+        if path == blocked:
+            return real_detect(tmp_path / "missing.jpg", **kwargs)
+        return real_detect(path, **kwargs)
+
+    monkeypatch.setattr(inventory, "detect", failing_detect)
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.counts_by_type).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.unreadable_count).is_equal_to(1)
+    assert_that(result.unreadable_examples).is_equal_to((blocked,))
+
+
+def test_collect_directory_stats_caps_unreadable_examples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most ten unreadable examples are kept, the first ten by path."""
+    names = [f"f{index:02d}.jpg" for index in range(12)]
+    for name in names:
+        _write_jpeg(tmp_path / name)
+
+    def vanishing_walk(*args: Any, **kwargs: Any) -> Iterator[Path]:
+        for path in reversed(sorted(tmp_path.iterdir())):
+            path.unlink()
+            yield path
+
+    monkeypatch.setattr(inventory, "iter_regular_files", vanishing_walk)
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.unreadable_count).is_equal_to(12)
+    assert_that(result.unreadable_examples).is_equal_to(
+        tuple(tmp_path / name for name in names[:10]),
+    )
+
+
+def test_collect_directory_stats_counts_heic_fixtures_as_images(
+    fixtures_dir: Path,
+) -> None:
+    """The committed fixtures are counted by content, HEIC as image."""
+    result = collect_directory_stats(fixtures_dir, recursive=False)
+
+    assert_that(dict(result.counts_by_type)).is_equal_to(
+        {MediaType.IMAGE: 10, MediaType.VIDEO: 1, MediaType.AUDIO: 4},
+    )
+    assert_that(result.unknown_count).is_equal_to(1)
+    assert_that(result.extension_mismatch_count).is_equal_to(0)
+    assert_that(result.extension_untyped_count).is_equal_to(0)
+
+
+@pytest.mark.parametrize("use_mime_fallback", [True, False])
+def test_collect_directory_stats_types_media_whatever_the_name_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    use_mime_fallback: bool,
+) -> None:
+    """MIDI, CAF and MPEG-PS are counted by content with or without MIME names.
+
+    With ``use_mime_fallback=False`` the names ``.mid``, ``.caf`` and ``.vob``
+    give no type (the behaviour #464 makes the default); the counts must not
+    change. The host's MIME table is pinned to one that types all three
+    names, because whether a host knows ``.caf`` or ``.vob`` varies (Linux
+    images without ``/etc/mime.types`` know neither).
+    """
+    pinned = {"mid": MediaType.AUDIO, "caf": MediaType.AUDIO, "vob": MediaType.VIDEO}
+    monkeypatch.setattr(registry_module, "_lookup_mime_type", pinned.get)
+    (tmp_path / "tune.mid").write_bytes(_MIDI)
+    (tmp_path / "loop.caf").write_bytes(_CAF)
+    (tmp_path / "movie.vob").write_bytes(_VOB)
+    registry = create_default_format_registry(use_mime_fallback=use_mime_fallback)
+
+    result = collect_directory_stats(tmp_path, registry=registry)
+
+    assert_that(dict(result.counts_by_type)).is_equal_to(
+        {MediaType.AUDIO: 2, MediaType.VIDEO: 1},
+    )
+    assert_that(result.unknown_count).is_equal_to(0)
+    assert_that(result.extension_mismatch_count).is_equal_to(0)
+    assert_that(result.extension_untyped_count).is_equal_to(
+        0 if use_mime_fallback else 3,
+    )
+
+
+def test_collect_directory_stats_fast_is_extension_only(tmp_path: Path) -> None:
+    """``fast=True`` classifies by name and computes no extension checks."""
+    _write_jpeg(tmp_path / "IMG_0001.bin")
+    (tmp_path / "notes.mp4").write_text("just text\n")
+
+    result = collect_directory_stats(tmp_path, fast=True)
+
+    assert_that(result.classified_by).is_equal_to(Classification.EXTENSION)
+    assert_that(dict(result.counts_by_type)).is_equal_to({MediaType.VIDEO: 1})
+    assert_that(result.unknown_count).is_equal_to(1)
+    assert_that(result.extension_mismatch_count).is_none()
+    assert_that(result.extension_untyped_count).is_none()
+
+
+def test_collect_directory_stats_detects_once_per_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Content detection runs exactly once for each counted file."""
+    _write_jpeg(tmp_path / "a.jpg")
+    _write_jpeg(tmp_path / "sub" / "b.bin")
+    calls = _spy_detect(monkeypatch)
+
+    collect_directory_stats(tmp_path)
+
+    assert_that(sorted(calls)).is_equal_to(
+        [tmp_path / "a.jpg", tmp_path / "sub" / "b.bin"],
+    )
+
+
+def test_collect_directory_stats_reports_skipped_entries(tmp_path: Path) -> None:
+    """Hidden, excluded and symlinked entries are skipped with a reason."""
+    _write_jpeg(tmp_path / "a.jpg")
+    _write_jpeg(tmp_path / ".winnow-backups" / "x.jpg")
+    _write_jpeg(tmp_path / "draft_1.jpg")
+    (tmp_path / "link.jpg").symlink_to(tmp_path / "a.jpg")
+    policy = WalkPolicy(exclude_patterns=("draft_*",))
+
+    result = collect_directory_stats(tmp_path, policy=policy)
+
+    assert_that(result.total_files).is_equal_to(1)
+    assert_that(dict(result.skipped_by_reason)).is_equal_to(
+        {
+            WalkEventKind.HIDDEN: 1,
+            WalkEventKind.EXCLUDED: 1,
+            WalkEventKind.SYMLINK: 1,
+        },
+    )
+    assert_that(result.complete).is_true()
+
+
+def test_iter_inventory_follow_counts_a_linked_file_once(tmp_path: Path) -> None:
+    """Under FOLLOW a symlink to a counted file is skipped as a duplicate."""
+    _write_jpeg(tmp_path / "a.jpg")
+    (tmp_path / "b_link.jpg").symlink_to(tmp_path / "a.jpg")
+    events: list[WalkEvent] = []
+    policy = WalkPolicy(symlink_policy=SymlinkPolicy.FOLLOW)
+
+    entries = list(iter_inventory(tmp_path, policy=policy, on_event=events.append))
+
+    assert_that([entry.path for entry in entries]).is_equal_to([tmp_path / "a.jpg"])
+    assert_that([event.kind for event in events]).is_equal_to(
+        [WalkEventKind.DUPLICATE],
+    )
+    assert_that(events[0].path).is_equal_to(tmp_path / "b_link.jpg")
+
+
+def test_inspect_file_detects_renamed_jpeg(tmp_path: Path) -> None:
+    """A JPEG named ``.bin`` is inspected as an image with its dimensions."""
+    target = _write_jpeg(tmp_path / "IMG_0001.bin", size=(8, 6))
+
+    file_info = inspect_file(target)
+
+    assert_that(file_info.media_type).is_equal_to(MediaType.IMAGE)
+    metadata = file_info.metadata
+    if metadata is None:
+        pytest.fail("expected image metadata for a renamed JPEG")
+    assert_that((metadata.width, metadata.height)).is_equal_to((8, 6))
+    detection = file_info.detection
+    if detection is None:
+        pytest.fail("expected a detection result")
+    assert_that(extension_check(detection)).is_equal_to(
+        ExtensionCheck.EXTENSION_UNTYPED,
+    )
+
+
+def test_inspect_file_detects_once(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inspecting a file reads its content for detection exactly once."""
+    calls = _spy_detect(monkeypatch)
+    service_calls: list[Path] = []
+    real_service_detect = detect_media_type
+
+    def counting_service_detect(path: Path, **kwargs: Any) -> MediaType | None:
+        service_calls.append(path)
+        return real_service_detect(path, **kwargs)
+
+    monkeypatch.setattr(service_module, "detect_media_type", counting_service_detect)
+
+    inspect_file(fixtures_dir / "sample.png")
+
+    assert_that(calls).is_equal_to([fixtures_dir / "sample.png"])
+    assert_that(service_calls).is_empty()
+
+
+def test_inspect_file_extracts_video_metadata(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Video metadata comes from the video extractor for the detected type."""
+    seen: list[Path] = []
+
+    def fake_video(path: Path) -> MediaMetadata:
+        seen.append(path)
+        return MediaMetadata(duration_seconds=2.5, codec="h264")
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {**service_module._EXTRACTORS, MediaType.VIDEO: fake_video},
+    )
+
+    file_info = inspect_file(fixtures_dir / "sample.mp4")
+
+    assert_that(file_info.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(seen).is_equal_to([fixtures_dir / "sample.mp4"])
+    metadata = file_info.metadata
+    if metadata is None:
+        pytest.fail("expected video metadata")
+    assert_that(metadata.duration_seconds).is_equal_to(2.5)
+    assert_that(metadata.codec).is_equal_to("h264")
+
+
+def test_inspect_file_metadata_error_degrades_to_none(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A metadata extractor that fails leaves the type and drops the metadata."""
+
+    def failing_audio(path: Path) -> MediaMetadata:
+        raise MediaError("boom", operation="extract", file_path=path)
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {**service_module._EXTRACTORS, MediaType.AUDIO: failing_audio},
+    )
+
+    file_info = inspect_file(fixtures_dir / "sample.mp3")
+
+    assert_that(file_info.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(file_info.metadata).is_none()
+
+
+def test_inspect_file_wraps_stat_error(tmp_path: Path) -> None:
+    """A file that is gone when inspected raises ``MediaError``."""
+    missing = tmp_path / "gone.jpg"
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(missing)
+
+    assert_that(caught.value.context.operation).is_equal_to("inspect_file")
+    assert_that(caught.value.context.file_path).is_equal_to(missing)
+
+
+def test_inspect_file_rejects_unreadable_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file whose content cannot be read is an error, not typed by name."""
+    target = _write_jpeg(tmp_path / "a.jpg")
+    real_detect = detect
+    monkeypatch.setattr(
+        inventory,
+        "detect",
+        lambda path, **kwargs: real_detect(tmp_path / "missing.jpg", **kwargs),
+    )
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(target)
+
+    assert_that(caught.value.context.operation).is_equal_to("inspect_file")
+
+
+def test_inspect_file_rejects_non_regular_file(tmp_path: Path) -> None:
+    """A FIFO is reported as not a regular file and never opened."""
+    fifo = tmp_path / "pipe.jpg"
+    os.mkfifo(fifo)
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(fifo)
+
+    assert_that(caught.value.message).contains("not a regular file")
+
+
+def test_inspect_file_fast_uses_extension_only(tmp_path: Path) -> None:
+    """``fast=True`` types by name and records no detection."""
+    target = _write_jpeg(tmp_path / "IMG_0001.bin")
+
+    file_info = inspect_file(target, fast=True)
+
+    assert_that(file_info.media_type).is_none()
+    assert_that(file_info.detection).is_none()
+
+
+@pytest.mark.parametrize(
+    ("name", "write", "expected"),
+    [
+        ("a.jpg", "jpeg", ExtensionCheck.MATCH),
+        ("a.mp3", "jpeg", ExtensionCheck.MISMATCH),
+        ("a.bin", "jpeg", ExtensionCheck.EXTENSION_UNTYPED),
+        ("a.mp4", "text", ExtensionCheck.CONTENT_UNKNOWN),
+        ("a.txt", "text", ExtensionCheck.CONTENT_UNKNOWN),
+    ],
+)
+def test_extension_check_states(
+    tmp_path: Path,
+    *,
+    name: str,
+    write: str,
+    expected: ExtensionCheck,
+) -> None:
+    """Each pairing of content and extension maps to one check state."""
+    target = tmp_path / name
+    if write == "jpeg":
+        _write_jpeg(target)
+    else:
+        target.write_text("just text\n")
+
+    assert_that(extension_check(detect(target))).is_equal_to(expected)
+
+
+def test_stats_walk_matches_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stats and Discovery count the same media; every skip has a reason."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "a.jpg")
+    _write_jpeg(root / "sub" / "b.bin")
+    _write_jpeg(root / "linked_target" / "t.jpg")
+    (root / "notes.txt").parent.mkdir(parents=True, exist_ok=True)
+    (root / "notes.txt").write_text("not media\n")
+    (root / "file_link.jpg").symlink_to(root / "a.jpg")
+    (root / "dir_link").symlink_to(root / "linked_target")
+    _write_jpeg(root / ".winnow-backups" / "x.jpg")
+    _write_jpeg(root / "skip_me.jpg")
+    locked = root / "locked"
+    _write_jpeg(locked / "inside.jpg")
+    gone = _write_jpeg(root / "gone.jpg")
+    _deny_scandir(monkeypatch, locked, vanish=gone)
+    config = WinnowConfig(paths=PathSettings(exclude_patterns=["skip_*"]))
+
+    state = _discover(root, config=config)
+    _write_jpeg(gone)
+    events: list[WalkEvent] = []
+    entries = list(
+        iter_inventory(
+            root,
+            policy=WalkPolicy.from_config(config),
+            on_event=events.append,
+        ),
+    )
+    _write_jpeg(gone)
+    stats = collect_directory_stats(root, policy=WalkPolicy.from_config(config))
+
+    discovered = {media.path for media in state.files}
+    counted = {entry.path.resolve() for entry in entries if entry.media_type}
+    assert_that(counted).is_equal_to(discovered)
+    assert_that(discovered).is_length(3)
+    assert_that(stats.unknown_count).is_equal_to(1)
+    assert_that(dict(stats.skipped_by_reason)).is_equal_to(
+        {
+            WalkEventKind.HIDDEN: 1,
+            WalkEventKind.EXCLUDED: 1,
+            WalkEventKind.SYMLINK: 2,
+        },
+    )
+    assert_that(stats.unreadable_directory_count).is_equal_to(1)
+    assert_that(stats.unreadable_count).is_equal_to(1)
+    assert_that(state.result.errors).is_length(2)
+    issue_paths = sorted(
+        event.path
+        for event in events
+        if event.kind
+        in {WalkEventKind.UNREADABLE_DIRECTORY, WalkEventKind.UNREADABLE_ENTRY}
+    )
+    assert_that(issue_paths).is_equal_to(sorted([gone, locked]))
+
+
+def test_collect_directory_stats_skips_non_regular_files(tmp_path: Path) -> None:
+    """A FIFO is skipped as not a regular file and never opened."""
+    _write_jpeg(tmp_path / "a.jpg")
+    os.mkfifo(tmp_path / "pipe.jpg")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(result.total_files).is_equal_to(1)
+    assert_that(dict(result.skipped_by_reason)).is_equal_to(
+        {WalkEventKind.NOT_REGULAR: 1},
+    )
+
+
+_MATCHING_FIXTURES = (
+    "dated.heic",
+    "dated.jpg",
+    "sample.bmp",
+    "sample.flac",
+    "sample.gif",
+    "sample.heic",
+    "sample.jpg",
+    "sample.mp3",
+    "sample.mp4",
+    "sample.ogg",
+    "sample.png",
+    "sample.tiff",
+    "sample.wav",
+    "sample.webp",
+)
+"""Fixtures whose content and extension give the same media type."""
+
+
+def test_collect_directory_stats_equals_extension_counts_for_matching_media(
+    tmp_path: Path,
+) -> None:
+    """Media whose extensions match their content count the same both ways."""
+    for name in _MATCHING_FIXTURES:
+        shutil.copyfile(FIXTURE_DIR / name, tmp_path / name)
+
+    by_content = collect_directory_stats(tmp_path)
+    by_name = collect_directory_stats(tmp_path, fast=True)
+
+    expected = {MediaType.IMAGE: 9, MediaType.VIDEO: 1, MediaType.AUDIO: 4}
+    assert_that(dict(by_content.counts_by_type)).is_equal_to(expected)
+    assert_that(dict(by_name.counts_by_type)).is_equal_to(expected)
+    assert_that(by_content.unknown_count).is_equal_to(0)
+    assert_that(by_content.extension_mismatch_count).is_equal_to(0)
+    assert_that(by_content.total_bytes).is_equal_to(by_name.total_bytes)
+
+
+def test_collect_directory_stats_documented_corrections(tmp_path: Path) -> None:
+    """Audio-only MP4 and WebM are audio; header-only files are unknown.
+
+    These are the only differences from extension counting: the extension
+    says video for the two audio-only containers and image or video for the
+    two files holding no media header.
+    """
+    shutil.copyfile(FIXTURE_DIR / "audio" / "aac_frag.mp4", tmp_path / "voice.mp4")
+    (tmp_path / "voice.webm").write_bytes(
+        matroska(tracks(MKV_AUDIO), cluster(), doctype=b"webm"),
+    )
+    (tmp_path / "photo.jpg").write_text("aa")
+    (tmp_path / "clip.mp4").write_text("bbbb")
+
+    by_content = collect_directory_stats(tmp_path)
+    by_name = collect_directory_stats(tmp_path, fast=True)
+
+    assert_that(dict(by_content.counts_by_type)).is_equal_to({MediaType.AUDIO: 2})
+    assert_that(by_content.unknown_count).is_equal_to(2)
+    assert_that(by_content.extension_mismatch_count).is_equal_to(2)
+    assert_that(dict(by_name.counts_by_type)).is_equal_to(
+        {MediaType.VIDEO: 3, MediaType.IMAGE: 1},
+    )
+    assert_that(by_name.unknown_count).is_equal_to(0)
+
+
+# --- Review fixes (#366, PR 490) ---------------------------------------------
+
+_POSTSCRIPT = (
+    b"%!PS-Adobe-3.0\n%%BoundingBox: 0 0 10 10\n"
+    b"newpath 0 0 moveto 10 10 lineto stroke\nshowpage\n%%EOF\n"
+)
+"""A PostScript drawing: an image as ``.eps``, plain text under other names."""
+
+
+def _follow() -> WalkPolicy:
+    """Return a walk policy that follows symlinks.
+
+    Returns:
+        The policy.
+    """
+    return WalkPolicy(symlink_policy=SymlinkPolicy.FOLLOW)
+
+
+@pytest.mark.parametrize("alias", ["a-logo", "a.bin"])
+def test_follow_counts_the_name_that_gives_a_type(
+    tmp_path: Path, *, alias: str
+) -> None:
+    """An earlier untyped alias does not hide its target's media type."""
+    target = tmp_path / "z-logo.eps"
+    target.write_bytes(_POSTSCRIPT)
+    (tmp_path / alias).symlink_to(target)
+    events: list[WalkEvent] = []
+
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+    stats = collect_directory_stats(tmp_path, policy=_follow())
+
+    assert_that([(entry.path, entry.media_type) for entry in entries]).is_equal_to(
+        [(target, MediaType.IMAGE)],
+    )
+    assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
+        [(WalkEventKind.DUPLICATE, alias)],
+    )
+    assert_that(dict(stats.counts_by_type)).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(stats.unknown_count).is_equal_to(0)
+
+
+def test_follow_keeps_one_unknown_name_per_untyped_target(tmp_path: Path) -> None:
+    """A target no name types is counted once, under its first name."""
+    (tmp_path / "b_notes.txt").write_text("just text\n")
+    (tmp_path / "a_link").symlink_to(tmp_path / "b_notes.txt")
+    (tmp_path / "c_link").symlink_to(tmp_path / "b_notes.txt")
+    _write_jpeg(tmp_path / "photo.jpg")
+    events: list[WalkEvent] = []
+
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+
+    assert_that([entry.path.name for entry in entries]).is_equal_to(
+        ["photo.jpg", "a_link"],
+    )
+    assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
+        [(WalkEventKind.DUPLICATE, "b_notes.txt"), (WalkEventKind.DUPLICATE, "c_link")],
+    )
+
+
+def test_follow_matches_discovery_on_an_untyped_alias(tmp_path: Path) -> None:
+    """Stats and Discovery agree when an untyped alias sorts first."""
+    target = tmp_path / "z-logo.eps"
+    target.write_bytes(_POSTSCRIPT)
+    (tmp_path / "a-logo").symlink_to(target)
+    config = WinnowConfig(follow_symlinks=True, symlink_policy=SymlinkPolicy.FOLLOW)
+
+    state = _discover(tmp_path, config=config)
+    entries = list(iter_inventory(tmp_path, policy=WalkPolicy.from_config(config)))
+
+    counted = {entry.path.resolve() for entry in entries if entry.media_type}
+    assert_that(counted).is_equal_to({media.path for media in state.files})
+    assert_that(counted).is_equal_to({target.resolve()})
+
+
+@pytest.mark.parametrize("policy", list(SymlinkPolicy))
+def test_stats_and_discovery_survive_self_and_ancestor_links(
+    tmp_path: Path,
+    *,
+    policy: SymlinkPolicy,
+) -> None:
+    """A self-link and a link to an ancestor end neither walk early."""
+    root = tmp_path / "root"
+    _write_jpeg(root / "a.jpg")
+    _write_jpeg(root / "sub" / "b.jpg")
+    (root / "self_link").symlink_to(root / "self_link")
+    (root / "sub" / "up").symlink_to(root)
+    config = WinnowConfig(
+        follow_symlinks=policy is SymlinkPolicy.FOLLOW,
+        symlink_policy=policy,
+    )
+
+    state = _discover(root, config=config)
+    stats = collect_directory_stats(root, policy=WalkPolicy.from_config(config))
+    entries = list(iter_inventory(root, policy=WalkPolicy.from_config(config)))
+
+    discovered = {media.path for media in state.files}
+    assert_that(discovered).is_equal_to(
+        {(root / "a.jpg").resolve(), (root / "sub" / "b.jpg").resolve()},
+    )
+    assert_that({entry.path.resolve() for entry in entries}).is_equal_to(discovered)
+    assert_that(stats.total_files).is_equal_to(2)
+    if policy is SymlinkPolicy.FOLLOW:
+        assert_that(stats.unreadable_examples).is_equal_to((root / "self_link",))
+    else:
+        assert_that(dict(stats.skipped_by_reason)).is_equal_to(
+            {WalkEventKind.SYMLINK: 2},
+        )
+
+
+def _replace_during_detect(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Path,
+    replacement: Path,
+    *,
+    times: int = 1,
+) -> list[Path]:
+    """Atomically replace ``target`` with a copy of ``replacement`` at detection.
+
+    Args:
+        monkeypatch: Fixture used to wrap ``detect``.
+        target: File replaced just before detection opens it.
+        replacement: File whose bytes replace it.
+        times: How many detections of ``target`` replace it.
+
+    Returns:
+        The list the wrapper appends each detected path to.
+    """
+    calls: list[Path] = []
+
+    def replacing_detect(path: Path, **kwargs: Any) -> DetectionResult:
+        calls.append(path)
+        if path == target and len(calls) <= times:
+            staged = target.with_name(f".staged-{len(calls)}")
+            shutil.copyfile(replacement, staged)
+            os.utime(staged, (_LATE, _LATE))
+            staged.replace(target)
+        return detect(path, **kwargs)
+
+    monkeypatch.setattr(inventory, "detect", replacing_detect)
+    return calls
+
+
+def test_stats_takes_size_and_time_from_the_detected_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file replaced at detection is counted with the replacement's facts."""
+    library = tmp_path / "library"
+    target = _write_jpeg(library / "photo.jpg")
+    os.utime(target, (_EARLY, _EARLY))
+    replacement = FIXTURE_DIR / "sample.mp3"
+    _replace_during_detect(monkeypatch, target, replacement)
+
+    entries = list(iter_inventory(library))
+
+    assert_that(entries).is_length(1)
+    assert_that(entries[0].media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(entries[0].size_bytes).is_equal_to(replacement.stat().st_size)
+    assert_that(entries[0].modified).is_equal_to(
+        datetime.fromtimestamp(_LATE, tz=UTC),
+    )
+
+
+def test_inspect_file_retries_a_file_replaced_while_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement during detection is detected again, never mixed."""
+    target = _write_jpeg(tmp_path / "photo.jpg")
+    replacement = FIXTURE_DIR / "sample.mp3"
+    calls = _replace_during_detect(monkeypatch, target, replacement)
+
+    file_info = inspect_file(target)
+
+    assert_that(calls).is_length(2)
+    assert_that(file_info.media_type).is_equal_to(MediaType.AUDIO)
+    assert_that(file_info.size_bytes).is_equal_to(replacement.stat().st_size)
+    assert_that(file_info.modified).is_equal_to(datetime.fromtimestamp(_LATE, tz=UTC))
+
+
+def test_inspect_file_fails_on_a_file_that_keeps_changing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file replaced on every read is an error, not a mixed result."""
+    target = _write_jpeg(tmp_path / "photo.jpg")
+    _replace_during_detect(monkeypatch, target, FIXTURE_DIR / "sample.mp3", times=9)
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(target)
+
+    assert_that(caught.value.message).is_equal_to("file changed while it was read")
+
+
+def test_inspect_file_rechecks_after_the_metadata_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file replaced while its metadata is read is inspected again."""
+    target = _write_jpeg(tmp_path / "photo.jpg")
+    other = _write_jpeg(tmp_path / "other.jpg")
+    Image.new("RGB", (30, 20), (1, 2, 3)).save(other, format="JPEG")
+    reads: list[Path] = []
+    real_image = service_module._EXTRACTORS[MediaType.IMAGE]
+
+    def replacing_image(path: Path) -> MediaMetadata:
+        reads.append(path)
+        metadata = real_image(path)
+        if len(reads) == 1:
+            staged = tmp_path / ".staged"
+            shutil.copyfile(other, staged)
+            staged.replace(target)
+        return metadata
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {**service_module._EXTRACTORS, MediaType.IMAGE: replacing_image},
+    )
+
+    file_info = inspect_file(target)
+
+    assert_that(reads).is_length(2)
+    metadata = file_info.metadata
+    if metadata is None:
+        pytest.fail("expected image metadata")
+    assert_that((metadata.width, metadata.height)).is_equal_to((30, 20))
+    assert_that(file_info.size_bytes).is_equal_to(other.stat().st_size)
+
+
+def test_directory_stats_keeps_its_six_argument_constructor() -> None:
+    """The original constructor works and describes an extension-only result."""
+    result = DirectoryStats(0, 0, {}, 0, None, None)
+
+    assert_that(result.classified_by).is_equal_to(Classification.EXTENSION)
+    assert_that(result.extension_mismatch_count).is_none()
+    assert_that(result.extension_untyped_count).is_none()
+    assert_that(result.typed_by_name).is_none()
+    assert_that(result.unreadable_count).is_equal_to(0)
+    assert_that(result.skipped_by_reason).is_empty()
+    assert_that(result.complete).is_true()
+
+
+def test_collect_directory_stats_separates_types_taken_from_the_name(
+    tmp_path: Path,
+) -> None:
+    """An empty ``zero.jpg`` is typed by its name and counted apart."""
+    (tmp_path / "zero.jpg").write_bytes(b"")
+    (tmp_path / "zero").write_bytes(b"")
+    _write_jpeg(tmp_path / "real.jpg")
+
+    result = collect_directory_stats(tmp_path)
+
+    assert_that(dict(result.counts_by_type)).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.typed_by_name).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.unknown_count).is_equal_to(1)
+    assert_that(result.total_files).is_equal_to(3)
+    assert_that(result.extension_mismatch_count).is_equal_to(0)
+
+
+def test_extension_check_reports_a_name_decided_type(tmp_path: Path) -> None:
+    """The extension fallback is never reported as a content match."""
+    target = tmp_path / "zero.jpg"
+    target.write_bytes(b"")
+
+    detection = detect(target)
+
+    assert_that(detection.media_type).is_equal_to(MediaType.IMAGE)
+    assert_that(decided_by_name(detection)).is_true()
+    assert_that(extension_check(detection)).is_equal_to(ExtensionCheck.NAME_ONLY)
+
+
+def _deny_open(monkeypatch: pytest.MonkeyPatch, denied: Path) -> None:
+    """Make ``os.open`` refuse ``denied`` as a mode-000 file is refused.
+
+    Works for every user, root included, where ``chmod 000`` does not deny.
+
+    Args:
+        monkeypatch: Fixture used to replace ``os.open``.
+        denied: File that cannot be opened.
+    """
+    real_open = os.open
+
+    def fake_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if Path(path) == denied:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fake_open)
+
+
+def test_fast_counts_a_file_it_cannot_open_as_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fast=True`` never types a file by name when it cannot be opened."""
+    _write_jpeg(tmp_path / "a.jpg")
+    denied = _write_jpeg(tmp_path / "denied.jpg")
+    _deny_open(monkeypatch, denied)
+
+    result = collect_directory_stats(tmp_path, fast=True)
+
+    assert_that(dict(result.counts_by_type)).is_equal_to({MediaType.IMAGE: 1})
+    assert_that(result.unreadable_count).is_equal_to(1)
+    assert_that(result.unreadable_examples).is_equal_to((denied,))
+
+
+def test_inspect_file_fast_rejects_a_file_it_cannot_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``inspect_file(fast=True)`` raises for a file it cannot open."""
+    denied = _write_jpeg(tmp_path / "denied.jpg")
+    _deny_open(monkeypatch, denied)
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(denied, fast=True)
+
+    assert_that(caught.value.message).is_equal_to("cannot read file")
+
+
+def test_inspect_file_fast_reads_no_metadata(
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fast=True`` runs no extractor, so ffprobe never starts."""
+    called: list[Path] = []
+
+    def spy(path: Path) -> MediaMetadata:
+        called.append(path)
+        return MediaMetadata()
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {media_type: spy for media_type in MediaType},
+    )
+
+    file_info = inspect_file(fixtures_dir / "sample.mp4", fast=True)
+
+    assert_that(file_info.media_type).is_equal_to(MediaType.VIDEO)
+    assert_that(file_info.metadata).is_none()
+    assert_that(called).is_empty()
+
+
+def test_unreadable_examples_keep_a_bounded_sample() -> None:
+    """The tally keeps an exact count but only the first ten paths."""
+    tally = inventory._Tally()
+    paths = [Path(f"/x/f{index:03d}") for index in range(250)]
+    for path in reversed(paths):
+        tally.record_event(
+            WalkEvent(
+                kind=WalkEventKind.UNREADABLE_ENTRY,
+                path=path,
+                message="gone",
+                is_issue=True,
+            ),
+        )
+
+    result = tally.result(classified_by=Classification.CONTENT)
+
+    assert_that(result.unreadable_count).is_equal_to(250)
+    assert_that(result.unreadable_examples).is_equal_to(tuple(paths[:10]))
+    assert_that(tally.unreadable_files.paths).is_length(10)
+
+
+def test_decided_by_name_needs_a_deciding_signal() -> None:
+    """A result with no deciding signal was not decided by the name."""
+    result = DetectionResult(
+        media_type=None,
+        container=None,
+        major_brand=None,
+        signals=(),
+        extension_media_type=None,
+        agrees_with_extension=None,
+    )
+
+    assert_that(decided_by_name(result)).is_false()
+
+
+def test_follow_reports_a_name_that_no_longer_resolves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name whose resolution loops after it was read is unreadable, once.
+
+    ``Path.resolve`` raising for ``b.jpg`` (a loop on Python 3.11 and 3.12)
+    means the name cannot be paired with the file it read: it counts nothing
+    and the walk goes on.
+    """
+    _write_jpeg(tmp_path / "a.jpg")
+    looping = _write_jpeg(tmp_path / "b.jpg")
+    real_resolve = Path.resolve
+
+    def resolve(self: Path, *, strict: bool = False) -> Path:
+        if self == looping:
+            raise RuntimeError(f"Symlink loop from {str(self)!r}")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    events: list[WalkEvent] = []
+
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+
+    assert_that([entry.path for entry in entries]).is_equal_to([tmp_path / "a.jpg"])
+    assert_that(
+        [(event.kind, event.path, event.message) for event in events]
+    ).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, looping, "symlink loop")],
+    )
+
+
+def test_fast_skips_a_file_replaced_by_a_fifo_before_it_is_opened(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path that is no longer a regular file when opened is not counted."""
+    target = _write_jpeg(tmp_path / "a.jpg")
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(inventory, "_open_stat", lambda path: fifo.stat())
+
+    result = collect_directory_stats(tmp_path, fast=True)
+    with pytest.raises(MediaError) as caught:
+        inspect_file(target, fast=True)
+
+    assert_that(result.total_files).is_equal_to(0)
+    assert_that(dict(result.skipped_by_reason)).is_equal_to(
+        {WalkEventKind.NOT_REGULAR: 2},
+    )
+    assert_that(caught.value.message).is_equal_to("not a regular file")
+
+
+def test_inspect_file_reports_a_file_removed_while_its_metadata_is_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file deleted by the time its metadata is read cannot be read."""
+    target = _write_jpeg(tmp_path / "photo.jpg")
+    real_image = service_module._EXTRACTORS[MediaType.IMAGE]
+
+    def deleting_image(path: Path) -> MediaMetadata:
+        metadata = real_image(path)
+        path.unlink()
+        return metadata
+
+    monkeypatch.setattr(
+        service_module,
+        "_EXTRACTORS",
+        {**service_module._EXTRACTORS, MediaType.IMAGE: deleting_image},
+    )
+
+    with pytest.raises(MediaError) as caught:
+        inspect_file(target)
+
+    assert_that(caught.value.message).is_equal_to("cannot read file")
+
+
+def test_unreadable_examples_do_not_depend_on_arrival_order() -> None:
+    """The kept sample is the same whatever order the paths arrive in."""
+    paths = [Path(f"/x/f{index:03d}") for index in range(30)]
+    ascending = inventory._Tally()
+    interleaved = inventory._Tally()
+    for path in paths:
+        ascending.unreadable_files.add(path)
+    for path in paths[1::2] + paths[::2]:
+        interleaved.unreadable_files.add(path)
+
+    assert_that(ascending.unreadable_files.paths).is_equal_to(paths[:10])
+    assert_that(interleaved.unreadable_files.paths).is_equal_to(paths[:10])
+
+
+# --- Review round 2 (#366, PR 490) -------------------------------------------
+
+
+def test_follow_pairs_a_retargeted_link_with_the_file_it_opened(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link retargeted after it was read is unreadable; both files count once.
+
+    ``a-preview.jpg`` points at the JPEG when it is opened and at the video
+    just afterwards. The link counts nothing and is reported once; the JPEG
+    and the video are each counted under their own names.
+    """
+    cover = _write_jpeg(tmp_path / "z-cover.jpg")
+    movie = tmp_path / "b-movie.mp4"
+    shutil.copyfile(FIXTURE_DIR / "sample.mp4", movie)
+    preview = tmp_path / "a-preview.jpg"
+    preview.symlink_to(cover)
+
+    def retargeting_detect(path: Path, **kwargs: Any) -> DetectionResult:
+        result = detect(path, **kwargs)
+        if path == preview and preview.resolve() == cover.resolve():
+            staged = tmp_path / ".staged-link"
+            staged.symlink_to(movie)
+            staged.replace(preview)
+        return result
+
+    monkeypatch.setattr(inventory, "detect", retargeting_detect)
+    events: list[WalkEvent] = []
+
+    stats = collect_directory_stats(tmp_path, policy=_follow())
+    preview.unlink()
+    preview.symlink_to(cover)
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+
+    assert_that(dict(stats.counts_by_type)).is_equal_to(
+        {MediaType.IMAGE: 1, MediaType.VIDEO: 1},
+    )
+    assert_that(stats.total_bytes).is_equal_to(
+        cover.stat().st_size + movie.stat().st_size,
+    )
+    assert_that(stats.unreadable_count).is_equal_to(1)
+    assert_that(stats.unreadable_examples).is_equal_to((preview,))
+    assert_that(stats.complete).is_false()
+    assert_that([entry.path for entry in entries]).is_equal_to([movie, cover])
+    assert_that(
+        [(event.kind, event.path, event.message) for event in events]
+    ).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, preview, LINK_CHANGED)],
+    )
+
+
+def test_follow_does_not_detect_a_name_whose_target_is_counted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link to a counted file is a duplicate before any content is read."""
+    _write_jpeg(tmp_path / "a.jpg")
+    (tmp_path / "b_link.jpg").symlink_to(tmp_path / "a.jpg")
+    (tmp_path / "c_link.jpg").symlink_to(tmp_path / "a.jpg")
+    calls = _spy_detect(monkeypatch)
+    events: list[WalkEvent] = []
+
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+
+    assert_that(calls).is_equal_to([tmp_path / "a.jpg"])
+    assert_that([entry.path.name for entry in entries]).is_equal_to(["a.jpg"])
+    assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
+        [
+            (WalkEventKind.DUPLICATE, "b_link.jpg"),
+            (WalkEventKind.DUPLICATE, "c_link.jpg"),
+        ],
+    )
+
+
+def test_follow_trusts_the_opened_file_over_the_pre_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link retargeted to a counted file before it is opened is a duplicate."""
+    _write_jpeg(tmp_path / "a.jpg")
+    notes = tmp_path / "x_notes.txt"
+    notes.write_text("just text\n")
+    link = tmp_path / "b_link.jpg"
+    link.symlink_to(notes)
+
+    def retargeting_detect(path: Path, **kwargs: Any) -> DetectionResult:
+        if path == link and link.resolve() == notes.resolve():
+            staged = tmp_path / ".staged-link"
+            staged.symlink_to(tmp_path / "a.jpg")
+            staged.replace(link)
+        return detect(path, **kwargs)
+
+    monkeypatch.setattr(inventory, "detect", retargeting_detect)
+    events: list[WalkEvent] = []
+
+    entries = list(iter_inventory(tmp_path, policy=_follow(), on_event=events.append))
+
+    assert_that([entry.path.name for entry in entries]).is_equal_to(
+        ["a.jpg", "x_notes.txt"],
+    )
+    assert_that([(event.kind, event.path.name) for event in events]).is_equal_to(
+        [(WalkEventKind.DUPLICATE, "b_link.jpg")],
+    )
+
+
+def test_follow_holds_one_entry_per_untyped_file(tmp_path: Path) -> None:
+    """Only the first untyped name keeps its entry; later names keep a path."""
+    notes = tmp_path / "notes.txt"
+    notes.write_text("just text\n")
+    names = [tmp_path / "a_link", tmp_path / "c_link", notes]
+    for link in names[:2]:
+        link.symlink_to(notes)
+    status = notes.stat()
+    events: list[WalkEvent] = []
+    claims = inventory._FollowClaims(events.append)
+    moment = datetime.fromtimestamp(_EARLY, tz=UTC)
+    for name in names:
+        entry = InventoryEntry(
+            path=name,
+            size_bytes=1,
+            modified=moment,
+            media_type=None,
+            detection=None,
+        )
+        classified = inventory._Classified(
+            entry=entry,
+            identity=(status.st_dev, status.st_ino),
+        )
+        assert_that(list(claims.offer(classified))).is_empty()
+
+    held = claims._pending[notes.resolve()]
+
+    assert_that(held.first.path).is_equal_to(names[0])
+    assert_that(held.others).is_equal_to(names[1:])
+    assert_that([entry.path for entry in claims.unclaimed()]).is_equal_to(names[:1])
+    assert_that([event.path for event in events]).is_equal_to(names[1:])
+
+
+def _rewrite_keeping_size_and_mtime(path: Path) -> None:
+    """Rewrite a file with the same bytes and restore its mtime.
+
+    The rewrite repeats until the inode change time moves, so the test does
+    not depend on the filesystem's timestamp granularity (ext4's clock is
+    coarse), and fails rather than hangs if it never moves.
+
+    Args:
+        path: The file.
+    """
+    original = path.stat()
+    content = path.read_bytes()
+    deadline = time.monotonic() + 5
+    while True:
+        path.write_bytes(content)
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        if path.stat().st_ctime_ns != original.st_ctime_ns:
+            return
+        if time.monotonic() > deadline:
+            pytest.fail("ctime did not change within 5 seconds")
+
+
+def test_inspect_file_rechecks_a_same_size_rewrite_with_its_mtime_restored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rewrite that keeps size and mtime is caught by the inode change time."""
+    target = _write_jpeg(tmp_path / "photo.jpg")
+    calls: list[Path] = []
+
+    def rewriting_detect(path: Path, **kwargs: Any) -> DetectionResult:
+        calls.append(path)
+        result = detect(path, **kwargs)
+        if len(calls) == 1:
+            _rewrite_keeping_size_and_mtime(target)
+        return result
+
+    monkeypatch.setattr(inventory, "detect", rewriting_detect)
+
+    file_info = inspect_file(target)
+
+    assert_that(calls).is_length(2)
+    detection = file_info.detection
+    if detection is None or detection.snapshot is None:
+        pytest.fail("expected a detection snapshot")
+    assert_that(detection.snapshot.ctime_ns).is_equal_to(target.stat().st_ctime_ns)
+
+
+def test_follow_counts_hard_links_as_two_files_like_discovery(tmp_path: Path) -> None:
+    """Under FOLLOW two hard links are two files, as Discovery collects them."""
+    first = _write_jpeg(tmp_path / "a.jpg")
+    os.link(first, tmp_path / "b.jpg")
+    config = WinnowConfig(follow_symlinks=True, symlink_policy=SymlinkPolicy.FOLLOW)
+    events: list[WalkEvent] = []
+
+    entries = list(
+        iter_inventory(
+            tmp_path,
+            policy=WalkPolicy.from_config(config),
+            on_event=events.append,
+        ),
+    )
+    state = _discover(tmp_path, config=config)
+
+    assert_that([entry.path.name for entry in entries]).is_equal_to(["a.jpg", "b.jpg"])
+    assert_that(events).is_empty()
+    assert_that({entry.path.resolve() for entry in entries}).is_equal_to(
+        {media.path for media in state.files},
+    )
+
+
+def test_follow_reports_a_file_that_vanishes_before_its_pre_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name gone by the duplicate pre-check is unreadable, not a duplicate."""
+    _write_jpeg(tmp_path / "a.jpg")
+    doomed = _write_jpeg(tmp_path / "b.jpg")
+    real_walk = inventory.iter_regular_files
+
+    def vanishing_walk(*args: Any, **kwargs: Any) -> Iterator[Path]:
+        for path in real_walk(*args, **kwargs):
+            if path == doomed:
+                path.unlink()
+            yield path
+
+    monkeypatch.setattr(inventory, "iter_regular_files", vanishing_walk)
+
+    result = collect_directory_stats(tmp_path, policy=_follow())
+
+    assert_that(result.total_files).is_equal_to(1)
+    assert_that(result.unreadable_examples).is_equal_to((doomed,))
+    assert_that(result.skipped_by_reason).is_empty()
+
+
+def test_follow_reports_a_name_whose_file_is_gone_after_it_was_read(
+    tmp_path: Path,
+) -> None:
+    """A name whose file disappears before it is paired is unreadable."""
+    gone = tmp_path / "gone.jpg"
+    events: list[WalkEvent] = []
+    claims = inventory._FollowClaims(events.append)
+    entry = InventoryEntry(
+        path=gone,
+        size_bytes=1,
+        modified=datetime.fromtimestamp(_EARLY, tz=UTC),
+        media_type=MediaType.IMAGE,
+        detection=None,
+    )
+
+    counted = list(claims.offer(inventory._Classified(entry=entry, identity=(1, 2))))
+
+    assert_that(counted).is_empty()
+    assert_that([(event.kind, event.path) for event in events]).is_equal_to(
+        [(WalkEventKind.UNREADABLE_ENTRY, gone)],
+    )
