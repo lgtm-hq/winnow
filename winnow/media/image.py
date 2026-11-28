@@ -279,6 +279,30 @@ def _maker_note_tags_from_pillow(image: Image.Image) -> dict[str, str] | None:
         return {}
 
 
+def decode_apple_maker_note(note: bytes) -> dict[str, str] | None:
+    """Decode a MakerNote blob if it is Apple's, reporting damage.
+
+    Unlike :func:`read_maker_note_tags`, a recognised but damaged Apple note
+    raises instead of reading as empty, so an evidence reader can tell the
+    two apart (#395).
+
+    Args:
+        note: The raw MakerNote bytes.
+
+    Returns:
+        ``"Tag 0xNNNN"`` to decoded ASCII value, as
+        :func:`read_maker_note_tags` gives them; ``None`` when the note is not
+        Apple's.
+
+    Raises:
+        ValueError: If the Apple note's byte order or an entry is damaged.
+        struct.error: If it is too short for the directory it declares.
+    """
+    if not note.startswith(_APPLE_MAKER_NOTE_SIGNATURE):
+        return None
+    return _parse_apple_maker_note(note)
+
+
 def _parse_apple_maker_note(note: bytes) -> dict[str, str]:
     """Parse the TIFF IFD embedded in an Apple MakerNote blob.
 
